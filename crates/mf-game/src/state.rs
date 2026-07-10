@@ -7,7 +7,7 @@ use bevy::app::AppExit;
 use bevy::prelude::*;
 use mf_net::{NetStatus, ReconnectState, SimEvent, SimLink};
 use mf_protocol::envelope::FromSimJson;
-use mf_protocol::{HelloInfo, InitPayload, ToSim};
+use mf_protocol::{HelloInfo, InitPayload, SetSpeedPayload, ToSim};
 use mf_state::{CurrentCity, LatestFields, LatestUi};
 
 use crate::config::MfConfig;
@@ -44,6 +44,53 @@ impl Default for PendingInit {
     }
 }
 
+/// Whether the pause overlay (`hud.rs`) is showing, and the speed to
+/// restore on resume. The sim clock itself is authoritative — pausing is
+/// just asking it to run at 0x and remembering what to ask for afterward —
+/// so this resource carries no other in-game state.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct PauseState {
+    pub active: bool,
+    pub resume_speed: f64,
+}
+
+impl Default for PauseState {
+    fn default() -> Self {
+        // 1.0 rather than 0.0: a resume before any pause has ever set this
+        // (shouldn't happen, but cheap to guard) must not silently relock
+        // the clock at 0x.
+        PauseState {
+            active: false,
+            resume_speed: 1.0,
+        }
+    }
+}
+
+/// Toggle pause. Shared by `input.rs` (Esc) and `hud.rs` (the "Resume"
+/// button) so both call sites agree on what "current speed" means and
+/// can't drift into disagreeing about whether we're paused.
+pub fn toggle_pause(pause: &mut PauseState, ui: &LatestUi, link: Option<&SimLink>) {
+    let Some(link) = link else {
+        return;
+    };
+    if pause.active {
+        pause.active = false;
+        let _ = link.transport.send(ToSim::SetSpeed(SetSpeedPayload {
+            speed: pause.resume_speed,
+        }));
+    } else {
+        // Only latch a fresh resume_speed on the pause->active transition;
+        // toggling only ever alternates active on/off, so this branch can't
+        // run twice in a row and clobber a good value with 0.
+        let current = ui.0.as_ref().map(|s| s.speed).unwrap_or(0.0);
+        pause.resume_speed = if current > 0.0 { current } else { 1.0 };
+        pause.active = true;
+        let _ = link
+            .transport
+            .send(ToSim::SetSpeed(SetSpeedPayload { speed: 0.0 }));
+    }
+}
+
 pub struct MfGameStatePlugin;
 
 impl Plugin for MfGameStatePlugin {
@@ -51,7 +98,9 @@ impl Plugin for MfGameStatePlugin {
         app.init_state::<AppState>()
             .init_resource::<SimHello>()
             .init_resource::<PendingInit>()
+            .init_resource::<PauseState>()
             .add_systems(OnEnter(AppState::Boot), boot_system)
+            .add_systems(OnExit(AppState::InGame), clear_pause_on_exit_ingame)
             .add_systems(Update, net_status_watchdog)
             .add_systems(
                 Update,
@@ -227,6 +276,15 @@ fn loading_gate_system(
     if city.masks_complete() && fields.0.is_some() && ui.0.is_some() {
         next_state.set(AppState::InGame);
     }
+}
+
+/// Leaving `InGame` any way other than through the pause overlay itself
+/// (the fatal-reconnect watchdog dropping back to `MainMenu` is the only
+/// path today) must not leave a stale `active: true` behind — otherwise a
+/// fresh `InGame` session after reconnecting would boot straight into a
+/// pause overlay nobody asked for.
+fn clear_pause_on_exit_ingame(mut pause: ResMut<PauseState>) {
+    pause.active = false;
 }
 
 /// Graceful quit (spec §3.4): on `AppExit`, tell the sim to shut down;
