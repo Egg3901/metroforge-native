@@ -12,16 +12,30 @@ use mf_state::{CurrentCity, HeightAt, QualityTier, Theme};
 use crate::mesh_utils::{append_ribbon, MeshBuffers};
 use crate::palette;
 
-/// Road surface sits just above bare ground (spec: "heightAt + 0.5").
-const ROAD_Y_OFFSET: f32 = 0.5;
+/// Road surface lift above ground. The spec said 0.5, but at overview zoom
+/// on near-flat terrain a 0.5m offset loses the depth fight against the
+/// terrain mesh at grazing angles (roads visibly vanish from skyline
+/// framings; found on the flattened real-city relief). 2m is still
+/// imperceptible as elevation at street zoom and keeps the ribbons winning
+/// depth at distance.
+const ROAD_Y_OFFSET: f32 = 2.0;
+/// Water-crossing segments ride a fixed deck height instead of hugging
+/// `WATER_LEVEL_Y` — a road at water level renders as a barely-visible black
+/// sliver mid-river (owner-flagged on the East River bridges). A flat
+/// causeway a few meters up reads as a bridge at city zoom.
+const BRIDGE_DECK_Y: f32 = 8.0;
 /// Widths per spec §3.3 (already includes `roadScale` multiplication).
 // Widened ~1.5x from real-world-ish 40/24/13: at overview zoom the true
 // widths are a few pixels and vanish into the bright ground (the oldest
 // render-backlog item, owner-flagged twice). Slight exaggeration is the
 // standard map-style tradeoff.
-const ARTERIAL_WIDTH: f64 = 60.0;
-const COLLECTOR_WIDTH: f64 = 36.0;
-const LOCAL_WIDTH: f64 = 20.0;
+// `pub(crate)`: `terrain.rs` reuses these as the terrain-grading corridor
+// half-width source (see `terrain::grade_terrain`) so the graded corridor
+// stays in lockstep with the ribbon width instead of drifting via a
+// duplicated constant.
+pub(crate) const ARTERIAL_WIDTH: f64 = 60.0;
+pub(crate) const COLLECTOR_WIDTH: f64 = 36.0;
+pub(crate) const LOCAL_WIDTH: f64 = 20.0;
 /// Camera height above which local-road detail is hidden (LOD).
 const LOCAL_ROAD_LOD_HEIGHT: f32 = 4_000.0;
 
@@ -42,13 +56,14 @@ impl Plugin for MfRoadsPlugin {
 
 #[derive(Resource, Default)]
 struct RoadsState {
-    /// Cheap structural signature: `(roads.len(), total point count,
-    /// theme)`. Roads never change after `ready` in v1, but this keys the
-    /// rebuild the same way the other layers key off `fieldsVersion`/UI
-    /// structural hashes — `Theme` rides along so a theme switch forces a
-    /// full rebuild (road color is baked into the mesh vertex color at
-    /// build time, not read from the material each frame).
-    signature: Option<(usize, usize, Theme)>,
+    /// Cheap structural signature: `(fields version, roads.len(), total
+    /// point count, theme)`. Road geometry never changes after `ready` in
+    /// v1, but the terrain the ribbons drape over rebuilds on every fields
+    /// version — baking only once left roads buried under relief that
+    /// arrived in a later version (the residual half of the roads race).
+    /// `Theme` rides along so a theme switch forces a full rebuild (road
+    /// color is baked into mesh vertex color at build time).
+    signature: Option<(u32, usize, usize, Theme)>,
     entities: Vec<Entity>,
     local_entity: Option<Entity>,
 }
@@ -89,11 +104,11 @@ fn build_roads_system(
     // placeholder flat HeightAt buried every road under the real relief
     // (intermittently, per frame timing: the recurring "why are the roads
     // never showing"). Wait for real terrain before baking.
-    if fields.0.is_none() {
+    let Some(f) = &fields.0 else {
         return;
-    }
+    };
     let total_points: usize = city_json.roads.iter().map(|r| r.points.len()).sum();
-    let signature = (city_json.roads.len(), total_points, *theme);
+    let signature = (f.version, city_json.roads.len(), total_points, *theme);
     if state.signature == Some(signature) {
         return;
     }
@@ -129,13 +144,21 @@ fn build_roads_system(
             "collector" => (1usize, COLLECTOR_WIDTH as f32 * road_scale),
             _ => (2usize, LOCAL_WIDTH as f32 * road_scale),
         };
+        let deck_height = |x: f32, z: f32| {
+            let h = height_at.sample(x, z);
+            if h <= crate::terrain::WATER_LEVEL_Y + 0.01 {
+                BRIDGE_DECK_Y
+            } else {
+                h
+            }
+        };
         append_ribbon(
             &mut by_class[idx],
             &pts,
             ROAD_Y_OFFSET,
             width,
             road_color,
-            |x, z| height_at.sample(x, z),
+            deck_height,
         );
         if idx == 0 {
             append_ribbon(
@@ -144,7 +167,7 @@ fn build_roads_system(
                 ROAD_Y_OFFSET + 0.05,
                 width + 2.0,
                 palette::road_edge(),
-                |x, z| height_at.sample(x, z),
+                deck_height,
             );
         }
     }
