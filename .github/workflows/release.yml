@@ -119,8 +119,12 @@ jobs:
       # void. v0.1.0-alpha shipped with an invisible menu because nothing
       # between `cargo build` and a player's double-click ever executed the
       # bytes players actually download.
-      - name: Install artifact smoke-test deps (xvfb + software vulkan + imagemagick)
-        run: sudo apt-get install -y xvfb mesa-vulkan-drivers libvulkan1 imagemagick
+      - name: Install artifact smoke-test deps (xvfb + software vulkan + imagemagick + winit X11 runtime libs)
+        # libxkbcommon-x11-0 etc. exist on any real desktop but NOT on the
+        # bare ubuntu-latest runner image; without them winit panics inside
+        # xkbcommon-dl before the first frame (caught by this gate on the
+        # first v0.1.1-alpha attempt).
+        run: sudo apt-get install -y xvfb mesa-vulkan-drivers libvulkan1 imagemagick libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2
 
       - name: Smoke-test packaged linux artifact (cold player run)
         working-directory: metroforge-native
