@@ -48,10 +48,10 @@ pub struct CameraRig {
 pub const MIN_DOLLY: f32 = 120.0;
 pub const MAX_DOLLY: f32 = 20_000.0;
 /// Pixels of mouse movement below which a click is a click, not a drag.
-/// Not consumed yet — v1 has no click-to-build interaction (spec §5: the
-/// build panel is a stretch goal); wired here for `input.rs` to use once it
-/// lands.
-#[allow(dead_code)]
+/// Consumed by `tools.rs`'s `tool_click_system` (v0.2 build tools, ship-plan
+/// #25) to tell a clean click-to-build from the drag-pan handled above:
+/// a release under this threshold, with egui not wanting the pointer, is a
+/// world click; anything else is left alone as an ordinary pan gesture.
 pub const CLICK_DRAG_THRESHOLD_PX: f32 = 8.0;
 
 /// Wheel-dolly smoothing rate. Solve `1 - exp(-rate * t) = 0.95` for the
