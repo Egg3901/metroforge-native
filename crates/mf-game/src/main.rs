@@ -6,6 +6,7 @@ mod camera;
 mod config;
 mod hud;
 mod input;
+mod quality_boot;
 mod state;
 mod verify;
 
@@ -14,6 +15,7 @@ use bevy::window::{PresentMode, Window, WindowPlugin};
 use mf_net::MfNetPlugin;
 use mf_render::MfRenderPlugin;
 use mf_state::MfStatePlugin;
+use quality_boot::MfQualityBootPlugin;
 
 // Art-direction §1: SKY_DAY as the default clear color.
 const SKY_DAY: Color = Color::srgb(
@@ -41,6 +43,7 @@ fn main() {
             input::MfInputPlugin,
             hud::MfHudPlugin,
             verify::MfVerifyPlugin,
+            MfQualityBootPlugin,
         ))
         .run();
 }
