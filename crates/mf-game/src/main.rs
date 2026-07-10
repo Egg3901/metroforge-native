@@ -10,6 +10,9 @@ mod config;
 mod design_system;
 mod hud;
 mod input;
+mod map_mode;
+mod overlays;
+mod panels;
 mod quality_boot;
 mod reveal_input;
 mod state;
@@ -55,6 +58,9 @@ fn main() {
             command_bus::MfCommandBusPlugin,
             tools::MfToolsPlugin,
             build_ui::MfBuildUiPlugin,
+            overlays::MfOverlaysPlugin,
+            map_mode::MfMapModePlugin,
+            panels::MfPanelsPlugin,
         ));
     // MF_PERF_LOG=1: log frame-time diagnostics (avg/FPS) once per second.
     // Costs nothing when unset; gives players and CI a zero-setup way to

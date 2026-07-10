@@ -44,7 +44,10 @@ impl Plugin for MfTransitPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TransitState>().add_systems(
             Update,
-            transit_update_system.in_set(crate::MfRenderSet::Statics),
+            (
+                transit_update_system.in_set(crate::MfRenderSet::Statics),
+                apply_overlay_dim_system.in_set(crate::MfRenderSet::Dynamic),
+            ),
         );
     }
 }
@@ -69,12 +72,19 @@ pub struct StationRing {
 #[derive(Component)]
 pub struct RouteStripe {
     pub mode: TransitMode,
+    /// The route's vivid color as painted at rebuild, kept so overlay
+    /// dimming can restore it exactly (owner rule: an active overlay
+    /// reduces the network's color strength so the overlay owns the stage).
+    pub color: Color,
 }
 
 /// The bold, 2x-width, emissive metro tube shown only in subway view
 /// (art-direction §7). One per metro route, initially hidden.
 #[derive(Component)]
-pub struct MetroBoldTube;
+pub struct MetroBoldTube {
+    /// See [`RouteStripe::color`].
+    pub color: Color,
+}
 
 #[derive(Resource, Default)]
 struct TransitState {
@@ -339,6 +349,36 @@ fn rebuild_tracks(
     }
 }
 
+/// Per-STATION-PAIR ribbon widths for a route's stripe (v0.3, ship-plan
+/// #25): `STRIPE_WIDTH * (0.7 + load/max_load)` when `segment_loads` aligns
+/// 1:1 with `pair_count` (`r.station_ids.windows(2)` count) — the busiest
+/// pair on the route always lands at `STRIPE_WIDTH * 1.7`, an empty one at
+/// `STRIPE_WIDTH * 0.7`. Falls back to `STRIPE_WIDTH` uniformly for every
+/// pair when the lengths don't match (stale sim data, a future protocol
+/// change) or every load is non-positive (nothing to normalize against) —
+/// defensive by construction, this must never index out of bounds or paint
+/// a route with a nonsensical width. Pure function (no ECS/mesh types), so
+/// the normalization and both fallback paths are unit-testable directly.
+fn segment_widths(pair_count: usize, segment_loads: &[f64]) -> Vec<f32> {
+    if pair_count == 0 {
+        return Vec::new();
+    }
+    let aligned = segment_loads.len() == pair_count;
+    let max_load = if aligned {
+        segment_loads.iter().cloned().fold(0.0_f64, f64::max)
+    } else {
+        0.0
+    };
+    if aligned && max_load > 0.0 {
+        segment_loads
+            .iter()
+            .map(|&load| STRIPE_WIDTH * (0.7 + (load / max_load) as f32))
+            .collect()
+    } else {
+        vec![STRIPE_WIDTH; pair_count]
+    }
+}
+
 fn rebuild_routes(
     commands: &mut Commands,
     ui: &UiState,
@@ -391,7 +431,19 @@ fn rebuild_routes(
 
     for (ri, r) in ui.routes.iter().enumerate() {
         let mut path: Vec<Vec2> = Vec::new();
-        for w in r.station_ids.windows(2) {
+        // Per-STATION-PAIR segments (post-bundling-offset), tagged with
+        // that pair's index into `r.station_ids.windows(2)` — this is the
+        // same indexing `r.segment_loads` uses (one load entry per station
+        // pair), NOT per drawn point: a pair's track can itself carry
+        // several intermediate points (a curve/detour), and every one of
+        // those sub-segments must inherit that ONE pair's width rather than
+        // each somehow getting its own. Collected separately from `path`
+        // (which stays the full concatenated polyline, still needed as-is
+        // for `append_chevrons`/the metro bold tube below) so the
+        // width-scaled ribbon loop can walk pair-by-pair instead of point-
+        // by-point.
+        let mut pair_segs: Vec<(usize, Vec<Vec2>)> = Vec::new();
+        for (pi, w) in r.station_ids.windows(2).enumerate() {
             let (a, b) = (w[0], w[1]);
             let mut seg = track_by_pair.get(&(a, b)).cloned().unwrap_or_else(|| {
                 match (station_by_id.get(&a), station_by_id.get(&b)) {
@@ -414,6 +466,7 @@ fn rebuild_routes(
                 path.push(seg[0]);
             }
             path.extend_from_slice(&seg[1..]);
+            pair_segs.push((pi, seg));
         }
         if path.len() < 2 {
             continue;
@@ -421,14 +474,27 @@ fn rebuild_routes(
 
         let color = palette::vivid_route_color(ri);
         let mut normal_buf = MeshBuffers::new();
-        append_ribbon(
-            &mut normal_buf,
-            &path,
-            STRIPE_Y_OFFSET,
-            STRIPE_WIDTH,
-            color,
-            |x, z| height_at.sample(x, z),
-        );
+        // Per-segment load width (v0.3, ship-plan #25): one ribbon width
+        // per station pair rather than one uniform width for the whole
+        // route, so a crowded stretch reads visibly fatter. `segment_widths`
+        // is the pure normalization (also unit-tested below); it already
+        // falls back to `STRIPE_WIDTH` uniformly when `r.segment_loads`
+        // doesn't align 1:1 with the route's station-pair count, so this
+        // loop doesn't need its own separate defensive branch — every
+        // `pair_segs` entry always gets SOME width from `widths`.
+        let expected_pairs = r.station_ids.len().saturating_sub(1);
+        let widths = segment_widths(expected_pairs, &r.segment_loads);
+        for (pi, seg) in &pair_segs {
+            let width = widths.get(*pi).copied().unwrap_or(STRIPE_WIDTH);
+            append_ribbon(
+                &mut normal_buf,
+                seg,
+                STRIPE_Y_OFFSET,
+                width,
+                color,
+                |x, z| height_at.sample(x, z),
+            );
+        }
         append_chevrons(&mut normal_buf, &path, height_at, color);
         let mesh = meshes.add(normal_buf.build());
         // `Blend`, not `Opaque` — see the long comment on the road-class
@@ -477,7 +543,10 @@ fn rebuild_routes(
                 MeshMaterial3d(material),
                 Transform::IDENTITY,
                 Visibility::default(),
-                RouteStripe { mode: r.mode },
+                RouteStripe {
+                    mode: r.mode,
+                    color,
+                },
                 Name::new(format!("route-stripe-{}", r.id)),
             ))
             .id();
@@ -516,7 +585,7 @@ fn rebuild_routes(
                     MeshMaterial3d(bold_material),
                     Transform::IDENTITY,
                     Visibility::Hidden,
-                    MetroBoldTube,
+                    MetroBoldTube { color },
                     Name::new(format!("route-metro-bold-{}", r.id)),
                 ))
                 .id();
@@ -527,6 +596,46 @@ fn rebuild_routes(
 
 /// Chevron arrows every ~120m along `path`, pointing along direction of
 /// travel (station order), same color 20% brighter (art-direction §3).
+/// Owner rule (issue #27): while any overlay mode is active, the transit
+/// network steps back so the overlay owns the stage. Stripes and bold tubes
+/// mix their painted color 60% toward white and drop emissive to 15%;
+/// restored exactly from the color stored on the component when the overlay
+/// turns off. Writes are gated on overlay-mode changes and fresh spawns
+/// (statics rebuild mid-overlay must inherit the dim) per the no-churn
+/// discipline.
+#[allow(clippy::type_complexity)]
+fn apply_overlay_dim_system(
+    overlay: Res<mf_state::OverlayState>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    stripes: Query<(&RouteStripe, &MeshMaterial3d<StandardMaterial>)>,
+    tubes: Query<(&MetroBoldTube, &MeshMaterial3d<StandardMaterial>)>,
+    fresh: Query<Entity, Or<(Added<RouteStripe>, Added<MetroBoldTube>)>>,
+) {
+    if !overlay.is_changed() && fresh.is_empty() {
+        return;
+    }
+    let dimmed = overlay.mode != mf_state::OverlayMode::Off;
+    let paint = |mat: &mut StandardMaterial, color: Color, emissive_strength: f32| {
+        if dimmed {
+            mat.base_color = color.mix(&Color::WHITE, 0.6);
+            mat.emissive = palette::emissive(color, emissive_strength * 0.15);
+        } else {
+            mat.base_color = color;
+            mat.emissive = palette::emissive(color, emissive_strength);
+        }
+    };
+    for (stripe, handle) in &stripes {
+        if let Some(mat) = materials.get_mut(&handle.0) {
+            paint(mat, stripe.color, 0.45);
+        }
+    }
+    for (tube, handle) in &tubes {
+        if let Some(mat) = materials.get_mut(&handle.0) {
+            paint(mat, tube.color, 0.8);
+        }
+    }
+}
+
 fn append_chevrons(buf: &mut MeshBuffers, path: &[Vec2], height_at: &HeightAt, color: Color) {
     let (cum, total) = arc_length_table(path);
     if total < CHEVRON_SPACING {
@@ -558,5 +667,54 @@ fn append_chevrons(buf: &mut MeshBuffers, path: &[Vec2], height_at: &HeightAt, c
             );
         }
         d += CHEVRON_SPACING;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn segment_widths_zero_pairs_is_empty() {
+        assert!(segment_widths(0, &[]).is_empty());
+    }
+
+    #[test]
+    fn segment_widths_empty_loads_falls_back_to_uniform() {
+        let widths = segment_widths(3, &[]);
+        assert_eq!(widths, vec![STRIPE_WIDTH; 3]);
+    }
+
+    #[test]
+    fn segment_widths_mismatched_length_falls_back_to_uniform() {
+        // 3 pairs but only 2 load entries — must not panic or misattribute
+        // a load to the wrong pair, just fall back uniformly.
+        let widths = segment_widths(3, &[10.0, 20.0]);
+        assert_eq!(widths, vec![STRIPE_WIDTH; 3]);
+    }
+
+    #[test]
+    fn segment_widths_all_zero_falls_back_to_uniform() {
+        let widths = segment_widths(3, &[0.0, 0.0, 0.0]);
+        assert_eq!(widths, vec![STRIPE_WIDTH; 3]);
+    }
+
+    #[test]
+    fn segment_widths_normalizes_busiest_pair_to_1_7x_stripe_width() {
+        let widths = segment_widths(3, &[0.0, 50.0, 100.0]);
+        assert_eq!(widths.len(), 3);
+        assert!((widths[0] - STRIPE_WIDTH * 0.7).abs() < 0.001);
+        assert!((widths[2] - STRIPE_WIDTH * 1.7).abs() < 0.001);
+        let mid = STRIPE_WIDTH * (0.7 + 0.5);
+        assert!((widths[1] - mid).abs() < 0.001);
+    }
+
+    #[test]
+    fn segment_widths_single_pair_uses_full_load_as_its_own_max() {
+        // One pair, one load: that load IS the max, so it normalizes to
+        // 1.0 and lands at the ceiling, not some degenerate divide.
+        let widths = segment_widths(1, &[42.0]);
+        assert_eq!(widths.len(), 1);
+        assert!((widths[0] - STRIPE_WIDTH * 1.7).abs() < 0.001);
     }
 }

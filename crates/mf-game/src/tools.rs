@@ -71,6 +71,13 @@ const BULLDOZE_GHOST_RADIUS_M: f32 = BULLDOZE_STATION_RADIUS_M;
 /// Window within which a second clean click counts as a double-click
 /// (Route tool confirm gesture), rather than two independent clicks.
 const DOUBLE_CLICK_WINDOW_SECS: f32 = 0.35;
+/// Select tool (v0.3, ship-plan #25 §4): nearest station pick radius for a
+/// clean click while no build tool is active. Its own named constant
+/// (rather than reusing [`BULLDOZE_STATION_RADIUS_M`], which happens to
+/// share the same 60m value) since selecting and demolishing are
+/// conceptually independent actions that could diverge later even though
+/// they start out numerically identical.
+const SELECT_STATION_RADIUS_M: f32 = 60.0;
 
 /// Which build tool is active, if any. Read/written by the toolbar UI (a
 /// separate v0.2 agent's HUD panel) as well as this module's own keybind
@@ -82,6 +89,20 @@ pub enum ActiveTool {
     PlaceStation(TransitMode),
     Route,
     Bulldoze,
+}
+
+/// What a clean world click picked while the Select tool (`ActiveTool::None`)
+/// is active - `panels.rs`'s station inspection window reads this to decide
+/// what (if anything) to show. v0.3 scope is stations only (see
+/// `tool_click_system`'s `ActiveTool::None` arm): route-stripe picking is
+/// fiddlier (nearest-segment math against a rendered stripe rather than a
+/// single point) and left for a later wave, so a miss on the station check
+/// always resolves to `None` rather than attempting a route fallback.
+#[derive(Resource, Default, PartialEq, Clone, Copy, Debug)]
+pub enum SelectedTarget {
+    #[default]
+    None,
+    Station(i64),
 }
 
 /// Shared state for the active build tool. `active`/`route_draft`/
@@ -146,17 +167,19 @@ pub struct MfToolsPlugin;
 
 impl Plugin for MfToolsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ToolState>().add_systems(
-            Update,
-            (
-                keybind_system,
-                tool_click_system,
-                command_feedback_system,
-                track_cost_feedback_system,
-                tool_gizmo_system,
-            )
-                .run_if(in_state(crate::state::AppState::InGame)),
-        );
+        app.init_resource::<ToolState>()
+            .init_resource::<SelectedTarget>()
+            .add_systems(
+                Update,
+                (
+                    keybind_system,
+                    tool_click_system,
+                    command_feedback_system,
+                    track_cost_feedback_system,
+                    tool_gizmo_system,
+                )
+                    .run_if(in_state(crate::state::AppState::InGame)),
+            );
     }
 }
 
@@ -200,6 +223,7 @@ fn tool_click_system(
     link: Option<Res<SimLink>>,
     mut bus: ResMut<CommandBus>,
     mut sfx: EventWriter<PlaySfx>,
+    mut selected: ResMut<SelectedTarget>,
 ) {
     let Ok(window) = windows.single() else {
         return;
@@ -243,7 +267,23 @@ fn tool_click_system(
 
     if let (Some(ground), Some(ui)) = (clicked_ground, ui_state.0.as_ref()) {
         match tool.active {
-            ActiveTool::None => {}
+            // Select tool (v0.3): mirrors `PlaceStation`'s "consume a clean
+            // click" plumbing below, just picking instead of building.
+            // Nearest station within `SELECT_STATION_RADIUS_M` wins; a miss
+            // clears the selection SILENTLY (no sfx/toast - clicking empty
+            // ground is a deliberate "deselect", not an error) rather than
+            // falling back to route-stripe picking, which the mission scopes
+            // out of v0.3 (see `SelectedTarget`'s doc).
+            ActiveTool::None => {
+                *selected = match nearest_station_id(&ui.stations, ground, SELECT_STATION_RADIUS_M)
+                {
+                    Some(id) => {
+                        sfx.write(PlaySfx(Sfx::Confirm));
+                        SelectedTarget::Station(id)
+                    }
+                    None => SelectedTarget::None,
+                };
+            }
             ActiveTool::PlaceStation(mode) => {
                 let pos = WireVec2 {
                     x: ground.x as f64,
