@@ -1,0 +1,10 @@
+[package]
+name = "mf-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "3D renderer (STUB — owned by a separate agent; see crates/mf-render/src/lib.rs). Only wires an empty MfRenderPlugin so the workspace compiles."
+
+[dependencies]
+bevy_app = { workspace = true }
+mf-state = { workspace = true }

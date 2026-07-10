@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Linux-only (spec §6): this is a private repo, and Windows/macOS runners
+# carry a per-minute cost multiplier that isn't worth paying for every push.
+# release.yml is where the 3-OS matrix lives.
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout metroforge-native
+        uses: actions/checkout@v4
+        with:
+          path: metroforge-native
+
+      # The TypeScript sidecar (spec §2) lives in a sibling repo. Pinned to a
+      # known-good SHA rather than floating on a branch, so upstream
+      # metroforge changes can't silently break this CI job — bump this SHA
+      # deliberately when the sidecar changes in a way this repo needs.
+      - name: Checkout metroforge (sidecar source)
+        uses: actions/checkout@v4
+        with:
+          repository: Egg3901/metroforge
+          ref: aeac1c620b736cf67067af50f7522741e69cb431
+          path: metroforge
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: metroforge-native
+
+      - name: cargo fmt --check
+        working-directory: metroforge-native
+        run: cargo fmt --check
+
+      - name: cargo clippy -D warnings
+        working-directory: metroforge-native
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        working-directory: metroforge-native
+        run: cargo test --workspace
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3
+
+      - name: bun install (sidecar deps)
+        working-directory: metroforge
+        run: bun install
+
+      # Determinism regression gate (spec §2.6): two runs of the same seed
+      # must produce identical stateHash and observed vehicle motion. No GPU
+      # needed.
+      - name: bun sidecar smoke test
+        working-directory: metroforge
+        run: bun run sidecar/smoke-test.ts

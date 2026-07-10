@@ -1,0 +1,13 @@
+[package]
+name = "mf-state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared Bevy Resources (current city, latest fields/UI/frame, quality tier, subway-view toggle) fed from mf-net's event stream. mf-render and mf-game both depend on this instead of each other."
+
+[dependencies]
+mf-protocol = { workspace = true }
+mf-net = { workspace = true }
+bevy_app = { workspace = true }
+bevy_ecs = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,18 @@
+[package]
+name = "mf-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Sim transport: WebSocket client + sidecar process management. Bridges a blocking tungstenite client thread into Bevy via crossbeam channels."
+
+[dependencies]
+mf-protocol = { workspace = true }
+bevy_app = { workspace = true }
+bevy_ecs = { workspace = true }
+crossbeam-channel = { workspace = true }
+tungstenite = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,29 @@
+[package]
+name = "mf-game"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MetroForge Native game shell (binary `metroforge`): Boot -> ConnectingSim -> MainMenu -> Loading -> InGame."
+
+[[bin]]
+name = "metroforge"
+path = "src/main.rs"
+
+[dependencies]
+mf-protocol = { workspace = true }
+mf-net = { workspace = true }
+mf-state = { workspace = true }
+mf-render = { workspace = true }
+bevy_egui = { workspace = true }
+serde = { workspace = true }
+directories = { workspace = true }
+toml = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+[dependencies.bevy]
+workspace = true
+default-features = true
+
+[dev-dependencies]
+serde_json = { workspace = true }

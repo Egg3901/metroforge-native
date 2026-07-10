@@ -1,0 +1,11 @@
+/target
+Cargo.lock.bak
+
+# sidecar binaries staged alongside the client for release packaging
+/dist-sidecar/
+metroforge-sidecar
+metroforge-sidecar.exe
+
+# editor/OS cruft
+.DS_Store
+*.swp

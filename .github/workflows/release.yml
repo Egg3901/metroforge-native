@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bun_target: bun-linux-x64
+            sidecar_name: metroforge-sidecar
+            client_name: metroforge
+            archive: tar.gz
+          - os: windows-latest
+            bun_target: bun-windows-x64
+            sidecar_name: metroforge-sidecar.exe
+            client_name: metroforge.exe
+            archive: zip
+          - os: macos-latest
+            # GitHub's macos-latest runners are Apple Silicon.
+            bun_target: bun-darwin-arm64
+            sidecar_name: metroforge-sidecar
+            client_name: metroforge
+            archive: zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout metroforge-native
+        uses: actions/checkout@v4
+        with:
+          path: metroforge-native
+
+      # Pinned to a known-good SHA (see ci.yml) rather than floating on a
+      # branch, so a release build can't be silently broken by an unrelated
+      # upstream metroforge change.
+      - name: Checkout metroforge (sidecar source)
+        uses: actions/checkout@v4
+        with:
+          repository: Egg3901/metroforge
+          ref: aeac1c620b736cf67067af50f7522741e69cb431
+          path: metroforge
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3
+
+      - name: bun install (sidecar deps)
+        working-directory: metroforge
+        run: bun install
+
+      - name: Compile sidecar (${{ matrix.bun_target }})
+        working-directory: metroforge
+        run: bun build --compile --target=${{ matrix.bun_target }} ./sidecar/index.ts --outfile ${{ matrix.sidecar_name }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: metroforge-native
+
+      - name: cargo build --release -p mf-game
+        working-directory: metroforge-native
+        run: cargo build --release -p mf-game
+
+      - name: Stage release contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/stage
+          cp "metroforge-native/target/release/${{ matrix.client_name }}" dist/stage/
+          cp "metroforge/${{ matrix.sidecar_name }}" dist/stage/
+          cp metroforge-native/crates/mf-game/assets/fonts/OFL.txt dist/stage/
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist/stage
+          if command -v zip >/dev/null 2>&1; then
+            zip -r "../metroforge-${{ matrix.os }}.zip" .
+          else
+            powershell -Command "Compress-Archive -Path * -DestinationPath ../metroforge-${{ matrix.os }}.zip"
+          fi
+
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -czf "dist/metroforge-${{ matrix.os }}.tar.gz" -C dist/stage .
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/metroforge-${{ matrix.os }}.zip
+            dist/metroforge-${{ matrix.os }}.tar.gz
+          fail_on_unmatched_files: false
