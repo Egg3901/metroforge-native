@@ -17,6 +17,7 @@ mod panels;
 mod quality_boot;
 mod report_ui;
 mod reveal_input;
+mod saves;
 mod state;
 mod tools;
 mod verify;
@@ -54,6 +55,7 @@ fn main() {
             input::MfInputPlugin,
             reveal_input::MfRevealInputPlugin,
             hud::MfHudPlugin,
+            saves::MfSavesPlugin,
             verify::MfVerifyPlugin,
             MfQualityBootPlugin,
             audio::MfAudioPlugin,
