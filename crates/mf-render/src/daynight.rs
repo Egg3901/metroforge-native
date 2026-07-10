@@ -131,7 +131,11 @@ fn apply_day_night_system(
     for (mut light, mut transform) in &mut suns {
         *transform = Transform::from_translation(sun_pos).looking_at(Vec3::ZERO, Vec3::Y);
         // Night floor is moonlight, not the old 8k-lux basement floodlight.
-        light.illuminance = 2_000.0 + elevation_angle.sin().max(0.0) * 55_000.0;
+        // Soft high key: at 55k the sun-facing half of the city still
+        // clipped to paper white (owner: left side washed out, streets
+        // invisible). 30k keeps lit faces just under clip so white-on-white
+        // geometry keeps separation and black roads stay legible.
+        light.illuminance = 2_000.0 + elevation_angle.sin().max(0.0) * 30_000.0;
         light.color = Color::srgb(1.0, 0.96, 0.88).mix(&Color::srgb(0.55, 0.65, 0.9), n);
         light.shadows_enabled = knobs.shadow_map_size.is_some();
     }
