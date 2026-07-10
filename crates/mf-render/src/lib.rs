@@ -13,6 +13,7 @@ mod buildings;
 mod daynight;
 mod mesh_utils;
 mod palette;
+mod reveal;
 mod roads;
 mod subway;
 mod terrain;
@@ -53,6 +54,7 @@ impl Plugin for MfRenderPlugin {
         )
         .insert_resource(DirectionalLightShadowMap { size: 2048 })
         .add_plugins((
+            reveal::MfRevealPlugin,
             terrain::MfTerrainPlugin,
             roads::MfRoadsPlugin,
             buildings::MfBuildingsPlugin,

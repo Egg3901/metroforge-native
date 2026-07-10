@@ -38,10 +38,11 @@
 use bevy::prelude::*;
 
 use mf_protocol::BuildingFootprint;
-use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier};
+use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, RevealState};
 
 use crate::mesh_utils::{append_cuboid, append_prism, hash01, polygon_area, MeshBuffers};
 use crate::palette;
+use crate::reveal::{BuildingMaterial, RevealExtension};
 
 const CHUNKS_PER_SIDE: usize = 8;
 
@@ -89,6 +90,7 @@ impl Plugin for MfBuildingsPlugin {
                     draw_distance_system.in_set(crate::MfRenderSet::Dynamic),
                     apply_quality_to_buildings_material_system.in_set(crate::MfRenderSet::Dynamic),
                     apply_night_dim_system.in_set(crate::MfRenderSet::Dynamic),
+                    apply_reveal_system.in_set(crate::MfRenderSet::Dynamic),
                 ),
             );
     }
@@ -110,13 +112,19 @@ struct BuildingsState {
     /// paused city).
     buildings_count: Option<usize>,
     chunks: Vec<Entity>,
-    material: Option<Handle<StandardMaterial>>,
+    material: Option<Handle<BuildingMaterial>>,
     /// Night-dim factor (quantized, see `quantize_night_factor`) already
-    /// baked into `material`'s `base_color`. Reset whenever `material` is
-    /// (re)created so a rebuild is guaranteed one fresh dim application even
-    /// if the ambient `night_factor` hasn't itself moved since the last
+    /// baked into `material.base`'s `base_color`. Reset whenever `material`
+    /// is (re)created so a rebuild is guaranteed one fresh dim application
+    /// even if the ambient `night_factor` hasn't itself moved since the last
     /// rebuild — the new material always starts back at flat white.
     applied_night_factor_bucket: Option<i32>,
+    /// Quantized `RevealState` last written into `material.extension` (see
+    /// `apply_reveal_system`). Reset whenever `material` is (re)created so a
+    /// fresh material picks up the current reveal state on the next tick
+    /// instead of relying on `RevealState` itself having moved since the
+    /// last rebuild.
+    applied_reveal_bucket: Option<(i32, i32, i32, i32, i32)>,
 }
 
 impl BuildingsState {
@@ -205,7 +213,7 @@ fn build_buildings_system(
     mut state: ResMut<BuildingsState>,
     mut dense_center: ResMut<BuildingsDenseCenter>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<BuildingMaterial>>,
 ) {
     let Some(city_json) = &city.static_city else {
         return;
@@ -587,12 +595,19 @@ fn build_buildings_system(
     // `unlit` flag, not to this material — this one's `unlit` already
     // updates reactively via `apply_quality_to_buildings_material_system`
     // below.)
-    let material = materials.add(StandardMaterial {
-        base_color,
-        unlit,
-        perceptual_roughness: 1.0,
-        reflectance: 0.0,
-        ..default()
+    let material = materials.add(BuildingMaterial {
+        base: StandardMaterial {
+            base_color,
+            unlit,
+            perceptual_roughness: 1.0,
+            reflectance: 0.0,
+            ..default()
+        },
+        // Fresh material always starts fully off (see `RevealExtension::
+        // default`'s doc); `apply_reveal_system` picks up the live
+        // `RevealState` on its next tick since `applied_reveal_bucket` is
+        // reset below.
+        extension: RevealExtension::default(),
     });
     state.material = Some(material.clone());
     state.applied_night_factor_bucket = if unlit {
@@ -600,6 +615,7 @@ fn build_buildings_system(
     } else {
         None
     };
+    state.applied_reveal_bucket = None;
 
     let non_empty_chunks = chunk_bufs.iter().filter(|b| !b.is_empty()).count();
     info!(
@@ -668,7 +684,7 @@ fn draw_distance_system(
 fn apply_quality_to_buildings_material_system(
     quality: Res<QualityTier>,
     state: Res<BuildingsState>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<BuildingMaterial>>,
 ) {
     if !quality.is_changed() {
         return;
@@ -677,7 +693,7 @@ fn apply_quality_to_buildings_material_system(
         return;
     };
     if let Some(mat) = materials.get_mut(handle) {
-        mat.unlit = quality.knobs().unlit_material;
+        mat.base.unlit = quality.knobs().unlit_material;
     }
 }
 
@@ -699,7 +715,7 @@ fn apply_night_dim_system(
     quality: Res<QualityTier>,
     day_night: Res<crate::daynight::DayNightState>,
     mut state: ResMut<BuildingsState>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<BuildingMaterial>>,
 ) {
     if !quality.knobs().unlit_material {
         return;
@@ -716,9 +732,62 @@ fn apply_night_dim_system(
         return;
     }
     if let Some(mat) = materials.get_mut(&handle) {
-        mat.base_color = Color::WHITE.mix(&palette::building_night(), day_night.night_factor);
+        mat.base.base_color = Color::WHITE.mix(&palette::building_night(), day_night.night_factor);
     }
     state.applied_night_factor_bucket = Some(bucket);
+}
+
+/// Quantization steps for `RevealState` so a merely-jittering cursor or
+/// eased-strength value doesn't dirty (and re-upload) the shared buildings
+/// material's uniform buffer every single frame — same no-churn discipline
+/// as `quantize_night_factor` above. ~0.5m spatially is well under a visible
+/// dither-cell width at any zoom this effect is active at; 1/64 on strength
+/// is finer than the ease curve's own visible steps.
+const REVEAL_POSITION_QUANTUM_M: f32 = 0.5;
+const REVEAL_STRENGTH_BUCKETS: f32 = 64.0;
+
+fn quantize_reveal_position(v: f32) -> i32 {
+    (v / REVEAL_POSITION_QUANTUM_M).round() as i32
+}
+
+fn quantize_reveal_strength(v: f32) -> i32 {
+    (v * REVEAL_STRENGTH_BUCKETS).round() as i32
+}
+
+/// Copies `mf_state::RevealState` into the shared buildings material's
+/// `RevealExtension` uniform (issue #18) — this is the system that lets
+/// `mf-game`'s `reveal_input.rs` (which owns *where* the hole is) actually
+/// reach the shader (which owns *drawing* the hole). Runs unconditionally
+/// (no quality-tier gate): the reveal effect is meant to work identically on
+/// every tier, "potato" included.
+fn apply_reveal_system(
+    reveal_state: Res<RevealState>,
+    mut state: ResMut<BuildingsState>,
+    mut materials: ResMut<Assets<BuildingMaterial>>,
+) {
+    let Some(handle) = state.material.clone() else {
+        return;
+    };
+    let bucket = (
+        quantize_reveal_position(reveal_state.center.x),
+        quantize_reveal_position(reveal_state.center.y),
+        quantize_reveal_position(reveal_state.inner),
+        quantize_reveal_position(reveal_state.outer),
+        quantize_reveal_strength(reveal_state.strength),
+    );
+    if state.applied_reveal_bucket == Some(bucket) {
+        return;
+    }
+    if let Some(mat) = materials.get_mut(&handle) {
+        mat.extension.reveal = Vec4::new(
+            reveal_state.center.x,
+            reveal_state.center.y,
+            reveal_state.inner,
+            reveal_state.outer,
+        );
+        mat.extension.params = Vec4::new(reveal_state.strength, 0.0, 0.0, 0.0);
+    }
+    state.applied_reveal_bucket = Some(bucket);
 }
 
 #[cfg(test)]

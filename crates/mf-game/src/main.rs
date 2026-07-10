@@ -8,6 +8,7 @@ mod config;
 mod hud;
 mod input;
 mod quality_boot;
+mod reveal_input;
 mod state;
 mod verify;
 
@@ -42,6 +43,7 @@ fn main() {
             state::MfGameStatePlugin,
             camera::MfCameraPlugin,
             input::MfInputPlugin,
+            reveal_input::MfRevealInputPlugin,
             hud::MfHudPlugin,
             verify::MfVerifyPlugin,
             MfQualityBootPlugin,
