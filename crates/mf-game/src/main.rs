@@ -11,6 +11,7 @@ mod input;
 mod quality_boot;
 mod reveal_input;
 mod state;
+mod tools;
 mod verify;
 
 use bevy::prelude::*;
