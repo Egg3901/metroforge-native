@@ -18,6 +18,7 @@ mod roads;
 mod subway;
 mod terrain;
 mod transit;
+mod trees;
 mod vehicles;
 
 use bevy::pbr::DirectionalLightShadowMap;
@@ -59,6 +60,7 @@ impl Plugin for MfRenderPlugin {
             roads::MfRoadsPlugin,
             buildings::MfBuildingsPlugin,
             transit::MfTransitPlugin,
+            trees::MfTreesPlugin,
             vehicles::MfVehiclesPlugin,
             agents::MfAgentsPlugin,
             daynight::MfDayNightPlugin,

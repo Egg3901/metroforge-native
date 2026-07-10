@@ -587,6 +587,28 @@ pub fn point_along(pts: &[Vec2], cum: &[f32], d: f32) -> (Vec2, Vec2) {
 /// are simplified to long straight segments, and any relief between two
 /// original vertices otherwise swallows the ribbon whole (the root cause of
 /// streets reading faint and dashed since v0.1).
+/// Chaikin corner cutting, endpoint-preserving: transit ribbons follow
+/// track polylines whose hard corners read as janky staircases (owner);
+/// two passes turn every corner into a flowing curve while streets keep
+/// their true grid-crisp geometry by simply not calling this.
+pub fn smooth_polyline(pts: &[Vec2], iterations: usize) -> Vec<Vec2> {
+    if pts.len() < 3 {
+        return pts.to_vec();
+    }
+    let mut cur = pts.to_vec();
+    for _ in 0..iterations {
+        let mut out = Vec::with_capacity(cur.len() * 2);
+        out.push(cur[0]);
+        for w in cur.windows(2) {
+            out.push(w[0].lerp(w[1], 0.25));
+            out.push(w[0].lerp(w[1], 0.75));
+        }
+        out.push(cur[cur.len() - 1]);
+        cur = out;
+    }
+    cur
+}
+
 pub fn densify_polyline(pts: &[Vec2], step: f32) -> Vec<Vec2> {
     if pts.len() < 2 || step <= 0.0 {
         return pts.to_vec();

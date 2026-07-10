@@ -49,14 +49,14 @@ pub fn road_edge() -> Color {
     hex(0x2a, 0x2c, 0x32)
 }
 
-/// #8fc3de — clean light blue, flat.
+/// #74b6e2 — light blue, saturated enough to survive the high key.
 pub fn water() -> Color {
-    hex(0x8f, 0xc3, 0xde)
+    hex(0x74, 0xb6, 0xe2)
 }
 
-/// #9fd6a0 — clean mint-green, flat.
+/// #8cce8e — painted park green (owner: parks stay green, with trees).
 pub fn park() -> Color {
-    hex(0x9f, 0xd6, 0xa0)
+    hex(0x8c, 0xce, 0x8e)
 }
 
 pub fn sky_day() -> Color {
