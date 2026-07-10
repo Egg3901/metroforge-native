@@ -23,8 +23,8 @@ const SKY_DAY: Color = Color::srgb(
 );
 
 fn main() {
-    App::new()
-        .insert_resource(ClearColor(SKY_DAY))
+    let mut app = App::new();
+    app.insert_resource(ClearColor(SKY_DAY))
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "MetroForge".to_string(),
@@ -41,6 +41,15 @@ fn main() {
             input::MfInputPlugin,
             hud::MfHudPlugin,
             verify::MfVerifyPlugin,
-        ))
-        .run();
+        ));
+    // MF_PERF_LOG=1: log frame-time diagnostics (avg/FPS) once per second.
+    // Costs nothing when unset; gives players and CI a zero-setup way to
+    // capture before/after numbers for performance work.
+    if std::env::var_os("MF_PERF_LOG").is_some() {
+        app.add_plugins((
+            bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
+            bevy::diagnostic::LogDiagnosticsPlugin::default(),
+        ));
+    }
+    app.run();
 }
