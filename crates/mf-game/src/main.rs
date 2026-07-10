@@ -2,6 +2,7 @@
 // Windows: GUI subsystem in release so no console window opens behind the game.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audio;
 mod camera;
 mod config;
 mod hud;
@@ -44,6 +45,7 @@ fn main() {
             hud::MfHudPlugin,
             verify::MfVerifyPlugin,
             MfQualityBootPlugin,
+            audio::MfAudioPlugin,
         ));
     // MF_PERF_LOG=1: log frame-time diagnostics (avg/FPS) once per second.
     // Costs nothing when unset; gives players and CI a zero-setup way to

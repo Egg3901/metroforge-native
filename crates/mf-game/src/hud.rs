@@ -2,6 +2,7 @@
 //! panels, near-black text, vivid accents reserved for interactive/transit
 //! elements, no gradients or rounded-corner excess, one embedded OFL font.
 
+use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 use mf_net::{NetStatus, ReconnectState, SimEvent, SimLink};
@@ -9,8 +10,9 @@ use mf_protocol::envelope::FromSimJson;
 use mf_protocol::{Difficulty, FromSimMsg, ToSim, ToastTone};
 use mf_state::{LatestUi, QualityTier, SubwayView};
 
+use crate::audio::{PlaySfx, Sfx};
 use crate::config::MfConfig;
-use crate::state::{AppState, PendingInit, SimHello};
+use crate::state::{toggle_pause, AppState, PauseState, PendingInit, SimHello};
 
 // Art-direction §1/§8 palette, in egui's 0..255 sRGB `Color32`.
 const PANEL_BG: egui::Color32 = egui::Color32::from_rgb(0xf4, 0xf5, 0xf2); // near-white
@@ -21,6 +23,10 @@ const WARN: egui::Color32 = egui::Color32::from_rgb(0xff, 0x95, 0x00);
 const BAD: egui::Color32 = egui::Color32::from_rgb(0xff, 0x3b, 0x30);
 
 const INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+// Muted secondary text (subtitle/labels/version) — art-direction reserves
+// full rich-black for primary copy; this is the same de-emphasis egui's own
+// `weak` text uses, picked to sit comfortably on the off-white panel.
+const MUTED_TEXT: egui::Color32 = egui::Color32::from_rgb(0x6b, 0x6d, 0x72);
 
 /// Rolling toast log (art-direction: HUD "toast log"). Capped so it can't
 /// grow unbounded over a long session.
@@ -45,6 +51,7 @@ impl Plugin for MfHudPlugin {
                     main_menu_hud_system.run_if(in_state(AppState::MainMenu)),
                     loading_hud_system.run_if(in_state(AppState::Loading)),
                     in_game_hud_system.run_if(in_state(AppState::InGame)),
+                    pause_overlay_system.run_if(in_state(AppState::InGame)),
                     fatal_banner_system,
                 )
                     .chain(),
@@ -130,25 +137,93 @@ fn thin_separator(ui: &mut egui::Ui) {
     ui.add(egui::Separator::default().shrink(6.0));
 }
 
-fn quality_selector(ui: &mut egui::Ui, quality: &mut QualityTier, config: &mut MfConfig) {
+/// One hover tick the first frame the pointer lands on a widget; re-arms
+/// when it leaves, so re-entering the same widget ticks again. `last` is
+/// per-system `Local` state, so two systems can't fight over it.
+fn hover_tick(resp: &egui::Response, last: &mut Option<egui::Id>, sfx: &mut EventWriter<PlaySfx>) {
+    if resp.hovered() {
+        if *last != Some(resp.id) {
+            sfx.write(PlaySfx(Sfx::Hover));
+            *last = Some(resp.id);
+        }
+    } else if *last == Some(resp.id) {
+        *last = None;
+    }
+}
+
+/// Comma-grouped integer (e.g. `146015` -> `"146,015"`). Plain
+/// `{:.0}`-formatted cash/population numbers change width every tick they
+/// cross a digit boundary, which visibly shifts every group to their right
+/// in the top bar; grouping doesn't fix that alone (see
+/// `fixed_width_label`) but keeps the number itself readable at a glance.
+fn format_thousands(value: f64) -> String {
+    let rounded = value.round().max(0.0) as u64;
+    let digits = rounded.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    grouped
+}
+
+fn format_cash(value: f64) -> String {
+    format!("${}", format_thousands(value))
+}
+
+/// Reserves a fixed-width, left-aligned cell for `text` so a value growing
+/// or shrinking a digit (cash crossing $1,000,000, population crossing
+/// 100,000, etc.) can't nudge every group to its right — the top bar's
+/// layout stays stable frame to frame. `width` should be sized for the
+/// widest string the field will plausibly show.
+fn fixed_width_label(ui: &mut egui::Ui, text: egui::RichText, width: f32) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.label(text);
+        },
+    );
+}
+
+/// The tier rows shared by every quality combo box (top bar, pause overlay,
+/// main menu) — split out from [`quality_selector`] so the main menu can
+/// pair it with its own stacked-above label instead of `from_label`'s
+/// beside-the-box one, without a second copy of the tier list/persist call.
+fn quality_options(
+    ui: &mut egui::Ui,
+    quality: &mut QualityTier,
+    config: &mut MfConfig,
+    sfx: &mut EventWriter<PlaySfx>,
+) {
+    for tier in [
+        QualityTier::Potato,
+        QualityTier::Low,
+        QualityTier::Medium,
+        QualityTier::High,
+    ] {
+        if ui
+            .selectable_label(*quality == tier, format!("{tier:?}"))
+            .clicked()
+        {
+            *quality = tier;
+            config.set_quality_override(Some(tier));
+            sfx.write(PlaySfx(Sfx::Confirm));
+        }
+    }
+}
+
+fn quality_selector(
+    ui: &mut egui::Ui,
+    quality: &mut QualityTier,
+    config: &mut MfConfig,
+    sfx: &mut EventWriter<PlaySfx>,
+) {
     egui::ComboBox::from_label("Quality")
         .selected_text(format!("{quality:?}"))
-        .show_ui(ui, |ui| {
-            for tier in [
-                QualityTier::Potato,
-                QualityTier::Low,
-                QualityTier::Medium,
-                QualityTier::High,
-            ] {
-                if ui
-                    .selectable_label(*quality == tier, format!("{tier:?}"))
-                    .clicked()
-                {
-                    *quality = tier;
-                    config.set_quality_override(Some(tier));
-                }
-            }
-        });
+        .show_ui(ui, |ui| quality_options(ui, quality, config, sfx));
 }
 
 /// ConnectingSim previously registered NO ui system at all, so a player whose
@@ -177,6 +252,15 @@ fn connecting_hud_system(mut contexts: EguiContexts, reconnect: Res<ReconnectSta
     Ok(())
 }
 
+/// Label for a field row: small and muted, stacked above its control
+/// (chosen over right-aligned labels — with three rows of differing
+/// natural label width, stacked keeps every control's left edge aligned
+/// without hand-tuning a label column width).
+fn field_label(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).size(12.0).color(MUTED_TEXT));
+}
+
+#[allow(clippy::too_many_arguments)]
 fn main_menu_hud_system(
     mut contexts: EguiContexts,
     hello: Res<SimHello>,
@@ -184,64 +268,133 @@ fn main_menu_hud_system(
     mut quality: ResMut<QualityTier>,
     mut config: ResMut<MfConfig>,
     mut next_state: ResMut<NextState<AppState>>,
+    mut sfx: EventWriter<PlaySfx>,
+    mut hovered: Local<Option<egui::Id>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
+    // Fade in over ~200ms on entry. `set_opacity` (rather than fighting
+    // egui for a per-widget alpha) multiplies the whole panel's painted
+    // output, text included, so both the dim scrim of a prior state and
+    // this menu's own controls ease in together.
+    let fade = ctx.animate_value_with_time(egui::Id::new("main_menu_fade"), 1.0, 0.2);
+
+    egui::TopBottomPanel::bottom("main_menu_version")
+        .frame(
+            egui::Frame::default()
+                .fill(PANEL_BG)
+                .inner_margin(egui::Margin::symmetric(12, 10)),
+        )
+        .show_separator_line(false)
+        .show(ctx, |ui| {
+            ui.set_opacity(fade);
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        .size(11.0)
+                        .color(MUTED_TEXT),
+                );
+            });
+        });
+
     egui::CentralPanel::default().show(ctx, |ui| {
-        ui.heading("MetroForge");
-        ui.add_space(12.0);
+        ui.set_opacity(fade);
+        ui.vertical_centered(|ui| {
+            // Roughly centers the card vertically for typical window
+            // heights without measuring the card first.
+            ui.add_space((ui.available_height() * 0.22).max(24.0));
 
-        ui.label("City");
-        let cities = hello
-            .0
-            .as_ref()
-            .map(|h| h.city_list.as_slice())
-            .unwrap_or(&[]);
-        egui::ComboBox::from_id_salt("city_picker")
-            .selected_text(if pending.preset_key.is_empty() {
-                "nyc".to_string()
-            } else {
-                pending.preset_key.clone()
-            })
-            .show_ui(ui, |ui| {
-                if cities.is_empty() {
-                    ui.selectable_value(
-                        &mut pending.preset_key,
-                        "nyc".to_string(),
-                        "New York City (default)",
+            ui.scope(|ui| {
+                ui.set_width(360.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("MetroForge").size(34.0).strong());
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Build the network. Move the city.")
+                            .size(14.0)
+                            .color(MUTED_TEXT),
                     );
-                }
-                for entry in cities {
-                    ui.selectable_value(
-                        &mut pending.preset_key,
-                        entry.key.clone(),
-                        entry.label.clone(),
+                    ui.add_space(24.0);
+
+                    let cities = hello
+                        .0
+                        .as_ref()
+                        .map(|h| h.city_list.as_slice())
+                        .unwrap_or(&[]);
+                    // Show the human label the player picked, not the raw
+                    // preset key ("nyc") — the key is a wire-protocol
+                    // identifier, not player-facing copy.
+                    let selected_label = cities
+                        .iter()
+                        .find(|c| c.key == pending.preset_key)
+                        .map(|c| c.label.clone())
+                        .unwrap_or_else(|| {
+                            if pending.preset_key.is_empty() || pending.preset_key == "nyc" {
+                                "New York City".to_string()
+                            } else {
+                                pending.preset_key.clone()
+                            }
+                        });
+
+                    field_label(ui, "City");
+                    egui::ComboBox::from_id_salt("city_picker")
+                        .selected_text(selected_label)
+                        .width(300.0)
+                        .show_ui(ui, |ui| {
+                            if cities.is_empty() {
+                                ui.selectable_value(
+                                    &mut pending.preset_key,
+                                    "nyc".to_string(),
+                                    "New York City (default)",
+                                );
+                            }
+                            for entry in cities {
+                                ui.selectable_value(
+                                    &mut pending.preset_key,
+                                    entry.key.clone(),
+                                    entry.label.clone(),
+                                );
+                            }
+                        });
+
+                    ui.add_space(12.0);
+                    field_label(ui, "Difficulty");
+                    egui::ComboBox::from_id_salt("difficulty_picker")
+                        .selected_text(format!("{:?}", pending.difficulty))
+                        .width(300.0)
+                        .show_ui(ui, |ui| {
+                            for d in [Difficulty::Easy, Difficulty::Normal, Difficulty::Hard] {
+                                ui.selectable_value(&mut pending.difficulty, d, format!("{d:?}"));
+                            }
+                        });
+
+                    ui.add_space(12.0);
+                    field_label(ui, "Quality");
+                    egui::ComboBox::from_id_salt("quality_picker")
+                        .selected_text(format!("{:?}", *quality))
+                        .width(300.0)
+                        .show_ui(ui, |ui| {
+                            quality_options(ui, &mut quality, &mut config, &mut sfx)
+                        });
+
+                    ui.add_space(28.0);
+                    let start = ui.add_sized(
+                        [220.0, 44.0],
+                        egui::Button::new(
+                            egui::RichText::new("Start")
+                                .color(egui::Color32::WHITE)
+                                .size(16.0)
+                                .strong(),
+                        )
+                        .fill(ACCENT),
                     );
-                }
+                    hover_tick(&start, &mut hovered, &mut sfx);
+                    if start.clicked() {
+                        sfx.write(PlaySfx(Sfx::Confirm));
+                        next_state.set(AppState::Loading);
+                    }
+                });
             });
-
-        ui.add_space(8.0);
-        ui.label("Difficulty");
-        egui::ComboBox::from_id_salt("difficulty_picker")
-            .selected_text(format!("{:?}", pending.difficulty))
-            .show_ui(ui, |ui| {
-                for d in [Difficulty::Easy, Difficulty::Normal, Difficulty::Hard] {
-                    ui.selectable_value(&mut pending.difficulty, d, format!("{d:?}"));
-                }
-            });
-
-        ui.add_space(8.0);
-        quality_selector(ui, &mut quality, &mut config);
-
-        ui.add_space(16.0);
-        if ui
-            .add(
-                egui::Button::new(egui::RichText::new("Start").color(egui::Color32::WHITE))
-                    .fill(ACCENT),
-            )
-            .clicked()
-        {
-            next_state.set(AppState::Loading);
-        }
+        });
     });
     Ok(())
 }
@@ -254,43 +407,27 @@ fn loading_hud_system(
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     egui::CentralPanel::default().show(ctx, |ui| {
-        ui.heading("Loading city...");
-        ui.label(format!(
-            "static city: {}",
-            if city.static_city.is_some() {
-                "ready"
-            } else {
-                "waiting"
-            }
-        ));
-        ui.label(format!(
-            "masks: {}",
-            if city.masks_complete() {
-                "ready"
-            } else {
-                "waiting"
-            }
-        ));
-        ui.label(format!(
-            "fields: {}",
-            if fields.0.is_some() {
-                "ready"
-            } else {
-                "waiting"
-            }
-        ));
-        ui.label(format!(
-            "ui: {}",
-            if ui_state.0.is_some() {
-                "ready"
-            } else {
-                "waiting"
-            }
-        ));
+        ui.vertical_centered(|ui| {
+            ui.add_space((ui.available_height() * 0.3).max(24.0));
+            ui.label(egui::RichText::new("Loading city").size(28.0).strong());
+            ui.add_space(16.0);
+
+            let readiness = |label: &str, ready: bool| {
+                let status = if ready { "ready" } else { "waiting" };
+                egui::RichText::new(format!("{label}: {status}"))
+                    .size(13.0)
+                    .color(MUTED_TEXT)
+            };
+            ui.label(readiness("Static city", city.static_city.is_some()));
+            ui.label(readiness("Masks", city.masks_complete()));
+            ui.label(readiness("Fields", fields.0.is_some()));
+            ui.label(readiness("Interface", ui_state.0.is_some()));
+        });
     });
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn in_game_hud_system(
     mut contexts: EguiContexts,
     ui_state: Res<LatestUi>,
@@ -299,6 +436,8 @@ fn in_game_hud_system(
     mut config: ResMut<MfConfig>,
     mut subway: ResMut<SubwayView>,
     toasts: Res<ToastLog>,
+    mut sfx: EventWriter<PlaySfx>,
+    mut hovered: Local<Option<egui::Id>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
 
@@ -316,21 +455,35 @@ fn in_game_hud_system(
             ui.spacing_mut().item_spacing = egui::vec2(16.0, 0.0);
             ui.horizontal_centered(|ui| {
                 if let Some(state) = &ui_state.0 {
-                    ui.label(
-                        egui::RichText::new(format!("${:.0}", state.cash))
+                    // Monospace + a fixed-width cell per group: cash/pop/day
+                    // digits change width every tick they cross a boundary
+                    // (e.g. $999,999 -> $1,000,000), and with a proportional
+                    // font in an auto-sized label that visibly shoves every
+                    // group to its right. Widths below are sized for the
+                    // widest value each field would plausibly show.
+                    fixed_width_label(
+                        ui,
+                        egui::RichText::new(format_cash(state.cash))
+                            .monospace()
                             .strong()
                             .size(15.0),
+                        130.0,
                     );
                     thin_separator(ui);
 
                     const TICKS_PER_DAY: u64 = 1200;
                     let hour = (state.tick % TICKS_PER_DAY) as f64 / TICKS_PER_DAY as f64 * 24.0;
-                    ui.label(format!(
-                        "Day {}  {:02}:{:02}",
-                        state.day,
-                        hour as u32,
-                        ((hour.fract()) * 60.0) as u32
-                    ));
+                    fixed_width_label(
+                        ui,
+                        egui::RichText::new(format!(
+                            "Day {}  {:02}:{:02}",
+                            state.day,
+                            hour as u32,
+                            ((hour.fract()) * 60.0) as u32
+                        ))
+                        .monospace(),
+                        140.0,
+                    );
                     thin_separator(ui);
 
                     let approval_color = if state.approval >= 60.0 {
@@ -340,9 +493,20 @@ fn in_game_hud_system(
                     } else {
                         BAD
                     };
-                    ui.colored_label(approval_color, format!("Approval {:.0}%", state.approval));
+                    fixed_width_label(
+                        ui,
+                        egui::RichText::new(format!("Approval {:.0}%", state.approval))
+                            .monospace()
+                            .color(approval_color),
+                        120.0,
+                    );
                     thin_separator(ui);
-                    ui.label(format!("Pop {:.0}", state.population));
+                    fixed_width_label(
+                        ui,
+                        egui::RichText::new(format!("Pop {}", format_thousands(state.population)))
+                            .monospace(),
+                        130.0,
+                    );
                 } else {
                     ui.label("Connecting to city...");
                 }
@@ -359,8 +523,11 @@ fn in_game_hud_system(
                     } else {
                         egui::Color32::from_rgb(0xe9, 0xea, 0xe5)
                     });
-                    if ui.add(button).clicked() {
+                    let resp = ui.add(button);
+                    hover_tick(&resp, &mut hovered, &mut sfx);
+                    if resp.clicked() {
                         if let Some(link) = &link {
+                            sfx.write(PlaySfx(Sfx::SpeedTick));
                             let _ = link
                                 .transport
                                 .send(ToSim::SetSpeed(mf_protocol::SetSpeedPayload { speed }));
@@ -379,12 +546,19 @@ fn in_game_hud_system(
                 } else {
                     egui::Color32::from_rgb(0xe9, 0xea, 0xe5)
                 });
-                if ui.add(subway_button).clicked() {
+                let subway_resp = ui.add(subway_button);
+                hover_tick(&subway_resp, &mut hovered, &mut sfx);
+                if subway_resp.clicked() {
                     subway.toggle();
+                    sfx.write(PlaySfx(if subway.active {
+                        Sfx::Confirm
+                    } else {
+                        Sfx::Cancel
+                    }));
                 }
 
                 thin_separator(ui);
-                quality_selector(ui, &mut quality, &mut config);
+                quality_selector(ui, &mut quality, &mut config, &mut sfx);
             });
         });
 
@@ -413,13 +587,117 @@ fn in_game_hud_system(
     Ok(())
 }
 
+/// Pause overlay (`state::PauseState`, toggled by Esc in `input.rs`). Drawn
+/// as its own pass after `in_game_hud_system` so it dims and sits on top of
+/// the world *and* the top/bottom HUD bars, rather than only the space
+/// between them. Uses `egui::Area`s at `Order::Foreground` rather than a
+/// `CentralPanel`: panels paint at `Order::Background`, which the HUD bars
+/// also occupy and would poke through the dim; a full-screen foreground
+/// area also guarantees `wants_pointer_input()` is true everywhere on
+/// screen (`egui::Context::is_pointer_over_area` matches on the topmost
+/// layer at the cursor), so `camera.rs`'s existing egui-capture check keeps
+/// world drag/zoom from leaking through while paused, with no change to
+/// that file.
+#[allow(clippy::too_many_arguments)]
+fn pause_overlay_system(
+    mut contexts: EguiContexts,
+    mut pause: ResMut<PauseState>,
+    ui_state: Res<LatestUi>,
+    link: Option<Res<SimLink>>,
+    mut quality: ResMut<QualityTier>,
+    mut config: ResMut<MfConfig>,
+    mut exit: EventWriter<AppExit>,
+    mut sfx: EventWriter<PlaySfx>,
+    mut hovered: Local<Option<egui::Id>>,
+) -> Result {
+    if !pause.active {
+        return Ok(());
+    }
+    let ctx = contexts.ctx_mut()?;
+
+    egui::Area::new(egui::Id::new("pause_scrim"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::Pos2::ZERO)
+        .show(ctx, |ui| {
+            let screen = ui.ctx().screen_rect();
+            ui.allocate_response(screen.size(), egui::Sense::hover());
+            ui.painter().rect_filled(
+                screen,
+                egui::CornerRadius::ZERO,
+                egui::Color32::from_rgba_unmultiplied(0x17, 0x18, 0x1c, 140),
+            );
+        });
+
+    egui::Area::new(egui::Id::new("pause_panel"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            egui::Frame::default()
+                .fill(PANEL_BG)
+                .corner_radius(egui::CornerRadius::same(2))
+                .inner_margin(egui::Margin::symmetric(28, 24))
+                .show(ui, |ui| {
+                    ui.set_width(260.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(egui::RichText::new("Paused").size(24.0).strong());
+                        ui.add_space(18.0);
+
+                        let resume = ui.add_sized(
+                            [220.0, 40.0],
+                            egui::Button::new(
+                                egui::RichText::new("Resume")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(ACCENT),
+                        );
+                        hover_tick(&resume, &mut hovered, &mut sfx);
+                        if resume.clicked() && toggle_pause(&mut pause, &ui_state, link.as_deref())
+                        {
+                            sfx.write(PlaySfx(Sfx::Unpause));
+                        }
+
+                        ui.add_space(14.0);
+                        field_label(ui, "Quality");
+                        egui::ComboBox::from_id_salt("pause_quality")
+                            .selected_text(format!("{:?}", *quality))
+                            .width(220.0)
+                            .show_ui(ui, |ui| {
+                                quality_options(ui, &mut quality, &mut config, &mut sfx)
+                            });
+
+                        ui.add_space(14.0);
+                        let quit =
+                            ui.add_sized([220.0, 40.0], egui::Button::new("Quit to desktop"));
+                        hover_tick(&quit, &mut hovered, &mut sfx);
+                        if quit.clicked() {
+                            sfx.write(PlaySfx(Sfx::Cancel));
+                            exit.write(AppExit::Success);
+                        }
+                    });
+                });
+        });
+
+    Ok(())
+}
+
 /// Surfaces `mf-net`'s fatal reconnect failure as a banner rather than a
 /// silent black screen (spec §3.2 reconnect: "5 attempts -> fatal error
 /// screen"; `state.rs`'s watchdog already dropped us back to `MainMenu`).
-fn fatal_banner_system(mut contexts: EguiContexts, reconnect: Res<ReconnectState>) -> Result {
+fn fatal_banner_system(
+    mut contexts: EguiContexts,
+    reconnect: Res<ReconnectState>,
+    mut sfx: EventWriter<PlaySfx>,
+    mut error_played: Local<bool>,
+) -> Result {
     let NetStatus::Fatal(msg) = &reconnect.status else {
+        *error_played = false;
         return Ok(());
     };
+    if !*error_played {
+        sfx.write(PlaySfx(Sfx::Error));
+        *error_played = true;
+    }
     let ctx = contexts.ctx_mut()?;
     egui::TopBottomPanel::bottom("fatal_banner").show(ctx, |ui| {
         ui.colored_label(BAD, format!("Lost connection to the sim: {msg}"));

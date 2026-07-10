@@ -83,6 +83,7 @@ enum Stage {
     Street,
     Subway,
     Potato,
+    Pause,
     Done,
 }
 
@@ -128,6 +129,7 @@ fn verify_sequence_system(
     link: Option<Res<SimLink>>,
     ui: Res<LatestUi>,
     dense_center: Res<BuildingsDenseCenter>,
+    mut pause: ResMut<crate::state::PauseState>,
 ) {
     let Some(dir) = std::env::var_os("MF_VERIFY_DIR").map(|s| s.to_string_lossy().into_owned())
     else {
@@ -204,6 +206,18 @@ fn verify_sequence_system(
             }
             if elapsed_in_stage == SETTLE_FRAMES {
                 take_screenshot(&mut commands, format!("{dir}/potato.png"));
+                advance_to = Some(Stage::Pause);
+            }
+        }
+        Stage::Pause => {
+            // Direct flag write (not `toggle_pause`): the overlay render path
+            // is what's under test, and the sim was already frozen at speed 0
+            // back in WaitForDayAndCity, so no SetSpeed round-trip is needed.
+            if elapsed_in_stage == 5 {
+                pause.active = true;
+            }
+            if elapsed_in_stage == SETTLE_FRAMES {
+                take_screenshot(&mut commands, format!("{dir}/pause.png"));
                 advance_to = Some(Stage::Done);
             }
         }
