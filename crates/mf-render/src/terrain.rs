@@ -5,6 +5,7 @@
 //! (roads/buildings/transit/vehicles/agents/camera) can position things on
 //! the ground.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy::prelude::*;
@@ -13,6 +14,7 @@ use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier};
 
 use crate::mesh_utils::MeshBuffers;
 use crate::palette;
+use crate::roads::{ARTERIAL_WIDTH, COLLECTOR_WIDTH, LOCAL_WIDTH};
 
 /// Max relief per spec §3.3 ("max relief 200-400 m") — picked the midpoint.
 // Was 300 (spec: max relief 200-400m): that much artificial relief buried
@@ -149,6 +151,27 @@ fn build_terrain_system(
     let origin_x = city_json.origin_x as f32;
     let origin_y = city_json.origin_y as f32;
 
+    // Grade (flatten) the raw heightfield in a corridor under each road so
+    // `roads.rs`'s ribbons — which sample this same field via `HeightAt` —
+    // agree with the ground mesh instead of visually slicing a stripe
+    // across a downhill building's lower wall on slopes (issue #33).
+    // `f.terrain` is otherwise used verbatim below for both the visible
+    // mesh vertices and the `HeightAt` sampler, so grading it once here
+    // (before either consumer reads it) keeps roads/terrain/buildings (via
+    // `HeightAt.sample`, which buildings' footprint-min and stations both
+    // go through) all reading the same graded ground with no separate
+    // plumbing needed.
+    let graded_terrain = grade_terrain(
+        &f.terrain,
+        field_w,
+        field_h,
+        cell_size,
+        origin_x,
+        origin_y,
+        &city_json.roads,
+        city_json.road_scale as f32,
+    );
+
     // Stepped grid indices for this tier's subdivision divisor, always
     // including the far edge so the mesh reaches the city's full extent.
     let stepped = |n: u32, step: u32| -> Vec<u32> {
@@ -175,7 +198,7 @@ fn build_terrain_system(
         let y = if is_water {
             WATER_LEVEL_Y
         } else {
-            f.terrain.get(idx).copied().unwrap_or(0.0) * TERRAIN_Z_SCALE
+            graded_terrain.get(idx).copied().unwrap_or(0.0) * TERRAIN_Z_SCALE
         };
         let color = if is_water {
             water
@@ -250,10 +273,229 @@ fn build_terrain_system(
         cell_size,
         origin_x,
         origin_y,
-        terrain: Arc::new(f.terrain.clone()),
+        terrain: Arc::new(graded_terrain),
         water: Arc::new(f.water.clone()),
     });
     height_at.0 = Box::new(move |x, z| data.sample(x, z));
+}
+
+/// One road-corridor segment used by [`grade_terrain`]: a straight span
+/// between two consecutive road-polyline points, carrying the RAW (pre-grade,
+/// pre-`TERRAIN_Z_SCALE`) terrain height sampled at each endpoint so the
+/// corridor's target elevation interpolates smoothly along the road instead
+/// of pinning to one endpoint.
+struct GradeSeg {
+    a: Vec2,
+    b: Vec2,
+    height_a: f32,
+    height_b: f32,
+    /// Half the ribbon width (`roads.rs`'s per-class width, already
+    /// `road_scale`-multiplied) — vertices inside this are graded flush to
+    /// the road profile height.
+    half_width: f32,
+    /// Extra falloff distance past `half_width` over which the blend
+    /// smoothsteps back to the raw terrain (the "shoulder").
+    shoulder: f32,
+}
+
+/// Bilinear-sample a raw (un-graded, un-scaled) heightfield at a world `(x,
+/// z)` position. Standalone from `TerrainSampleData::bilinear_f32` because
+/// this runs BEFORE that sampler exists this frame (grading is a
+/// precondition of building it) and only ever needs the terrain channel.
+#[allow(clippy::too_many_arguments)]
+fn sample_raw_bilinear(
+    raw: &[f32],
+    field_w: u32,
+    field_h: u32,
+    cell_size: f32,
+    origin_x: f32,
+    origin_y: f32,
+    x: f32,
+    z: f32,
+) -> f32 {
+    if field_w < 2 || field_h < 2 {
+        return 0.0;
+    }
+    let gx = ((x - origin_x) / cell_size).clamp(0.0, (field_w - 1) as f32);
+    let gy = ((z - origin_y) / cell_size).clamp(0.0, (field_h - 1) as f32);
+    let x0 = gx.floor() as u32;
+    let y0 = gy.floor() as u32;
+    let x1 = (x0 + 1).min(field_w - 1);
+    let y1 = (y0 + 1).min(field_h - 1);
+    let tx = gx - x0 as f32;
+    let ty = gy - y0 as f32;
+    let at = |xi: u32, yi: u32| raw[(yi * field_w + xi) as usize];
+    let v00 = at(x0, y0);
+    let v10 = at(x1, y0);
+    let v01 = at(x0, y1);
+    let v11 = at(x1, y1);
+    (v00 * (1.0 - tx) + v10 * tx) * (1.0 - ty) + (v01 * (1.0 - tx) + v11 * tx) * ty
+}
+
+/// Classic Hermite smoothstep, clamped: 0 at/before `edge0`, 1 at/after
+/// `edge1`, smooth (zero-derivative-at-both-ends) in between.
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    if edge1 <= edge0 {
+        return if x < edge0 { 0.0 } else { 1.0 };
+    }
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Closest point on segment `a..b` to `p`: returns `(distance, t)` where `t
+/// in [0,1]` is the interpolation parameter of the closest point (used to
+/// blend the segment's two endpoint heights).
+fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> (f32, f32) {
+    let ab = b - a;
+    let len_sq = ab.length_squared();
+    let t = if len_sq > 1e-6 {
+        ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let closest = a + ab * t;
+    ((p - closest).length(), t)
+}
+
+/// Grade (flatten) `raw` in a corridor under every road segment so the
+/// ground mesh and `HeightAt` (which roads/buildings/stations all sample)
+/// agree with the road ribbons instead of the terrain slicing through them
+/// on slopes (issue #33). Each vertex within `half_width` of the nearest
+/// road segment is pulled flush to that segment's interpolated profile
+/// height; vertices out to `half_width + shoulder` blend back to the raw
+/// terrain via [`smoothstep`]; further away is untouched.
+///
+/// Only grades the road network baked into `static_city` at load time —
+/// this crate rebuilds the ground mesh keyed on `LatestFields`'s
+/// `version`/subdivision-tier only (see `TerrainState::key` / the doc
+/// comment atop this file), and player-placed transit stations arrive later
+/// via the separate, purely-dynamic `LatestUi` resource with no terrain
+/// rebuild trigger of their own. Grading around stations too would need
+/// either (a) folding station positions into the same rebuild key so a
+/// terrain rebuild fires when stations change, or (b) a dedicated
+/// remesh-on-edit system — neither exists yet, so this is road-corridor-only
+/// for now (see PR description / issue #33 for the follow-up note).
+///
+/// Uses a spatial grid (`bucket_size`-keyed) over the road segments so each
+/// vertex only tests nearby segments instead of the full network —
+/// necessary since this runs over every heightfield vertex, not just the
+/// (coarser, quality-tiered) mesh subdivision.
+#[allow(clippy::too_many_arguments)]
+fn grade_terrain(
+    raw: &[f32],
+    field_w: u32,
+    field_h: u32,
+    cell_size: f32,
+    origin_x: f32,
+    origin_y: f32,
+    roads: &[mf_protocol::RoadDto],
+    road_scale: f32,
+) -> Vec<f32> {
+    let mut out = raw.to_vec();
+    if roads.is_empty() || field_w < 2 || field_h < 2 {
+        return out;
+    }
+
+    let mut segs: Vec<GradeSeg> = Vec::new();
+    for road in roads {
+        let width = match road.cls.as_str() {
+            "arterial" => ARTERIAL_WIDTH as f32,
+            "collector" => COLLECTOR_WIDTH as f32,
+            _ => LOCAL_WIDTH as f32,
+        } * road_scale;
+        let half_width = width / 2.0;
+        // Shoulder scales with the road's own half-width (wider roads get a
+        // proportionally wider grade-out) but is clamped to a sane 6-10m
+        // band so a local road's shoulder isn't imperceptibly thin and an
+        // arterial's isn't absurdly wide.
+        let shoulder = (half_width * 0.3).clamp(6.0, 10.0);
+        let pts: Vec<Vec2> = road
+            .points
+            .chunks_exact(2)
+            .map(|c| Vec2::new(c[0] as f32, c[1] as f32))
+            .collect();
+        for w in pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let height_a = sample_raw_bilinear(
+                raw, field_w, field_h, cell_size, origin_x, origin_y, a.x, a.y,
+            );
+            let height_b = sample_raw_bilinear(
+                raw, field_w, field_h, cell_size, origin_x, origin_y, b.x, b.y,
+            );
+            segs.push(GradeSeg {
+                a,
+                b,
+                height_a,
+                height_b,
+                half_width,
+                shoulder,
+            });
+        }
+    }
+    if segs.is_empty() {
+        return out;
+    }
+
+    // Bucket size just needs to comfortably exceed the widest corridor
+    // (arterial: half_width 30 + shoulder ~9 = ~39m) so a 1-ring neighbor
+    // search around each vertex's own bucket never misses a segment.
+    const BUCKET_SIZE: f32 = 50.0;
+    let bucket_key = |p: Vec2| -> (i32, i32) {
+        (
+            (p.x / BUCKET_SIZE).floor() as i32,
+            (p.y / BUCKET_SIZE).floor() as i32,
+        )
+    };
+    let mut buckets: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+    for (i, s) in segs.iter().enumerate() {
+        let reach = s.half_width + s.shoulder;
+        let min_p = Vec2::new(s.a.x.min(s.b.x) - reach, s.a.y.min(s.b.y) - reach);
+        let max_p = Vec2::new(s.a.x.max(s.b.x) + reach, s.a.y.max(s.b.y) + reach);
+        let (kx0, ky0) = bucket_key(min_p);
+        let (kx1, ky1) = bucket_key(max_p);
+        for kx in kx0..=kx1 {
+            for ky in ky0..=ky1 {
+                buckets.entry((kx, ky)).or_default().push(i);
+            }
+        }
+    }
+
+    for iy in 0..field_h {
+        for ix in 0..field_w {
+            let idx = (iy * field_w + ix) as usize;
+            let x = origin_x + ix as f32 * cell_size;
+            let z = origin_y + iy as f32 * cell_size;
+            let (kx, ky) = bucket_key(Vec2::new(x, z));
+            let mut best: Option<(f32, f32, f32, f32)> = None; // (dist, target_height, half_width, shoulder)
+            for dkx in -1..=1 {
+                for dky in -1..=1 {
+                    let Some(list) = buckets.get(&(kx + dkx, ky + dky)) else {
+                        continue;
+                    };
+                    for &si in list {
+                        let s = &segs[si];
+                        let (dist, t) = point_segment_distance(Vec2::new(x, z), s.a, s.b);
+                        if best.is_none_or(|(best_dist, ..)| dist < best_dist) {
+                            let target_height = s.height_a + (s.height_b - s.height_a) * t;
+                            best = Some((dist, target_height, s.half_width, s.shoulder));
+                        }
+                    }
+                }
+            }
+            let Some((dist, target_height, half_width, shoulder)) = best else {
+                continue;
+            };
+            if dist >= half_width + shoulder {
+                continue;
+            }
+            // 0 at dist<=half_width (fully graded to the road profile), 1 at
+            // dist>=half_width+shoulder (untouched raw terrain).
+            let raw_weight = smoothstep(half_width, half_width + shoulder, dist);
+            out[idx] = target_height * (1.0 - raw_weight) + raw[idx] * raw_weight;
+        }
+    }
+
+    out
 }
 
 /// If only the quality tier changed (not the fields version/subdivision —
