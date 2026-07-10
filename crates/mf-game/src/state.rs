@@ -10,6 +10,7 @@ use mf_protocol::envelope::FromSimJson;
 use mf_protocol::{HelloInfo, InitPayload, SetSpeedPayload, ToSim};
 use mf_state::{CurrentCity, LatestFields, LatestUi};
 
+use crate::attract::AttractState;
 use crate::config::MfConfig;
 
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -103,6 +104,15 @@ impl Plugin for MfGameStatePlugin {
             .init_resource::<SimHello>()
             .init_resource::<PendingInit>()
             .init_resource::<PauseState>()
+            // `attract.rs`'s `MfAttractPlugin` isn't wired into `main.rs`'s
+            // plugin tuple yet (see that module's integration-handoff doc),
+            // but `send_init_system` below already reads `AttractState` —
+            // `init_resource` is idempotent (a no-op if `MfAttractPlugin`
+            // already inserted it), so eagerly ensuring it exists here means
+            // this crate behaves correctly (attract simply never marks a
+            // preset inited, so every `Loading` entry inits exactly as it
+            // did before this wave) whether or not that wiring has landed.
+            .init_resource::<AttractState>()
             .add_systems(OnEnter(AppState::Boot), boot_system)
             .add_systems(OnExit(AppState::InGame), clear_pause_on_exit_ingame)
             .add_systems(Update, net_status_watchdog)
@@ -209,11 +219,45 @@ fn connecting_sim_system(
 }
 
 /// OnEnter(Loading): send `init` for whatever `MainMenu` chose.
-fn send_init_system(link: Option<Res<SimLink>>, pending: Res<PendingInit>) {
+///
+/// `attract: Option<ResMut<AttractState>>` (not a hard `Res`/`ResMut`, same
+/// convention as `link: Option<Res<SimLink>>` just above): `attract.rs`'s
+/// `MfAttractPlugin` — the only inserter of `AttractState` — isn't wired
+/// into `main.rs`'s plugin tuple yet (see that module's integration-handoff
+/// doc), so this must degrade gracefully to "attract never ran" rather than
+/// panicking on a missing resource until that wiring lands.
+fn send_init_system(
+    link: Option<Res<SimLink>>,
+    pending: Res<PendingInit>,
+    attract: Option<ResMut<AttractState>>,
+) {
     let Some(link) = link else {
         tracing::warn!("mf-game: entered Loading with no SimLink");
         return;
     };
+    if let Some(mut attract) = attract {
+        if can_reuse_attract_city(
+            &attract.inited_preset,
+            &pending.preset_key,
+            pending.difficulty,
+        ) {
+            // `attract.rs` already streamed exactly this city while the
+            // player sat at the MainMenu diorama (verified: the sidecar's
+            // `handleInit` always reinitializes fresh) — re-sending `init`
+            // here would throw away everything that streamed in during the
+            // orbit and restart the sim from scratch. Just normalize the
+            // clock back down from attract mode's 30x cinematic speed.
+            let _ = link
+                .transport
+                .send(ToSim::SetSpeed(SetSpeedPayload { speed: 1.0 }));
+            return;
+        }
+        // Whatever attract-mode had inited (if anything) doesn't match what
+        // is actually being started (different city, or a non-Normal
+        // difficulty pick), so a real `Loading` init supersedes it below —
+        // clear the stale marker.
+        attract.inited_preset = None;
+    }
     let _ = link.transport.send(ToSim::Init(InitPayload {
         seed: rand_seed(),
         difficulty: pending.difficulty,
@@ -223,7 +267,22 @@ fn send_init_system(link: Option<Res<SimLink>>, pending: Res<PendingInit>) {
     }));
 }
 
-fn rand_seed() -> u64 {
+/// Pure decision for `send_init_system`'s attract-reuse fast path: the
+/// already-streamed attract city can only stand in for the real init when
+/// BOTH the preset matches what attract streamed AND the player left the
+/// difficulty at Normal — attract always inits at `Difficulty::Normal` (see
+/// `attract.rs`'s `send_attract_init`), so skipping the re-init on an
+/// Easy/Hard pick would silently hand the player a Normal-difficulty city.
+fn can_reuse_attract_city(
+    inited_preset: &Option<String>,
+    pending_preset: &str,
+    pending_difficulty: mf_protocol::Difficulty,
+) -> bool {
+    inited_preset.as_deref() == Some(pending_preset)
+        && pending_difficulty == mf_protocol::Difficulty::Normal
+}
+
+pub(crate) fn rand_seed() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -299,5 +358,53 @@ fn graceful_quit_system(mut exit_events: EventReader<AppExit>, link: Option<Res<
         if let Some(link) = &link {
             let _ = link.transport.send(ToSim::Shutdown);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mf_protocol::Difficulty;
+
+    // --- attract-reuse fast path (see `can_reuse_attract_city`) ------------
+
+    #[test]
+    fn reuses_attract_city_when_preset_matches_at_normal_difficulty() {
+        assert!(can_reuse_attract_city(
+            &Some("nyc".to_string()),
+            "nyc",
+            Difficulty::Normal
+        ));
+    }
+
+    #[test]
+    fn does_not_reuse_when_preset_differs() {
+        assert!(!can_reuse_attract_city(
+            &Some("nyc".to_string()),
+            "boston",
+            Difficulty::Normal
+        ));
+    }
+
+    #[test]
+    fn does_not_reuse_when_attract_never_inited() {
+        assert!(!can_reuse_attract_city(&None, "nyc", Difficulty::Normal));
+    }
+
+    #[test]
+    fn does_not_reuse_on_non_normal_difficulty() {
+        // Attract always inits at Normal (see attract.rs's
+        // `send_attract_init`) — an Easy/Hard pick must force a real init or
+        // the player silently gets a Normal-difficulty city.
+        assert!(!can_reuse_attract_city(
+            &Some("nyc".to_string()),
+            "nyc",
+            Difficulty::Hard
+        ));
+        assert!(!can_reuse_attract_city(
+            &Some("nyc".to_string()),
+            "nyc",
+            Difficulty::Easy
+        ));
     }
 }

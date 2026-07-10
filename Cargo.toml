@@ -26,6 +26,13 @@ bevy_ecs = "0.16"
 # with `bevy::prelude::Vec2` without pulling in the full `bevy` crate.
 bevy_math = "0.16"
 bevy_egui = "0.36"
+# `mf-game`'s `attract.rs` sets the OS window icon directly via
+# `winit::window::Icon` (bevy_winit exposes `WinitWindows` but not `Icon`
+# itself). Pinned to the same "0.30" bevy_winit 0.16.1 depends on so cargo
+# unifies both onto the one `winit` in the dependency graph — a mismatched
+# major/minor here would resolve to a second, type-incompatible `winit`
+# crate and `set_window_icon(Some(icon))` would fail to compile.
+winit = { version = "0.30", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 crossbeam-channel = "0.5"
