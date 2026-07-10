@@ -3263,7 +3263,8 @@ dependencies = [
 name = "mf-render"
 version = "0.1.0"
 dependencies = [
- "bevy_app",
+ "bevy",
+ "mf-protocol",
  "mf-state",
 ]
 

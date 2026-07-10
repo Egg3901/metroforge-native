@@ -35,21 +35,38 @@ impl Plugin for MfHudPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EguiPlugin::default())
             .init_resource::<ToastLog>()
-            .add_systems(Startup, setup_egui_style_system)
+            .init_resource::<EguiStyleApplied>()
             .add_systems(Update, collect_toasts_system)
             .add_systems(
                 EguiPrimaryContextPass,
                 (
+                    setup_egui_style_system,
                     main_menu_hud_system.run_if(in_state(AppState::MainMenu)),
                     loading_hud_system.run_if(in_state(AppState::Loading)),
                     in_game_hud_system.run_if(in_state(AppState::InGame)),
                     fatal_banner_system,
-                ),
+                )
+                    .chain(),
             );
     }
 }
 
-fn setup_egui_style_system(mut contexts: EguiContexts) {
+/// Guards [`setup_egui_style_system`] so it only does its (cheap but
+/// non-trivial) font/visuals work once it actually succeeds. Deliberately
+/// NOT a `Startup` system: at `Startup` the primary window's egui context
+/// isn't guaranteed to exist yet (bevy_egui wires it up once the window
+/// backend is ready), so a one-shot `Startup` system silently no-ops and
+/// the HUD is stuck on bevy_egui's default dark theme forever — this bit
+/// during initial implementation (art-direction §8's off-white panels
+/// never appeared). Retrying every `EguiPrimaryContextPass` tick until it
+/// succeeds fixes that with no observable per-frame cost once applied.
+#[derive(Resource, Default)]
+struct EguiStyleApplied(bool);
+
+fn setup_egui_style_system(mut contexts: EguiContexts, mut applied: ResMut<EguiStyleApplied>) {
+    if applied.0 {
+        return;
+    }
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -69,8 +86,13 @@ fn setup_egui_style_system(mut contexts: EguiContexts) {
     let mut visuals = egui::Visuals::light();
     visuals.panel_fill = PANEL_BG;
     visuals.window_fill = PANEL_BG;
+    visuals.extreme_bg_color = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
+    visuals.faint_bg_color = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
     visuals.override_text_color = Some(TEXT_COLOR);
+    visuals.widgets.noninteractive.bg_fill = PANEL_BG;
+    visuals.widgets.noninteractive.weak_bg_fill = PANEL_BG;
     visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
+    visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
     visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(0xdc, 0xde, 0xd8);
     visuals.widgets.active.bg_fill = ACCENT;
     visuals.selection.bg_fill = ACCENT;
@@ -86,6 +108,7 @@ fn setup_egui_style_system(mut contexts: EguiContexts) {
         widget.corner_radius = egui::CornerRadius::same(2);
     }
     ctx.set_visuals(visuals);
+    applied.0 = true;
 }
 
 fn collect_toasts_system(mut events: EventReader<SimEvent>, mut log: ResMut<ToastLog>) {
@@ -98,6 +121,12 @@ fn collect_toasts_system(mut events: EventReader<SimEvent>, mut log: ResMut<Toas
             }
         }
     }
+}
+
+/// A muted, near-invisible group divider — art-direction §8 wants clean flat
+/// separation, not egui's default heavy separator line.
+fn thin_separator(ui: &mut egui::Ui) {
+    ui.add(egui::Separator::default().shrink(6.0));
 }
 
 fn quality_selector(ui: &mut egui::Ui, quality: &mut QualityTier, config: &mut MfConfig) {
@@ -246,66 +275,98 @@ fn in_game_hud_system(
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
 
-    egui::TopBottomPanel::top("hud_top").show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            if let Some(state) = &ui_state.0 {
-                ui.label(egui::RichText::new(format!("${:.0}", state.cash)).strong());
-                ui.separator();
-                ui.label(format!("Day {}", state.day));
-                ui.separator();
-                let approval_color = if state.approval >= 60.0 {
-                    GOOD
-                } else if state.approval >= 35.0 {
-                    WARN
-                } else {
-                    BAD
-                };
-                ui.colored_label(approval_color, format!("Approval {:.0}%", state.approval));
-                ui.separator();
-                ui.label(format!("Pop {:.0}", state.population));
-            } else {
-                ui.label("Connecting to city...");
-            }
+    // Art-direction §8: off-white panel, near-black text, consistent
+    // spacing/padding, vivid accents reserved for interactive/transit
+    // elements only. Budget | day+clock | approval | pop | speed | subway
+    // toggle | quality, left-to-right, each group visually separated.
+    egui::TopBottomPanel::top("hud_top")
+        .frame(
+            egui::Frame::default()
+                .fill(PANEL_BG)
+                .inner_margin(egui::Margin::symmetric(14, 10)),
+        )
+        .show(ctx, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(16.0, 0.0);
+            ui.horizontal_centered(|ui| {
+                if let Some(state) = &ui_state.0 {
+                    ui.label(
+                        egui::RichText::new(format!("${:.0}", state.cash))
+                            .strong()
+                            .size(15.0),
+                    );
+                    thin_separator(ui);
 
-            ui.separator();
-            for (label, speed) in [("1x", 1.0), ("10x", 10.0), ("30x", 30.0), ("120x", 120.0)] {
-                let is_current = ui_state
-                    .0
-                    .as_ref()
-                    .map(|s| (s.speed - speed).abs() < 0.01)
-                    .unwrap_or(false);
-                let button = egui::Button::new(label).fill(if is_current {
-                    ACCENT
+                    const TICKS_PER_DAY: u64 = 1200;
+                    let hour = (state.tick % TICKS_PER_DAY) as f64 / TICKS_PER_DAY as f64 * 24.0;
+                    ui.label(format!(
+                        "Day {}  {:02}:{:02}",
+                        state.day,
+                        hour as u32,
+                        ((hour.fract()) * 60.0) as u32
+                    ));
+                    thin_separator(ui);
+
+                    let approval_color = if state.approval >= 60.0 {
+                        GOOD
+                    } else if state.approval >= 35.0 {
+                        WARN
+                    } else {
+                        BAD
+                    };
+                    ui.colored_label(approval_color, format!("Approval {:.0}%", state.approval));
+                    thin_separator(ui);
+                    ui.label(format!("Pop {:.0}", state.population));
                 } else {
-                    egui::Color32::from_rgb(0xe9, 0xea, 0xe5)
-                });
-                if ui.add(button).clicked() {
-                    if let Some(link) = &link {
-                        let _ = link
-                            .transport
-                            .send(ToSim::SetSpeed(mf_protocol::SetSpeedPayload { speed }));
+                    ui.label("Connecting to city...");
+                }
+
+                thin_separator(ui);
+                for (label, speed) in [("1x", 1.0), ("10x", 10.0), ("30x", 30.0), ("120x", 120.0)] {
+                    let is_current = ui_state
+                        .0
+                        .as_ref()
+                        .map(|s| (s.speed - speed).abs() < 0.01)
+                        .unwrap_or(false);
+                    let button = egui::Button::new(label).fill(if is_current {
+                        ACCENT
+                    } else {
+                        egui::Color32::from_rgb(0xe9, 0xea, 0xe5)
+                    });
+                    if ui.add(button).clicked() {
+                        if let Some(link) = &link {
+                            let _ = link
+                                .transport
+                                .send(ToSim::SetSpeed(mf_protocol::SetSpeedPayload { speed }));
+                        }
                     }
                 }
-            }
 
-            ui.separator();
-            if ui
-                .button(if subway.active {
+                thin_separator(ui);
+                let subway_button = egui::Button::new(if subway.active {
                     "Surface view"
                 } else {
                     "Subway view"
                 })
-                .clicked()
-            {
-                subway.toggle();
-            }
+                .fill(if subway.active {
+                    ACCENT
+                } else {
+                    egui::Color32::from_rgb(0xe9, 0xea, 0xe5)
+                });
+                if ui.add(subway_button).clicked() {
+                    subway.toggle();
+                }
 
-            ui.separator();
-            quality_selector(ui, &mut quality, &mut config);
+                thin_separator(ui);
+                quality_selector(ui, &mut quality, &mut config);
+            });
         });
-    });
 
     egui::TopBottomPanel::bottom("hud_toasts")
+        .frame(
+            egui::Frame::default()
+                .fill(PANEL_BG)
+                .inner_margin(egui::Margin::symmetric(14, 6)),
+        )
         .min_height(0.0)
         .show(ctx, |ui| {
             if !toasts.0.is_empty() {
@@ -317,7 +378,7 @@ fn in_game_hud_system(
                             ToastTone::Good => GOOD,
                         };
                         ui.colored_label(color, msg);
-                        ui.separator();
+                        thin_separator(ui);
                     }
                 });
             }

@@ -1,10 +1,13 @@
 //! MetroForge Native game shell (spec §3.4). Binary name: `metroforge`.
+// Windows: GUI subsystem in release so no console window opens behind the game.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod camera;
 mod config;
 mod hud;
 mod input;
 mod state;
+mod verify;
 
 use bevy::prelude::*;
 use bevy::window::{PresentMode, Window, WindowPlugin};
@@ -37,6 +40,7 @@ fn main() {
             camera::MfCameraPlugin,
             input::MfInputPlugin,
             hud::MfHudPlugin,
+            verify::MfVerifyPlugin,
         ))
         .run();
 }

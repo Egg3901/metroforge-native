@@ -10,3 +10,4 @@ metroforge-sidecar.exe
 .DS_Store
 *.swp
 release-artifacts/
+verify/

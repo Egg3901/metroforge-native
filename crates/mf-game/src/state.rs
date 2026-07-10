@@ -62,6 +62,10 @@ impl Plugin for MfGameStatePlugin {
                 Update,
                 loading_gate_system.run_if(in_state(AppState::Loading)),
             )
+            .add_systems(
+                Update,
+                autostart_system.run_if(in_state(AppState::MainMenu)),
+            )
             .add_systems(Update, graceful_quit_system);
     }
 }
@@ -166,6 +170,35 @@ fn rand_seed() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(1)
+}
+
+/// Dev/CI convenience (not in the original spec's v1 IN-list, added while
+/// implementing `mf-render`'s verification pass): `MF_AUTOSTART=<presetKey>`
+/// skips the egui `MainMenu` city picker entirely and jumps straight to
+/// `Loading` with that city, Normal difficulty. Headless/CI environments
+/// (this box included — no way to click through egui without a display)
+/// need a non-interactive path to `InGame`, and it's a reasonable product
+/// feature too (fast-boot for screenshots, automated smoke tests, demo
+/// kiosks). A malformed/empty value is treated as "unset" so a stray env
+/// var can't silently strand a real player at a blank screen.
+fn autostart_system(
+    mut pending: ResMut<PendingInit>,
+    mut next_state: ResMut<NextState<AppState>>,
+    mut done: Local<bool>,
+) {
+    if *done {
+        return;
+    }
+    *done = true;
+    let Ok(preset) = std::env::var("MF_AUTOSTART") else {
+        return;
+    };
+    let preset = preset.trim();
+    if preset.is_empty() {
+        return;
+    }
+    pending.preset_key = preset.to_string();
+    next_state.set(AppState::Loading);
 }
 
 /// Loading -> InGame once `ready` + all flagged masks + first `fields` +

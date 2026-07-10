@@ -1,60 +1,112 @@
-//! `mf-render` — STUB. The real 3D renderer (spec §3.3: terrain/roads/
-//! buildings/transit/vehicles/agents/day-night/subway-view/palette) is owned
-//! by a separate agent working in parallel. This crate exists only so the
-//! workspace compiles and `mf-game` has a concrete `MfRenderPlugin` to add
-//! to its `App` today.
+//! `mf-render` — the 3D renderer (spec §3.3), composed as `MfRenderPlugin`.
+//! Mirror's-Edge art direction (`art-direction.md`, BINDING): stark white
+//! city, black streets, vivid color reserved exclusively for the transit
+//! network the player builds. See `crates/mf-render/src/palette.rs` for the
+//! single source of truth on colors.
 //!
-//! ## For the mf-render implementer
-//!
-//! Read `crates/mf-state/src/lib.rs` first — that crate (already
-//! implemented, not a stub) holds every cross-crate Resource you need:
-//!
-//! - `mf_state::CurrentCity` — `StaticCityJson` + the 0-3 mask byte arrays,
-//!   with `.masks_complete()` to know when it's safe to bake.
-//! - `mf_state::LatestFields` — latest `Fields` binary frame (terrain/pop/
-//!   jobs/landValue/water/parks), versioned via `Fields.version`.
-//! - `mf_state::LatestUi` — latest `UiState` (stations/tracks/routes/etc.),
-//!   2 Hz.
-//! - `mf_state::LatestFrame` — latest `FrameSnapshot` (vehicles/agents/color
-//!   table), 20 Hz.
-//! - `mf_state::QualityTier` (+ `.knobs()`) — the spec §4 knob table as
-//!   plain data (render scale, MSAA, shadow map size, material style,
-//!   building draw distance, agent cap, vehicle mesh tier, terrain subdiv
-//!   divisor, day/night on/off). Map these onto real `bevy_render`/`bevy_pbr`
-//!   types in your plugins.
-//! - `mf_state::SubwayView { active, t }` — toggle state + eased 0..1
-//!   progress; `mf-game`'s `input.rs` flips `active` on Tab, nobody else
-//!   advances `t` yet — your `subway.rs` system should call `.step(dt)` on
-//!   it (see the doc comment on `SubwayView::step`) since you're the one
-//!   with per-frame `Time` access and the actual animation to drive.
-//! - `mf_state::HeightAt(Box<dyn Fn(f32, f32) -> f32 + Send + Sync>)` —
-//!   currently a flat-ground placeholder (`|_, _| 0.0`); your `terrain.rs`
-//!   should replace `app.world_mut().resource_mut::<HeightAt>().0` with a
-//!   real bilinear sampler once fields are loaded, so roads/buildings/
-//!   transit/vehicles/agents can all call `HeightAt::sample`.
-//!
-//! All of the above are populated by `mf_state::MfStatePlugin`'s internal
-//! system, which drains `mf-net`'s `Events<FromSimMsg>` — you don't need to
-//! touch `mf-net` or `mf-state`'s internals, just add `MfStatePlugin` (or
-//! rely on `mf-game` having already added it) and read the resources.
-//!
-//! Palette constants (art-direction.md, BINDING) belong in
-//! `crates/mf-render/src/palette.rs` per spec §3.3 — not yet created here;
-//! add it alongside your other layer modules (`terrain.rs`, `roads.rs`,
-//! `buildings.rs`, `transit.rs`, `vehicles.rs`, `agents.rs`, `daynight.rs`,
-//! `subway.rs`).
+//! Layers, in bake/update order (see [`MfRenderSet`]):
+//! terrain -> roads/buildings/transit (static, cached by version/structural
+//! signature) -> vehicles/agents/daynight/subway (dynamic, every frame).
 
-use bevy_app::{App, Plugin};
+mod agents;
+mod buildings;
+mod daynight;
+mod mesh_utils;
+mod palette;
+mod roads;
+mod subway;
+mod terrain;
+mod transit;
+mod vehicles;
 
-/// Composes the per-layer sub-plugins described in spec §3.3. Currently a
-/// no-op so the workspace/binary compile and run headlessly; see the module
-/// doc comment above for what to build here.
+use bevy::pbr::DirectionalLightShadowMap;
+use bevy::prelude::*;
+
+use mf_state::QualityTier;
+
+pub use buildings::BuildingsDenseCenter;
+
+/// Ordering backbone for the whole crate. `Terrain` must run (and, on a
+/// rebuild, replace `mf_state::HeightAt`) before anything that samples
+/// ground height; `Statics` (roads/buildings/transit) cache-check every
+/// frame but only rebuild on version/structural change; `Dynamic`
+/// (vehicles/agents/day-night/subway) runs every frame unconditionally.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MfRenderSet {
+    Terrain,
+    Statics,
+    Dynamic,
+}
+
 pub struct MfRenderPlugin;
 
 impl Plugin for MfRenderPlugin {
-    fn build(&self, _app: &mut App) {
-        // Intentionally empty. mf-game depends on mf-state directly for any
-        // v1 HUD readouts it needs, so leaving this empty doesn't block the
-        // game shell from booting and running headlessly.
+    fn build(&self, app: &mut App) {
+        app.configure_sets(
+            Update,
+            (
+                MfRenderSet::Terrain,
+                MfRenderSet::Statics,
+                MfRenderSet::Dynamic,
+            )
+                .chain(),
+        )
+        .insert_resource(DirectionalLightShadowMap { size: 2048 })
+        .add_plugins((
+            terrain::MfTerrainPlugin,
+            roads::MfRoadsPlugin,
+            buildings::MfBuildingsPlugin,
+            transit::MfTransitPlugin,
+            vehicles::MfVehiclesPlugin,
+            agents::MfAgentsPlugin,
+            daynight::MfDayNightPlugin,
+            subway::MfSubwayPlugin,
+        ))
+        .add_systems(
+            Update,
+            apply_quality_render_settings_system.in_set(MfRenderSet::Dynamic),
+        );
     }
+}
+
+/// Spec §4 knob table, the render-global settings that don't belong to any
+/// one layer: MSAA sample count (a per-camera `Component` in Bevy 0.16, not
+/// a resource — applied to every `Camera3d` found, regardless of which
+/// plugin spawned it) and the shadow-cascade map resolution. Everything
+/// else in the table (materials, draw distances, agent caps, terrain
+/// subdivision, day/night on/off) is consumed directly by the relevant
+/// layer module from `QualityTier::knobs()`.
+fn apply_quality_render_settings_system(
+    quality: Res<QualityTier>,
+    mut shadow_map: ResMut<DirectionalLightShadowMap>,
+    mut commands: Commands,
+    cameras: Query<Entity, With<Camera3d>>,
+    cameras_missing_msaa: Query<Entity, (With<Camera3d>, Without<Msaa>)>,
+) {
+    let knobs = quality.knobs();
+    let msaa = match knobs.msaa_samples {
+        1 => Msaa::Off,
+        2 => Msaa::Sample2,
+        8 => Msaa::Sample8,
+        _ => Msaa::Sample4,
+    };
+    // `mf-game`'s camera.rs spawns `Camera3d` only on `OnEnter(InGame)`,
+    // which happens well after `QualityTier`'s one-time "just inserted"
+    // change-detection tick has already passed — so a plain
+    // `quality.is_changed()` gate here would leave a freshly spawned camera
+    // with NO `Msaa` component at all (no MSAA, i.e. visibly aliased/dashed
+    // thin geometry like roads/route stripes) until the player happened to
+    // touch the quality selector. Backfill any camera missing it every
+    // frame (cheap: at most one camera), and only redo the full sweep when
+    // the tier actually changes.
+    for camera in &cameras_missing_msaa {
+        commands.entity(camera).insert(msaa);
+    }
+    if !quality.is_changed() {
+        return;
+    }
+    for camera in &cameras {
+        commands.entity(camera).insert(msaa);
+    }
+    shadow_map.size = knobs.shadow_map_size.unwrap_or(2048) as usize;
 }

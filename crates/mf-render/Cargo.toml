@@ -3,8 +3,12 @@ name = "mf-render"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "3D renderer (STUB — owned by a separate agent; see crates/mf-render/src/lib.rs). Only wires an empty MfRenderPlugin so the workspace compiles."
+description = "3D renderer (spec §3.3): terrain/roads/buildings/transit/vehicles/agents/day-night/subway-view, composed as MfRenderPlugin. Mirror's Edge art direction (art-direction.md, BINDING)."
 
 [dependencies]
-bevy_app = { workspace = true }
 mf-state = { workspace = true }
+mf-protocol = { workspace = true }
+
+[dependencies.bevy]
+workspace = true
+default-features = true
