@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 
-use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier};
+use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, Theme};
 
 use crate::mesh_utils::MeshBuffers;
 use crate::palette;
@@ -47,8 +47,13 @@ impl Plugin for MfTerrainPlugin {
 
 #[derive(Resource, Default)]
 struct TerrainState {
-    /// `(fields.version, subdiv_divisor)` — the geometry-affecting knobs.
-    key: Option<(u32, u32)>,
+    /// `(fields.version, subdiv_divisor, theme)` — the geometry/color-
+    /// affecting knobs. `Theme` is included so a theme switch forces the
+    /// same full rebuild path as a subdivision change, rather than needing
+    /// its own in-place vertex-color recolor system (ground/water/park
+    /// colors are baked directly into the mesh's vertex-color attribute at
+    /// build time, not read from the material each frame).
+    key: Option<(u32, u32, Theme)>,
     entity: Option<Entity>,
     material: Option<Handle<StandardMaterial>>,
 }
@@ -120,6 +125,7 @@ fn build_terrain_system(
     city: Res<CurrentCity>,
     fields: Res<LatestFields>,
     quality: Res<QualityTier>,
+    theme: Res<Theme>,
     mut state: ResMut<TerrainState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -132,7 +138,7 @@ fn build_terrain_system(
         return;
     };
     let divisor = quality.knobs().terrain_subdiv_divisor.max(1);
-    let key = (f.version, divisor);
+    let key = (f.version, divisor, *theme);
     if state.key == Some(key) {
         return;
     }

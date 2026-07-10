@@ -112,7 +112,7 @@ fn star_row(ui: &mut egui::Ui, earned: u8) {
             egui::pos2(rect.left() + i as f32 * (star_size + 8.0), rect.top()),
             egui::vec2(star_size, star_size),
         );
-        let color = if i < earned { ds::GOOD } else { ds::MUTED };
+        let color = if i < earned { ds::GOOD } else { ds::muted() };
         ds::icon(&painter, star_rect, ds::IconKind::Star, color, 1.5);
     }
 }
@@ -163,7 +163,7 @@ fn report_ui_system(
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
             egui::Frame::default()
-                .fill(ds::PANEL_BG)
+                .fill(ds::panel_bg())
                 .corner_radius(ds::CORNER_RADIUS)
                 .inner_margin(egui::Margin::symmetric(32, 28))
                 .show(ui, |ui| {
@@ -215,7 +215,7 @@ fn report_ui_system(
                                         .color(egui::Color32::WHITE)
                                         .strong(),
                                 )
-                                .fill(ds::ACCENT),
+                                .fill(ds::accent()),
                             );
                             hover_tick(&keep_playing, &mut hovered, &mut sfx);
                             if keep_playing.clicked() {

@@ -9,7 +9,7 @@ use std::f32::consts::PI;
 use bevy::pbr::CascadeShadowConfigBuilder;
 use bevy::prelude::*;
 
-use mf_state::{LatestUi, QualityTier};
+use mf_state::{LatestUi, QualityTier, Theme};
 
 use crate::palette;
 
@@ -75,8 +75,20 @@ fn spawn_sun_system(mut commands: Commands) {
 fn compute_day_night_system(
     ui: Res<LatestUi>,
     quality: Res<QualityTier>,
+    theme: Res<Theme>,
     mut state: ResMut<DayNightState>,
 ) {
+    // Dark/Purple ARE the night rig promoted to a standing theme (issue
+    // #32): pin permanent midnight so the sun drops to the dim cool moon,
+    // ambient falls to the night floor, and transit emissives read as a
+    // glow — otherwise the noon sun floodlights the dark albedo back up to
+    // mid-grey and the whole theme washes out. Checked before the
+    // day-night-disabled tiers' fixed-noon path for the same reason.
+    if *theme != Theme::Light {
+        state.hour = 0.0;
+        state.night_factor = 1.0;
+        return;
+    }
     if !quality.knobs().day_night_enabled {
         state.hour = 12.0;
         state.night_factor = 0.0;

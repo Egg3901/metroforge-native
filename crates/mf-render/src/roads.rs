@@ -7,7 +7,7 @@
 
 use bevy::prelude::*;
 
-use mf_state::{CurrentCity, HeightAt, QualityTier};
+use mf_state::{CurrentCity, HeightAt, QualityTier, Theme};
 
 use crate::mesh_utils::{append_ribbon, MeshBuffers};
 use crate::palette;
@@ -57,11 +57,13 @@ impl Plugin for MfRoadsPlugin {
 #[derive(Resource, Default)]
 struct RoadsState {
     /// Cheap structural signature: `(fields version, roads.len(), total
-    /// point count)`. Road geometry never changes after `ready` in v1, but
-    /// the terrain the ribbons drape over rebuilds on every fields version —
-    /// baking only once left roads buried under relief that arrived in a
-    /// later version (the residual half of the roads race).
-    signature: Option<(u32, usize, usize)>,
+    /// point count, theme)`. Road geometry never changes after `ready` in
+    /// v1, but the terrain the ribbons drape over rebuilds on every fields
+    /// version — baking only once left roads buried under relief that
+    /// arrived in a later version (the residual half of the roads race).
+    /// `Theme` rides along so a theme switch forces a full rebuild (road
+    /// color is baked into mesh vertex color at build time).
+    signature: Option<(u32, usize, usize, Theme)>,
     entities: Vec<Entity>,
     local_entity: Option<Entity>,
 }
@@ -92,6 +94,7 @@ fn build_roads_system(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     quality: Res<QualityTier>,
+    theme: Res<Theme>,
 ) {
     let Some(city_json) = &city.static_city else {
         return;
@@ -105,7 +108,7 @@ fn build_roads_system(
         return;
     };
     let total_points: usize = city_json.roads.iter().map(|r| r.points.len()).sum();
-    let signature = (f.version, city_json.roads.len(), total_points);
+    let signature = (f.version, city_json.roads.len(), total_points, *theme);
     if state.signature == Some(signature) {
         return;
     }

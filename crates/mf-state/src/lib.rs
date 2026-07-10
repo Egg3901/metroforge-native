@@ -18,6 +18,7 @@ pub mod plugin;
 pub mod quality;
 pub mod reveal;
 pub mod subway;
+pub mod theme;
 pub mod ui;
 
 pub use city::CurrentCity;
@@ -30,4 +31,5 @@ pub use plugin::MfStatePlugin;
 pub use quality::{detect as detect_quality_tier, GpuDeviceKind, QualityKnobs, QualityTier};
 pub use reveal::RevealState;
 pub use subway::{SubwayView, SUBWAY_TRANSITION_SECS};
+pub use theme::Theme;
 pub use ui::LatestUi;

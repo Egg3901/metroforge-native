@@ -21,6 +21,7 @@ mod report_ui;
 mod reveal_input;
 mod saves;
 mod state;
+mod theme_boot;
 mod tools;
 mod verify;
 
@@ -30,6 +31,7 @@ use mf_net::MfNetPlugin;
 use mf_render::MfRenderPlugin;
 use mf_state::MfStatePlugin;
 use quality_boot::MfQualityBootPlugin;
+use theme_boot::MfThemeBootPlugin;
 
 // Art-direction §1: SKY_DAY as the default clear color.
 const SKY_DAY: Color = Color::srgb(
@@ -70,6 +72,7 @@ fn main() {
             saves::MfSavesPlugin,
             verify::MfVerifyPlugin,
             MfQualityBootPlugin,
+            MfThemeBootPlugin,
             audio::MfAudioPlugin,
             command_bus::MfCommandBusPlugin,
             tools::MfToolsPlugin,

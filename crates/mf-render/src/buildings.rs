@@ -38,7 +38,7 @@
 use bevy::prelude::*;
 
 use mf_protocol::BuildingFootprint;
-use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, RevealState};
+use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, RevealState, Theme};
 
 use crate::mesh_utils::{append_cuboid, append_prism, hash01, polygon_area, MeshBuffers};
 use crate::palette;
@@ -99,6 +99,12 @@ impl Plugin for MfBuildingsPlugin {
 #[derive(Resource, Default)]
 struct BuildingsState {
     version: Option<u32>,
+    /// The theme baked into `chunks`' vertex colors last time they were
+    /// built. Building TOP/SIDE/BASE colors are baked directly into each
+    /// chunk mesh's vertex-color attribute (art-direction §1), not read
+    /// from the material each frame, so a theme switch needs to force the
+    /// same full rebuild path as a `version`/`buildings_count` change.
+    theme: Option<Theme>,
     /// Building count of the last-seen `CurrentCity.buildings` (`None` if it
     /// hadn't arrived yet, `Some(0)` is never observed since the real-
     /// footprint path only exists when the vec is non-empty — see
@@ -283,6 +289,7 @@ fn build_buildings_system(
     fields: Res<LatestFields>,
     height_at: Res<HeightAt>,
     quality: Res<QualityTier>,
+    theme: Res<Theme>,
     day_night: Res<crate::daynight::DayNightState>,
     mut state: ResMut<BuildingsState>,
     mut dense_center: ResMut<BuildingsDenseCenter>,
@@ -296,11 +303,15 @@ fn build_buildings_system(
         return;
     };
     let (new_version, new_buildings_count) = BuildingsState::rebuild_key(&city, f.version);
-    if state.version == Some(new_version) && state.buildings_count == new_buildings_count {
+    if state.version == Some(new_version)
+        && state.buildings_count == new_buildings_count
+        && state.theme == Some(*theme)
+    {
         return;
     }
     state.version = Some(new_version);
     state.buildings_count = new_buildings_count;
+    state.theme = Some(*theme);
 
     for e in state.chunks.drain(..) {
         commands.entity(e).despawn();

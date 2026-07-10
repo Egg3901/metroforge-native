@@ -15,6 +15,7 @@ use crate::overlay::OverlayState;
 use crate::quality::QualityTier;
 use crate::reveal::RevealState;
 use crate::subway::SubwayView;
+use crate::theme::Theme;
 use crate::ui::LatestUi;
 
 pub struct MfStatePlugin;
@@ -26,6 +27,7 @@ impl Plugin for MfStatePlugin {
             .init_resource::<LatestUi>()
             .init_resource::<LatestFrame>()
             .init_resource::<QualityTier>()
+            .init_resource::<Theme>()
             .init_resource::<SubwayView>()
             .init_resource::<HeightAt>()
             .init_resource::<RevealState>()

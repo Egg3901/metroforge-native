@@ -10,7 +10,7 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 use mf_net::{NetStatus, ReconnectState, SimEvent, SimLink};
 use mf_protocol::envelope::FromSimJson;
 use mf_protocol::{Difficulty, FromSimMsg, ToSim, ToastTone};
-use mf_state::{LatestUi, QualityTier, SubwayView};
+use mf_state::{LatestUi, QualityTier, SubwayView, Theme};
 
 use crate::audio::{PlaySfx, Sfx};
 use crate::campaign::{self, CampaignProgress};
@@ -18,27 +18,47 @@ use crate::config::MfConfig;
 use crate::saves::{self, SaveManager, SaveSlot};
 use crate::state::{toggle_pause, AppState, PauseState, PendingInit, SimHello};
 
-// Art-direction §1/§8 palette, in egui's 0..255 sRGB `Color32`.
-const PANEL_BG: egui::Color32 = egui::Color32::from_rgb(0xf4, 0xf5, 0xf2); // near-white
-const TEXT_COLOR: egui::Color32 = egui::Color32::from_rgb(0x17, 0x18, 0x1c); // rich black
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x00, 0x7a, 0xff); // metro blue
+// Art-direction §1/§8 palette. `GOOD`/`WARN`/`BAD` are fixed semantic
+// status colors (they read fine on all three themes' panels); every other
+// chrome color is theme-indexed (issue #32) and lives behind the accessor
+// functions below, which delegate to `design_system::current_colors()` —
+// the single theme-aware source both this file and the design-system
+// consumers share.
 const GOOD: egui::Color32 = egui::Color32::from_rgb(0x34, 0xc7, 0x59);
 const WARN: egui::Color32 = egui::Color32::from_rgb(0xff, 0x95, 0x00);
 const BAD: egui::Color32 = egui::Color32::from_rgb(0xff, 0x3b, 0x30);
 
+/// Off-white (Light) / near-black (Dark) / deep-violet (Purple) panel fill.
+fn panel_bg() -> egui::Color32 {
+    crate::design_system::current_colors().panel_bg
+}
+/// Primary text: rich black on Light, near-white on Dark/Purple.
+fn text_color() -> egui::Color32 {
+    crate::design_system::current_colors().text
+}
+/// The one accent color (interactive/transit elements only).
+fn accent() -> egui::Color32 {
+    crate::design_system::current_colors().accent
+}
+/// Muted secondary text (subtitle/labels/version) — art-direction reserves
+/// full-strength text for primary copy.
+fn muted_text() -> egui::Color32 {
+    crate::design_system::current_colors().muted
+}
+/// City-select / continue card fill + hover fill (same values as the
+/// top-bar speed/subway toggle buttons' resting/hover state — see
+/// `design_system::current_colors`' `inactive_bg`/`hover_bg`).
+fn card_bg() -> egui::Color32 {
+    crate::design_system::current_colors().inactive_bg
+}
+fn card_hover_bg() -> egui::Color32 {
+    crate::design_system::current_colors().hover_bg
+}
+fn card_border() -> egui::Color32 {
+    crate::design_system::current_colors().border
+}
+
 const INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
-// Muted secondary text (subtitle/labels/version) — art-direction reserves
-// full rich-black for primary copy; this is the same de-emphasis egui's own
-// `weak` text uses, picked to sit comfortably on the off-white panel.
-const MUTED_TEXT: egui::Color32 = egui::Color32::from_rgb(0x6b, 0x6d, 0x72);
-// City-select / continue card fill + hover fill (same values as the top-bar
-// speed/subway toggle buttons' resting/hover state — see `design_system::
-// INACTIVE_BG`/`HOVER_BG`; kept as local copies rather than importing that
-// module, matching this file's existing "hud.rs keeps its own copies for
-// now" convention noted on that module's doc comment).
-const CARD_BG: egui::Color32 = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
-const CARD_HOVER_BG: egui::Color32 = egui::Color32::from_rgb(0xdc, 0xde, 0xd8);
-const CARD_BORDER: egui::Color32 = egui::Color32::from_rgb(0xd8, 0xd9, 0xd4);
 const CARD_CORNER: egui::CornerRadius = egui::CornerRadius::same(4);
 /// `saves::SLOT_COUNT` as a `usize`, for fixed-size array types below (array
 /// lengths need a `usize`; `saves::SLOT_COUNT` is a `u8` so callers stay
@@ -77,22 +97,32 @@ impl Plugin for MfHudPlugin {
     }
 }
 
-/// Guards [`setup_egui_style_system`] so it only does its (cheap but
-/// non-trivial) font/visuals work once it actually succeeds. Deliberately
-/// NOT a `Startup` system: at `Startup` the primary window's egui context
-/// isn't guaranteed to exist yet (bevy_egui wires it up once the window
-/// backend is ready), so a one-shot `Startup` system silently no-ops and
-/// the HUD is stuck on bevy_egui's default dark theme forever — this bit
-/// during initial implementation (art-direction §8's off-white panels
-/// never appeared). Retrying every `EguiPrimaryContextPass` tick until it
-/// succeeds fixes that with no observable per-frame cost once applied.
+/// Guards [`setup_egui_style_system`]'s (cheap but non-trivial) font/visuals
+/// work: skips it once it has already applied the *current* theme.
+/// Deliberately NOT a `Startup` system: at `Startup` the primary window's
+/// egui context isn't guaranteed to exist yet (bevy_egui wires it up once
+/// the window backend is ready), so a one-shot `Startup` system silently
+/// no-ops and the HUD is stuck on bevy_egui's default dark theme forever —
+/// this bit during initial implementation (art-direction §8's off-white
+/// panels never appeared). Retrying every `EguiPrimaryContextPass` tick
+/// until it succeeds fixes that with no observable per-frame cost once
+/// applied — and re-applies whenever `applied_theme` no longer matches the
+/// live `Theme` resource, so a HUD theme pick takes effect on the very next
+/// frame instead of needing a restart.
 #[derive(Resource, Default)]
-struct EguiStyleApplied(bool);
+struct EguiStyleApplied(Option<Theme>);
 
-fn setup_egui_style_system(mut contexts: EguiContexts, mut applied: ResMut<EguiStyleApplied>) {
-    if applied.0 {
+fn setup_egui_style_system(
+    mut contexts: EguiContexts,
+    theme: Res<Theme>,
+    mut applied: ResMut<EguiStyleApplied>,
+) {
+    if applied.0 == Some(*theme) {
         return;
     }
+    // Keep the design-system's process-global in step BEFORE any widget
+    // paints with this frame's colors.
+    crate::design_system::set_current_theme(*theme);
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -109,19 +139,24 @@ fn setup_egui_style_system(mut contexts: EguiContexts, mut applied: ResMut<EguiS
         .insert(0, "inter".to_owned());
     ctx.set_fonts(fonts);
 
-    let mut visuals = egui::Visuals::light();
-    visuals.panel_fill = PANEL_BG;
-    visuals.window_fill = PANEL_BG;
-    visuals.extreme_bg_color = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
-    visuals.faint_bg_color = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
-    visuals.override_text_color = Some(TEXT_COLOR);
-    visuals.widgets.noninteractive.bg_fill = PANEL_BG;
-    visuals.widgets.noninteractive.weak_bg_fill = PANEL_BG;
-    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
-    visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(0xdc, 0xde, 0xd8);
-    visuals.widgets.active.bg_fill = ACCENT;
-    visuals.selection.bg_fill = ACCENT;
+    let hv = crate::design_system::theme_colors(*theme);
+    let mut visuals = if *theme == Theme::Light {
+        egui::Visuals::light()
+    } else {
+        egui::Visuals::dark()
+    };
+    visuals.panel_fill = hv.panel_bg;
+    visuals.window_fill = hv.panel_bg;
+    visuals.extreme_bg_color = hv.extreme_bg;
+    visuals.faint_bg_color = hv.extreme_bg;
+    visuals.override_text_color = Some(hv.text);
+    visuals.widgets.noninteractive.bg_fill = hv.panel_bg;
+    visuals.widgets.noninteractive.weak_bg_fill = hv.panel_bg;
+    visuals.widgets.inactive.bg_fill = hv.inactive_bg;
+    visuals.widgets.inactive.weak_bg_fill = hv.inactive_bg;
+    visuals.widgets.hovered.bg_fill = hv.hover_bg;
+    visuals.widgets.active.bg_fill = hv.accent;
+    visuals.selection.bg_fill = hv.accent;
     // Art-direction: "no rounded-corner excess" — keep corners near-square.
     visuals.window_corner_radius = egui::CornerRadius::same(2);
     visuals.menu_corner_radius = egui::CornerRadius::same(2);
@@ -134,7 +169,7 @@ fn setup_egui_style_system(mut contexts: EguiContexts, mut applied: ResMut<EguiS
         widget.corner_radius = egui::CornerRadius::same(2);
     }
     ctx.set_visuals(visuals);
-    applied.0 = true;
+    applied.0 = Some(*theme);
 }
 
 fn collect_toasts_system(mut events: EventReader<SimEvent>, mut log: ResMut<ToastLog>) {
@@ -244,6 +279,37 @@ fn quality_selector(
         .show_ui(ui, |ui| quality_options(ui, quality, config, sfx));
 }
 
+/// The theme rows shared by every theme combo box (pause overlay, main
+/// menu) — same split-out shape as [`quality_options`] above, issue #32.
+fn theme_options(
+    ui: &mut egui::Ui,
+    theme: &mut Theme,
+    config: &mut MfConfig,
+    sfx: &mut EventWriter<PlaySfx>,
+) {
+    for candidate in Theme::ALL {
+        if ui
+            .selectable_label(*theme == candidate, candidate.label())
+            .clicked()
+        {
+            *theme = candidate;
+            config.set_theme_override(Some(candidate));
+            sfx.write(PlaySfx(Sfx::Confirm));
+        }
+    }
+}
+
+fn theme_selector(
+    ui: &mut egui::Ui,
+    theme: &mut Theme,
+    config: &mut MfConfig,
+    sfx: &mut EventWriter<PlaySfx>,
+) {
+    egui::ComboBox::from_label("Theme")
+        .selected_text(theme.label())
+        .show_ui(ui, |ui| theme_options(ui, theme, config, sfx));
+}
+
 /// ConnectingSim previously registered NO ui system at all, so a player whose
 /// sidecar was slow (or repeatedly failing) stared at a bare ClearColor with
 /// zero feedback until the fatal banner eventually appeared. Every app state
@@ -275,7 +341,7 @@ fn connecting_hud_system(mut contexts: EguiContexts, reconnect: Res<ReconnectSta
 /// natural label width, stacked keeps every control's left edge aligned
 /// without hand-tuning a label column width).
 fn field_label(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(text).size(12.0).color(MUTED_TEXT));
+    ui.label(egui::RichText::new(text).size(12.0).color(muted_text()));
 }
 
 /// A single 5-point star, filled via a triangle fan from its own center —
@@ -402,20 +468,20 @@ fn city_card(
 
     let painter = ui.painter_at(rect);
     let bg = if unlocked && response.hovered() {
-        CARD_HOVER_BG
+        card_hover_bg()
     } else {
-        CARD_BG
+        card_bg()
     };
     painter.rect_filled(rect, CARD_CORNER, bg);
     let border = if selected {
-        egui::Stroke::new(2.5, ACCENT)
+        egui::Stroke::new(2.5, accent())
     } else {
-        egui::Stroke::new(1.0, CARD_BORDER)
+        egui::Stroke::new(1.0, card_border())
     };
     painter.rect_stroke(rect, CARD_CORNER, border, egui::StrokeKind::Inside);
 
     let content_rect = rect.shrink(10.0);
-    let text_color = if unlocked { TEXT_COLOR } else { MUTED_TEXT };
+    let text_color = if unlocked { text_color() } else { muted_text() };
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(content_rect)
@@ -438,11 +504,11 @@ fn city_card(
         let center = egui::pos2(cx, star_rect.center().y);
         let filled = i < stars.min(3);
         let color = if !unlocked {
-            MUTED_TEXT
+            muted_text()
         } else if filled {
-            ACCENT
+            accent()
         } else {
-            CARD_BORDER
+            card_border()
         };
         draw_star(&star_painter, center, star_r, filled, color);
     }
@@ -452,12 +518,12 @@ fn city_card(
         child.horizontal(|ui| {
             let (lock_rect, _) =
                 ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-            draw_lock(&ui.painter_at(lock_rect), lock_rect, MUTED_TEXT);
+            draw_lock(&ui.painter_at(lock_rect), lock_rect, muted_text());
             let plural = if stars_needed == 1 { "" } else { "s" };
             ui.label(
                 egui::RichText::new(format!("Earn {stars_needed} more star{plural}"))
                     .size(11.0)
-                    .color(MUTED_TEXT),
+                    .color(muted_text()),
             );
         });
     }
@@ -495,15 +561,15 @@ fn continue_slot_row(
 
     let painter = ui.painter_at(rect);
     let bg = if occupied && response.hovered() {
-        CARD_HOVER_BG
+        card_hover_bg()
     } else {
-        CARD_BG
+        card_bg()
     };
     painter.rect_filled(rect, CARD_CORNER, bg);
     painter.rect_stroke(
         rect,
         CARD_CORNER,
-        egui::Stroke::new(1.0, CARD_BORDER),
+        egui::Stroke::new(1.0, card_border()),
         egui::StrokeKind::Inside,
     );
 
@@ -518,13 +584,13 @@ fn continue_slot_row(
             egui::RichText::new(&title)
                 .size(13.0)
                 .strong()
-                .color(if occupied { TEXT_COLOR } else { MUTED_TEXT }),
+                .color(if occupied { text_color() } else { muted_text() }),
         );
         if let Some(meta) = meta {
             ui.label(
                 egui::RichText::new(format_relative_time(meta.saved_at_epoch_secs))
                     .size(11.0)
-                    .color(MUTED_TEXT),
+                    .color(muted_text()),
             );
         }
     });
@@ -538,7 +604,7 @@ fn continue_slot_row(
         }
         None => "Empty".to_string(),
     };
-    child.label(egui::RichText::new(subtitle).size(11.0).color(MUTED_TEXT));
+    child.label(egui::RichText::new(subtitle).size(11.0).color(muted_text()));
 
     occupied && response.clicked()
 }
@@ -550,6 +616,7 @@ fn main_menu_hud_system(
     progress: Res<CampaignProgress>,
     mut pending: ResMut<PendingInit>,
     mut quality: ResMut<QualityTier>,
+    mut theme: ResMut<Theme>,
     mut config: ResMut<MfConfig>,
     mut save_manager: ResMut<SaveManager>,
     mut toasts: ResMut<ToastLog>,
@@ -580,7 +647,7 @@ fn main_menu_hud_system(
     egui::TopBottomPanel::bottom("main_menu_version")
         .frame(
             egui::Frame::default()
-                .fill(PANEL_BG)
+                .fill(panel_bg())
                 .inner_margin(egui::Margin::symmetric(12, 10)),
         )
         .show_separator_line(false)
@@ -590,7 +657,7 @@ fn main_menu_hud_system(
                 ui.label(
                     egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
                         .size(11.0)
-                        .color(MUTED_TEXT),
+                        .color(muted_text()),
                 );
             });
         });
@@ -612,7 +679,7 @@ fn main_menu_hud_system(
                         ui.label(
                             egui::RichText::new("Build the network. Move the city.")
                                 .size(14.0)
-                                .color(MUTED_TEXT),
+                                .color(muted_text()),
                         );
                         ui.add_space(24.0);
 
@@ -722,6 +789,15 @@ fn main_menu_hud_system(
                                 quality_options(ui, &mut quality, &mut config, &mut sfx)
                             });
 
+                        ui.add_space(12.0);
+                        field_label(ui, "Theme");
+                        egui::ComboBox::from_id_salt("theme_picker")
+                            .selected_text(theme.label())
+                            .width(300.0)
+                            .show_ui(ui, |ui| {
+                                theme_options(ui, &mut theme, &mut config, &mut sfx)
+                            });
+
                         ui.add_space(28.0);
                         let start = ui.add_sized(
                             [220.0, 44.0],
@@ -731,7 +807,7 @@ fn main_menu_hud_system(
                                     .size(16.0)
                                     .strong(),
                             )
-                            .fill(ACCENT),
+                            .fill(accent()),
                         );
                         hover_tick(&start, &mut hovered, &mut sfx);
                         if start.clicked() {
@@ -762,7 +838,7 @@ fn loading_hud_system(
                 let status = if ready { "ready" } else { "waiting" };
                 egui::RichText::new(format!("{label}: {status}"))
                     .size(13.0)
-                    .color(MUTED_TEXT)
+                    .color(muted_text())
             };
             ui.label(readiness("Static city", city.static_city.is_some()));
             ui.label(readiness("Masks", city.masks_complete()));
@@ -779,6 +855,7 @@ fn in_game_hud_system(
     ui_state: Res<LatestUi>,
     link: Option<Res<SimLink>>,
     mut quality: ResMut<QualityTier>,
+    mut theme: ResMut<Theme>,
     mut config: ResMut<MfConfig>,
     mut subway: ResMut<SubwayView>,
     toasts: Res<ToastLog>,
@@ -794,7 +871,7 @@ fn in_game_hud_system(
     egui::TopBottomPanel::top("hud_top")
         .frame(
             egui::Frame::default()
-                .fill(PANEL_BG)
+                .fill(panel_bg())
                 .inner_margin(egui::Margin::symmetric(14, 10)),
         )
         .show(ctx, |ui| {
@@ -865,9 +942,9 @@ fn in_game_hud_system(
                         .map(|s| (s.speed - speed).abs() < 0.01)
                         .unwrap_or(false);
                     let button = egui::Button::new(label).fill(if is_current {
-                        ACCENT
+                        accent()
                     } else {
-                        egui::Color32::from_rgb(0xe9, 0xea, 0xe5)
+                        card_bg()
                     });
                     let resp = ui.add(button);
                     hover_tick(&resp, &mut hovered, &mut sfx);
@@ -887,11 +964,7 @@ fn in_game_hud_system(
                 } else {
                     "Subway view"
                 })
-                .fill(if subway.active {
-                    ACCENT
-                } else {
-                    egui::Color32::from_rgb(0xe9, 0xea, 0xe5)
-                });
+                .fill(if subway.active { accent() } else { card_bg() });
                 let subway_resp = ui.add(subway_button);
                 hover_tick(&subway_resp, &mut hovered, &mut sfx);
                 if subway_resp.clicked() {
@@ -905,13 +978,16 @@ fn in_game_hud_system(
 
                 thin_separator(ui);
                 quality_selector(ui, &mut quality, &mut config, &mut sfx);
+
+                thin_separator(ui);
+                theme_selector(ui, &mut theme, &mut config, &mut sfx);
             });
         });
 
     egui::TopBottomPanel::bottom("hud_toasts")
         .frame(
             egui::Frame::default()
-                .fill(PANEL_BG)
+                .fill(panel_bg())
                 .inner_margin(egui::Margin::symmetric(14, 6)),
         )
         .min_height(0.0)
@@ -920,7 +996,7 @@ fn in_game_hud_system(
                 ui.horizontal(|ui| {
                     for (msg, tone) in toasts.0.iter().rev().take(3) {
                         let color = match tone {
-                            ToastTone::Info => TEXT_COLOR,
+                            ToastTone::Info => text_color(),
                             ToastTone::Warn => WARN,
                             ToastTone::Good => GOOD,
                         };
@@ -951,6 +1027,7 @@ fn pause_overlay_system(
     ui_state: Res<LatestUi>,
     link: Option<Res<SimLink>>,
     mut quality: ResMut<QualityTier>,
+    mut theme: ResMut<Theme>,
     mut config: ResMut<MfConfig>,
     mut save_manager: ResMut<SaveManager>,
     mut toasts: ResMut<ToastLog>,
@@ -1001,7 +1078,7 @@ fn pause_overlay_system(
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
             egui::Frame::default()
-                .fill(PANEL_BG)
+                .fill(panel_bg())
                 .corner_radius(egui::CornerRadius::same(2))
                 .inner_margin(egui::Margin::symmetric(28, 24))
                 .show(ui, |ui| {
@@ -1017,7 +1094,7 @@ fn pause_overlay_system(
                                     .color(egui::Color32::WHITE)
                                     .strong(),
                             )
-                            .fill(ACCENT),
+                            .fill(accent()),
                         );
                         hover_tick(&resume, &mut hovered, &mut sfx);
                         if resume.clicked() && toggle_pause(&mut pause, &ui_state, link.as_deref())
@@ -1032,6 +1109,15 @@ fn pause_overlay_system(
                             .width(220.0)
                             .show_ui(ui, |ui| {
                                 quality_options(ui, &mut quality, &mut config, &mut sfx)
+                            });
+
+                        ui.add_space(14.0);
+                        field_label(ui, "Theme");
+                        egui::ComboBox::from_id_salt("pause_theme")
+                            .selected_text(theme.label())
+                            .width(220.0)
+                            .show_ui(ui, |ui| {
+                                theme_options(ui, &mut theme, &mut config, &mut sfx)
                             });
 
                         ui.add_space(14.0);

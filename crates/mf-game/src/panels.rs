@@ -273,7 +273,7 @@ fn station_upgrade_button(
             egui::RichText::new(format!("Upgrade to level {}", station.level + 1))
                 .color(egui::Color32::WHITE),
         )
-        .fill(ds::ACCENT)
+        .fill(ds::accent())
         .corner_radius(ds::CORNER_RADIUS),
     );
     if resp.clicked() {
@@ -343,7 +343,7 @@ fn station_panel_system(
         )
         .frame(
             egui::Frame::default()
-                .fill(ds::PANEL_BG)
+                .fill(ds::panel_bg())
                 .inner_margin(egui::Margin::symmetric(
                     ds::SPACE_SM as i8,
                     ds::SPACE_SM as i8,
@@ -357,7 +357,7 @@ fn station_panel_system(
                     ui.painter(),
                     icon_rect,
                     station_icon_kind(station.mode),
-                    ds::ACCENT,
+                    ds::accent(),
                     1.6,
                 );
                 ui.label(ds::heading(station_title(station)));
@@ -468,7 +468,7 @@ fn finance_panel_system(
         )
         .frame(
             egui::Frame::default()
-                .fill(ds::PANEL_BG)
+                .fill(ds::panel_bg())
                 .inner_margin(egui::Margin::symmetric(
                     ds::SPACE_SM as i8,
                     ds::SPACE_SM as i8,
