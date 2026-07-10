@@ -100,6 +100,7 @@ mod tests {
         StaticBuildings {
             buildings: vec![BuildingFootprint {
                 height_dm: 300,
+                min_height_dm: 0,
                 verts: vec![[-1.0, -1.0], [1.0, -1.0], [0.0, 1.0]],
             }],
         }

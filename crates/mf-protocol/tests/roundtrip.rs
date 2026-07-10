@@ -26,12 +26,32 @@ fn push_f32(v: &mut Vec<u8>, x: f32) {
 fn push_i16(v: &mut Vec<u8>, x: i16) {
     v.extend_from_slice(&x.to_le_bytes());
 }
-/// Push one `StaticBuildings` per-building record: vertexCount, flags=0,
-/// heightDm, then `(xHalfM, yHalfM)` per vertex.
+/// Push one wire-version-1 `StaticBuildings` per-building record:
+/// vertexCount, flags=0, heightDm, then `(xHalfM, yHalfM)` per vertex.
 fn push_building(v: &mut Vec<u8>, height_dm: u16, verts_half: &[(i16, i16)]) {
     v.push(verts_half.len() as u8);
     v.push(0); // flags
     push_u16(v, height_dm);
+    for &(x, y) in verts_half {
+        push_i16(v, x);
+        push_i16(v, y);
+    }
+}
+
+/// Push one wire-version-2 `StaticBuildings` per-building record:
+/// vertexCount, flags=0, heightDm, minHeightDm, then `(xHalfM, yHalfM)` per
+/// vertex — the version-2 stride adds `minHeightDm` after `heightDm`
+/// (building:part stacking; see `BuildingFootprint::min_height_dm`).
+fn push_building_v2(
+    v: &mut Vec<u8>,
+    height_dm: u16,
+    min_height_dm: u16,
+    verts_half: &[(i16, i16)],
+) {
+    v.push(verts_half.len() as u8);
+    v.push(0); // flags
+    push_u16(v, height_dm);
+    push_u16(v, min_height_dm);
     for &(x, y) in verts_half {
         push_i16(v, x);
         push_i16(v, y);
@@ -169,8 +189,8 @@ fn static_mask_roundtrip() {
 }
 
 #[test]
-fn static_buildings_empty_roundtrip() {
-    // header only: 0 buildings, vertexTotal 0.
+fn static_buildings_v1_empty_decodes_and_reencodes_as_v2() {
+    // header only: 0 buildings, vertexTotal 0, wire version 1.
     let mut b = vec![5u8, 1u8];
     push_u16(&mut b, 0); // reserved
     push_u32(&mut b, 0); // buildingCount
@@ -179,7 +199,13 @@ fn static_buildings_empty_roundtrip() {
     let decoded = StaticBuildings::decode(&b).expect("decode");
     assert_eq!(decoded.buildings.len(), 0);
 
-    assert_eq!(decoded.encode(), b);
+    // encode() always emits wire version 2 (see its doc comment); for an
+    // empty building list the only difference from the v1 input is that
+    // version byte, since there are no buildings for the wider per-building
+    // stride to apply to.
+    let mut expected_reencode = b.clone();
+    expected_reencode[1] = 2;
+    assert_eq!(decoded.encode(), expected_reencode);
     match decode_binary(&b).unwrap() {
         BinaryMsg::Buildings(sb) => assert_eq!(sb, decoded),
         other => panic!("expected Buildings, got {other:?}"),
@@ -187,7 +213,9 @@ fn static_buildings_empty_roundtrip() {
 }
 
 #[test]
-fn static_buildings_two_buildings_roundtrip() {
+fn static_buildings_v1_two_buildings_decode_with_zero_min_height() {
+    // Wire version 1 has no `minHeightDm` field at all: decode must fill it
+    // with 0 ("starts at ground") for every building rather than error.
     // Building 0: a triangle, heightDm=250 (25.0m), includes negative coords.
     // Building 1: a quad, heightDm=0 ("unknown", renderer falls back).
     let b0_verts = [(-20i16, -20i16), (20, -20), (0, 40)];
@@ -204,22 +232,82 @@ fn static_buildings_two_buildings_roundtrip() {
     let decoded = StaticBuildings::decode(&b).expect("decode");
     assert_eq!(decoded.buildings.len(), 2);
     assert_eq!(decoded.buildings[0].height_dm, 250);
+    assert_eq!(decoded.buildings[0].min_height_dm, 0);
     assert_eq!(
         decoded.buildings[0].verts,
         vec![[-10.0, -10.0], [10.0, -10.0], [0.0, 20.0]]
     );
     assert_eq!(decoded.buildings[1].height_dm, 0);
+    assert_eq!(decoded.buildings[1].min_height_dm, 0);
     assert_eq!(
         decoded.buildings[1].verts,
         vec![[-5.0, -5.0], [5.0, -5.0], [5.0, 5.0], [-5.0, 5.0]]
     );
 
-    // Byte-level roundtrip: decode(encode(x)) is exact because every value
-    // here started life as a half-meter integer.
+    match decode_binary(&b).unwrap() {
+        BinaryMsg::Buildings(sb) => assert_eq!(sb, decoded),
+        other => panic!("expected Buildings, got {other:?}"),
+    }
+}
+
+#[test]
+fn static_buildings_v2_roundtrip_byte_exact_with_nonzero_min_height() {
+    // building:part stacking fixture: a podium (min=0, i.e. ground-based)
+    // and a tower set back on top of it (min=80dm = 8.0m > 0).
+    let podium_verts = [(-20i16, -20i16), (20, -20), (20, 20), (-20, 20)];
+    let tower_verts = [(-10i16, -10i16), (10, -10), (10, 10), (-10, 10)];
+    let vertex_total = (podium_verts.len() + tower_verts.len()) as u32;
+
+    let mut b = vec![5u8, 2u8];
+    push_u16(&mut b, 0); // reserved
+    push_u32(&mut b, 2); // buildingCount
+    push_u32(&mut b, vertex_total);
+    push_building_v2(&mut b, 80, 0, &podium_verts);
+    push_building_v2(&mut b, 300, 80, &tower_verts);
+
+    let decoded = StaticBuildings::decode(&b).expect("decode");
+    assert_eq!(decoded.buildings.len(), 2);
+    assert_eq!(decoded.buildings[0].height_dm, 80);
+    assert_eq!(decoded.buildings[0].min_height_dm, 0);
+    assert_eq!(decoded.buildings[1].height_dm, 300);
+    assert_eq!(decoded.buildings[1].min_height_dm, 80);
+
+    // Byte-exact: every fixture value here started life as a half-meter or
+    // decimeter integer, and encode() always emits version 2.
     assert_eq!(decoded.encode(), b);
     match decode_binary(&b).unwrap() {
         BinaryMsg::Buildings(sb) => assert_eq!(sb, decoded),
         other => panic!("expected Buildings, got {other:?}"),
+    }
+}
+
+#[test]
+fn static_buildings_unsupported_version_errors() {
+    // Version 3: neither the legacy v1 layout nor the current v2 layout.
+    let mut b = vec![5u8, 3u8];
+    push_u16(&mut b, 0);
+    push_u32(&mut b, 0);
+    push_u32(&mut b, 0);
+    match StaticBuildings::decode(&b) {
+        Err(BinaryError::UnsupportedVersion(3)) => {}
+        other => panic!("expected UnsupportedVersion(3), got {other:?}"),
+    }
+}
+
+#[test]
+fn frame_snapshot_still_rejects_non_v1_version() {
+    // Regression check for the check_msg_type refactor: every msgType other
+    // than 5 (StaticBuildings) must still require exactly wire version 1.
+    let mut b = vec![1u8, 2u8]; // msgType=1 (Frame), version=2
+    push_u16(&mut b, 0); // reserved
+    push_u32(&mut b, 0); // tick
+    push_u32(&mut b, 0); // vehicleCount
+    push_u32(&mut b, 0); // agentCount
+    push_u32(&mut b, 0); // colorTableLen
+    push_u32(&mut b, 0); // reserved
+    match FrameSnapshot::decode(&b) {
+        Err(BinaryError::UnsupportedVersion(2)) => {}
+        other => panic!("expected UnsupportedVersion(2), got {other:?}"),
     }
 }
 

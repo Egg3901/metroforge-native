@@ -361,12 +361,24 @@ fn wall_sun_dir() -> Vec2 {
     Vec2::new(0.55, 0.35).normalize()
 }
 
-/// Extrude a building footprint `ring` (world X/Z, EITHER winding — see
+/// Extrude a building footprint `ring` (world X/Z, EITHER winding, see
 /// below) into a prism: one quad per ring edge for the walls, plus a
-/// triangulated roof cap. Companion to `append_cuboid` for real per-building
-/// vector footprints instead of axis-aligned boxes. Returns
-/// `(vertices_added, indices_added)` so callers can preallocate/log/test
-/// against exact counts.
+/// triangulated roof cap, plus (when `base_offset > 0`) a triangulated
+/// bottom cap. Companion to `append_cuboid` for real per-building vector
+/// footprints instead of axis-aligned boxes. Returns `(vertices_added,
+/// indices_added)` so callers can preallocate/log/test against exact
+/// counts.
+///
+/// The prism occupies world Y in `[ground_y + base_offset, ground_y +
+/// height]` (so `height` names the same thing it always has: the absolute
+/// top of the mass above `ground_y`, and `base_offset` is where the walls
+/// start rather than always starting at `ground_y`). This exists for OSM
+/// `building:part` stacking: one real building often arrives as several
+/// footprints at different min/max heights (a ground podium, a tower set
+/// back on top of it, a spire on top of that). Callers are responsible for
+/// ensuring `height > base_offset`; this function does not re-derive or
+/// validate the relationship, it only extrudes between the two Y values it's
+/// given.
 ///
 /// `ring` is normalized to a single fixed winding first (via signed area):
 /// both the wall-outward-normal formula and the cap winding below depend on
@@ -376,7 +388,7 @@ fn wall_sun_dir() -> Vec2 {
 ///
 /// After normalizing to negative signed area (the convention this function's
 /// math is derived against), each edge's direction `dir = b - a` rotated +90
-/// degrees in the XZ plane — `(dx, dz) -> (-dz, dx)` — gives the outward wall
+/// degrees in the XZ plane, `(dx, dz) -> (-dz, dx)`, gives the outward wall
 /// normal. Verified against `append_cuboid`'s four hand-wound walls: a unit
 /// square ring in this normalized order, walked edge by edge, reproduces
 /// exactly `append_cuboid`'s north/south/east/west normals (see this
@@ -385,20 +397,33 @@ fn wall_sun_dir() -> Vec2 {
 /// Roof cap: `ear_clip_indices` always returns CCW-standard (positive
 /// signed-area) triangles regardless of its input's own winding. Bevy's
 /// correct top-face front-facing order for a normal declared `+Y` is instead
-/// CW-standard (negative signed area — the same convention `terrain.rs`'s
+/// CW-standard (negative signed area, the same convention `terrain.rs`'s
 /// grid-quad comment derives for its own top-down quads), so each returned
 /// triangle has its last two vertices swapped before being pushed.
+///
+/// Bottom cap: only emitted when `base_offset > 0`. A ground-based prism
+/// (`base_offset == 0`) never shows its underside to the camera, so skipping
+/// it there is a real cost saving, not just an omission. An elevated mass
+/// (a skybridge, a cantilevered tower set back above a podium) IS visible
+/// from below, so its underside needs a real face. The bottom cap's winding
+/// is the roof cap's reversed: since the roof swaps the ear-clipper's raw
+/// `(ia, ib, ic)` to `(ia, ic, ib)` to flip CCW-standard into the CW-standard
+/// a `+Y` face needs, the bottom cap pushes the raw, unswapped order at
+/// `y0` with a `-Y` normal, which is exactly the front-facing order that
+/// normal needs.
 ///
 /// Colors: `side_plain` is used when a wall's outward normal is roughly
 /// perpendicular to the fixed stylized sun direction (`wall_sun_dir`);
 /// `side_sunlit` / `side_shaded` when it faces toward / away from it. Bottom
 /// wall edge is always `base` (matches `append_cuboid`'s top-lit gradient
-/// trick); `top` is flat on the roof cap.
+/// trick); `top` is flat on the roof cap; the bottom cap (when present) is
+/// flat `base`, matching the shaded tone the wall bases already use there.
 #[allow(clippy::too_many_arguments)]
 pub fn append_prism(
     buf: &mut MeshBuffers,
     ring: &[Vec2],
     ground_y: f32,
+    base_offset: f32,
     height: f32,
     top: Color,
     side_plain: Color,
@@ -420,7 +445,7 @@ pub fn append_prism(
     };
 
     let sun_dir = wall_sun_dir();
-    let y0 = ground_y;
+    let y0 = ground_y + base_offset;
     let y1 = ground_y + height;
     for i in 0..n {
         let a = normalized_ring[i];
@@ -444,7 +469,7 @@ pub fn append_prism(
         let top_a = Vec3::new(a.x, y1, a.y);
         let top_b = Vec3::new(b.x, y1, b.y);
         // p0,p1 = bottom corners (base color); p2,p3 = top corners (wall
-        // color) — same top-lit vertical gradient trick as `append_cuboid`.
+        // color): same top-lit vertical gradient trick as `append_cuboid`.
         buf.push_quad(
             bottom_a, bottom_b, top_b, top_a, normal, base, base, wall_color, wall_color,
         );
@@ -463,6 +488,25 @@ pub fn append_prism(
             Vec3::Y,
             top,
         );
+    }
+
+    if base_offset > 0.0 {
+        // Elevated mass: the underside is real geometry a camera below or
+        // beside it can see (skybridges, cantilevered upper parts set back
+        // from a podium). Raw (unswapped) ear-clip order at y0 with a -Y
+        // normal is front-facing here (see doc comment).
+        for [ia, ib, ic] in ear_clip_indices(&normalized_ring) {
+            let pa = normalized_ring[ia];
+            let pb = normalized_ring[ib];
+            let pc = normalized_ring[ic];
+            buf.push_tri(
+                Vec3::new(pa.x, y0, pa.y),
+                Vec3::new(pb.x, y0, pb.y),
+                Vec3::new(pc.x, y0, pc.y),
+                Vec3::NEG_Y,
+                base,
+            );
+        }
     }
 
     (buf.vertex_count() - start_v, buf.index_count() - start_i)
@@ -736,9 +780,10 @@ mod ear_clip_tests {
         let mut buf = MeshBuffers::new();
         let white = Color::WHITE;
         let (v, i) = append_prism(
-            &mut buf, &ring, 0.0, 10.0, white, white, white, white, white,
+            &mut buf, &ring, 0.0, 0.0, 10.0, white, white, white, white, white,
         );
         // 4 wall quads (4 verts each) + cap triangles (n-2=2, 3 verts each).
+        // base_offset=0 (ground-based), so no bottom cap.
         assert_eq!(v, 4 * 4 + 2 * 3);
         assert_eq!(i, 4 * 6 + 2 * 3);
     }
@@ -749,9 +794,68 @@ mod ear_clip_tests {
         let white = Color::WHITE;
         let ring = [Vec2::ZERO, Vec2::X];
         let (v, i) = append_prism(
-            &mut buf, &ring, 0.0, 10.0, white, white, white, white, white,
+            &mut buf, &ring, 0.0, 0.0, 10.0, white, white, white, white, white,
         );
         assert_eq!((v, i), (0, 0));
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn append_prism_with_base_offset_emits_bottom_cap() {
+        // Same unit-square ring as the wall-normal test above, but elevated
+        // (base_offset=5.0 > 0): an elevated mass must gain a bottom cap on
+        // top of the usual walls + roof cap, since its underside is now
+        // visible (skybridge / cantilever case from the module doc).
+        let ring = [
+            Vec2::new(-1.0, -1.0),
+            Vec2::new(-1.0, 1.0),
+            Vec2::new(1.0, 1.0),
+            Vec2::new(1.0, -1.0),
+        ];
+        let mut buf = MeshBuffers::new();
+        let white = Color::WHITE;
+        let (v, i) = append_prism(
+            &mut buf, &ring, 0.0, 5.0, 10.0, white, white, white, white, white,
+        );
+        // 4 wall quads (4 verts each) + roof cap (n-2=2 tris, 3 verts each)
+        // + bottom cap (n-2=2 tris, 3 verts each): the bottom cap is the
+        // only addition versus the base_offset=0 case above.
+        assert_eq!(v, 4 * 4 + 2 * 3 + 2 * 3);
+        assert_eq!(i, 4 * 6 + 2 * 3 + 2 * 3);
+        assert_eq!(buf.vertex_count(), v);
+        assert_eq!(buf.index_count(), i);
+    }
+
+    #[test]
+    fn append_prism_walls_span_ground_plus_base_to_ground_plus_height() {
+        // Verifies the Y-range contract directly: with ground_y=100,
+        // base_offset=5, height=30, every wall vertex's Y must be either
+        // 105.0 (bottom edge) or 130.0 (top edge) -- nothing at 100 or at
+        // 30, which would indicate the offset was ignored or double
+        // applied.
+        let ring = [
+            Vec2::new(-1.0, -1.0),
+            Vec2::new(-1.0, 1.0),
+            Vec2::new(1.0, 1.0),
+            Vec2::new(1.0, -1.0),
+        ];
+        let mut buf = MeshBuffers::new();
+        let white = Color::WHITE;
+        append_prism(
+            &mut buf, &ring, 100.0, 5.0, 30.0, white, white, white, white, white,
+        );
+        let mesh = buf.build();
+        let positions = mesh
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .expect("positions")
+            .as_float3()
+            .expect("float3 positions");
+        for p in positions {
+            let y = p[1];
+            assert!(
+                (y - 105.0).abs() < 1e-4 || (y - 130.0).abs() < 1e-4,
+                "unexpected wall/cap vertex Y {y}"
+            );
+        }
     }
 }

@@ -413,6 +413,15 @@ pub struct BuildingFootprint {
     /// "unknown, use my density formula" and does its own unit conversion,
     /// so decode has no reason to touch this field.
     pub height_dm: u16,
+    /// Height of this footprint's BASE above ground, in decimeters, verbatim
+    /// off the wire. Zero for ordinary ground-based buildings. Non-zero when
+    /// one real-world OSM building arrives as several stacked
+    /// `building:part` footprints (a podium, a tower set back on top of it, a
+    /// spire on top of that) — each part's `min_height_dm` is where its own
+    /// prism starts, letting the renderer stack them instead of drawing one
+    /// solid mass from the ground up. Absent on wire version 1 (decode fills
+    /// `0`, meaning "starts at ground").
+    pub min_height_dm: u16,
     /// Outer-ring polygon vertices in world meters, origin-centered.
     /// Converted from the wire's half-meter `i16` fixed point (`/2.0`) at
     /// decode time. The sidecar normalizes winding to CCW in the wire's
@@ -428,9 +437,15 @@ pub struct StaticBuildings {
 }
 
 const STATIC_BUILDINGS_HEADER_LEN: usize = 12;
-/// Bytes for one building's fixed header (vertexCount, flags, heightDm),
-/// ahead of its `vertexCount` vertex pairs.
-const BUILDING_HEADER_LEN: usize = 4;
+/// Bytes for one building's fixed header on wire version 1: vertexCount,
+/// flags, heightDm — ahead of its `vertexCount` vertex pairs.
+const BUILDING_HEADER_LEN_V1: usize = 4;
+/// Bytes for one building's fixed header on wire version 2: the version 1
+/// header plus a trailing `minHeightDm` u16 (building:part stacking — see
+/// `BuildingFootprint::min_height_dm`). Stride is fixed per-message (the
+/// message's own version byte, not a per-building flag), so every building
+/// in a v2 message uses this stride.
+const BUILDING_HEADER_LEN_V2: usize = 6;
 /// Bytes per vertex: `i16 xHalfM, i16 yHalfM`.
 const BUILDING_VERTEX_LEN: usize = 4;
 
@@ -442,15 +457,24 @@ impl StaticBuildings {
                 got: b.len(),
             });
         }
-        check_msg_type(b, 5)?;
+        // msgType=5 alone accepts wire versions {1, 2}: version 2 only adds
+        // a trailing field to each building's fixed header (see
+        // `BUILDING_HEADER_LEN_V2`), so a v1 sender's payload is still valid
+        // input, just with every `min_height_dm` implicitly zero.
+        let version = check_msg_type_any(b, 5, &[1, 2])?;
+        let building_header_len = if version >= 2 {
+            BUILDING_HEADER_LEN_V2
+        } else {
+            BUILDING_HEADER_LEN_V1
+        };
         let building_count = u32_at(b, 4)? as usize;
         let vertex_total = u32_at(b, 8)?;
 
         // Cap the prealloc at what the remaining buffer could possibly hold
-        // (each building needs >= BUILDING_HEADER_LEN bytes) so a corrupt or
+        // (each building needs >= building_header_len bytes) so a corrupt or
         // hostile `buildingCount` can't force a huge allocation before the
         // per-building bounds checks below get a chance to reject it.
-        let max_possible = (b.len() - STATIC_BUILDINGS_HEADER_LEN) / BUILDING_HEADER_LEN;
+        let max_possible = (b.len() - STATIC_BUILDINGS_HEADER_LEN) / building_header_len;
         let mut buildings = Vec::with_capacity(building_count.min(max_possible));
 
         let mut off = STATIC_BUILDINGS_HEADER_LEN;
@@ -459,7 +483,8 @@ impl StaticBuildings {
             let vertex_count = u8_at(b, off)?;
             let _flags = u8_at(b, off + 1)?; // reserved, always 0 for now
             let height_dm = u16_at(b, off + 2)?;
-            off += BUILDING_HEADER_LEN;
+            let min_height_dm = if version >= 2 { u16_at(b, off + 4)? } else { 0 };
+            off += building_header_len;
 
             if !(3..=64).contains(&vertex_count) {
                 return Err(BinaryError::InvalidVertexCount { got: vertex_count });
@@ -482,7 +507,11 @@ impl StaticBuildings {
             off += need;
 
             vertex_sum += vertex_count as u32;
-            buildings.push(BuildingFootprint { height_dm, verts });
+            buildings.push(BuildingFootprint {
+                height_dm,
+                min_height_dm,
+                verts,
+            });
         }
 
         if vertex_sum != vertex_total {
@@ -495,16 +524,20 @@ impl StaticBuildings {
         Ok(StaticBuildings { buildings })
     }
 
+    /// Always emits wire version 2 (the `minHeightDm` field is written for
+    /// every building, `0` for ground-based ones) — this client never needs
+    /// to round-trip a v1 payload back out verbatim, only to accept one on
+    /// decode.
     pub fn encode(&self) -> Vec<u8> {
         let vertex_total: u32 = self.buildings.iter().map(|bd| bd.verts.len() as u32).sum();
         let body_len: usize = self
             .buildings
             .iter()
-            .map(|bd| BUILDING_HEADER_LEN + bd.verts.len() * BUILDING_VERTEX_LEN)
+            .map(|bd| BUILDING_HEADER_LEN_V2 + bd.verts.len() * BUILDING_VERTEX_LEN)
             .sum();
         let mut out = Vec::with_capacity(STATIC_BUILDINGS_HEADER_LEN + body_len);
         out.push(5); // msgType
-        out.push(1); // version
+        out.push(2); // version
         out.extend_from_slice(&0u16.to_le_bytes()); // reserved
         out.extend_from_slice(&(self.buildings.len() as u32).to_le_bytes());
         out.extend_from_slice(&vertex_total.to_le_bytes());
@@ -512,6 +545,7 @@ impl StaticBuildings {
             out.push(building.verts.len() as u8); // vertexCount
             out.push(0); // flags, reserved
             out.extend_from_slice(&building.height_dm.to_le_bytes());
+            out.extend_from_slice(&building.min_height_dm.to_le_bytes());
             for v in &building.verts {
                 // Inverse of decode's `/2.0`; half-meter quantization means
                 // this is exact for values that came from decode, but rounds
@@ -526,16 +560,29 @@ impl StaticBuildings {
     }
 }
 
+/// Every msgType except 5 (`StaticBuildings`) only ever speaks wire version
+/// 1 — this is the common case, checked strictly.
 fn check_msg_type(b: &[u8], expected: u8) -> Result<(), BinaryError> {
+    check_msg_type_any(b, expected, &[1])?;
+    Ok(())
+}
+
+/// Like `check_msg_type`, but accepts any version in `allowed` and returns
+/// which one matched — needed by `StaticBuildings::decode` alone, since
+/// msgType=5 is the one place a version byte changes the wire layout (see
+/// `BUILDING_HEADER_LEN_V2`). Kept as a separate function rather than
+/// widening `check_msg_type`'s signature everywhere so every other msgType's
+/// call site stays a one-liner that still requires exactly version 1.
+fn check_msg_type_any(b: &[u8], expected: u8, allowed: &[u8]) -> Result<u8, BinaryError> {
     let msg_type = u8_at(b, 0)?;
     if msg_type != expected {
         return Err(BinaryError::UnknownMsgType(msg_type));
     }
     let version = u8_at(b, 1)?;
-    if version != 1 {
+    if !allowed.contains(&version) {
         return Err(BinaryError::UnsupportedVersion(version));
     }
-    Ok(())
+    Ok(version)
 }
 
 /// Dispatch on byte 0 (`msgType`).
