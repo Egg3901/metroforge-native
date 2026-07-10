@@ -165,6 +165,14 @@ pub enum IconKind {
     /// A ring with a single stroke through it - cash/fare glyph, used for
     /// the route panel's fare control.
     Coin,
+    /// A solid 5-point star - the v0.4 end-of-scenario report's star
+    /// rating. Unlike every other glyph above (stroke-only, per this
+    /// module's "single-stroke" brief), this one is a filled polygon: the
+    /// report draws three of these per city, and the "earned vs not"
+    /// distinction is carried by `color` alone (e.g. `GOOD` vs `MUTED`) -
+    /// a filled shape reads unambiguously at a glance in both states,
+    /// where an outline-only star would read as "not earned" in both.
+    Star,
 }
 
 /// Maps a normalized `(nx, ny)` in `0.0..=1.0` (icon-local space, origin
@@ -289,6 +297,25 @@ pub fn icon(
             let r = rect.width().min(rect.height()) * 0.34;
             painter.circle_stroke(center, r, stroke);
             painter.line_segment([pt(rect, 0.5, 0.28), pt(rect, 0.5, 0.72)], stroke);
+        }
+        IconKind::Star => {
+            let center = pt(rect, 0.5, 0.52);
+            let outer_r = rect.width().min(rect.height()) * 0.46;
+            // Classic 5-point star inner/outer radius ratio.
+            let inner_r = outer_r * 0.382;
+            let points: Vec<egui::Pos2> = (0..10)
+                .map(|i| {
+                    let angle =
+                        -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
+                    let r = if i % 2 == 0 { outer_r } else { inner_r };
+                    center + egui::vec2(angle.cos(), angle.sin()) * r
+                })
+                .collect();
+            painter.add(egui::Shape::convex_polygon(
+                points,
+                color,
+                egui::Stroke::NONE,
+            ));
         }
     }
 }
@@ -557,6 +584,7 @@ mod tests {
                 IconKind::Bus,
                 IconKind::Tram,
                 IconKind::Coin,
+                IconKind::Star,
             ] {
                 icon(&painter, rect, kind, TEXT, 1.5);
             }
@@ -708,6 +736,7 @@ mod sparkline_tests {
                 IconKind::Bus,
                 IconKind::Tram,
                 IconKind::Coin,
+                IconKind::Star,
             ] {
                 icon(&painter, rect, kind, TEXT, 1.5);
             }

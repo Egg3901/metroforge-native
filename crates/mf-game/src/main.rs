@@ -5,6 +5,7 @@
 mod audio;
 mod build_ui;
 mod camera;
+mod campaign;
 mod command_bus;
 mod config;
 mod design_system;
@@ -14,6 +15,7 @@ mod map_mode;
 mod overlays;
 mod panels;
 mod quality_boot;
+mod report_ui;
 mod reveal_input;
 mod state;
 mod tools;
