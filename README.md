@@ -1,28 +1,176 @@
-# MetroForge Native
+# MetroForge Desktop
 
-MetroForge Native is a Rust + Bevy desktop client for MetroForge that talks to the existing
-TypeScript simulation over a local WebSocket sidecar process (spawned from `../metroforge/sidecar/`,
-see `crates/mf-net`). The workspace splits the wire protocol (`mf-protocol`), the transport/process
-management (`mf-net`), shared cross-crate render/game state (`mf-state`), the renderer
-(`mf-render`), and the game shell (`mf-game`, binary `metroforge`) into separate crates so the
-protocol and networking layers can later be reused by an in-process engine (e.g. on mobile, where
-spawning a subprocess isn't allowed) without touching call sites.
+MetroForge Desktop is the native 3D client for MetroForge: a single-player transit
+network builder where you place stations, draw tracks, run routes, balance a budget,
+and watch a city grow around the network you build.
 
-## Building
+Visual style: stark, high-contrast Mirror's Edge white-city minimalism. Buildings are
+flat near-white blocks, streets are rich black, and the transit network you build is
+the only thing in the world with color. See [`art-direction.md`](../art-direction.md)
+for the full palette and rules (canonical constants live in
+`crates/mf-render/src/palette.rs`).
+
+The simulation itself is not reimplemented here. Desktop and the web prototype at
+[transit.ahousedividedgame.com](https://transit.ahousedividedgame.com) run the exact
+same deterministic TypeScript sim core, so a city plays out identically no matter
+which client you use. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for why, and
+for the determinism guarantee that keeps it true.
+
+## Download
+
+Prebuilt binaries for Windows, macOS (Apple Silicon), and Linux are published on the
+[GitHub Releases page](https://github.com/Egg3901/metroforge-native/releases). Each
+release is a zip (Windows/macOS) or tar.gz (Linux) containing the game executable,
+the sidecar executable, and the bundled font license. No installer, no separate
+runtime to install.
+
+## Quickstart (from a downloaded release)
+
+### Linux
+1. Extract the archive: `tar xzf metroforge-<version>-linux-x64.tar.gz`
+2. Run `./metroforge` from the extracted directory.
+
+The `metroforge-sidecar` binary next to it is required and is used automatically.
+
+### macOS
+1. Extract the archive and open the folder.
+2. Right-click `metroforge` and choose Open (do not double-click the first time).
+3. If Gatekeeper blocks it: open System Settings, go to Privacy and Security, find
+   the blocked message near the bottom, and click Open Anyway, then confirm.
+4. The game launches.
+
+### Windows
+1. Extract the archive to a folder.
+2. Double-click `metroforge.exe`.
+3. If SmartScreen warns about an unrecognized app: click More info, then click Run
+   anyway.
+4. The game launches.
+
+The game automatically detects your GPU and picks a graphics quality tier (see
+below). If it runs slowly, lower the quality tier from the in-game HUD.
+
+## Building from source
+
+Prerequisites: Rust stable (see `rust-toolchain.toml`), Bun 1.3, and a checkout of the
+sibling [`metroforge`](https://github.com/Egg3901/metroforge) repo (the sidecar's
+TypeScript sim source lives there, currently on the `feat/sim-sidecar` branch pending
+merge). See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for full setup.
 
 ```sh
 # from /root/metroforge-native
 cargo build --release -p mf-game
+```
 
-# run (requires a display; on a headless box the sidecar/protocol/state crates still
-# build and test fine, but the bevy window will fail to open)
+To run the client against a sidecar, the client needs a `metroforge-sidecar`
+executable, resolved in this order:
+
+1. `$MF_SIDECAR_PATH`: an explicit path to a prebuilt sidecar binary.
+2. A `metroforge-sidecar[.exe]` sitting next to the client executable (this is how a
+   packaged release finds it).
+3. Dev fallback: `bun run sidecar/index.ts` with the working directory set to the
+   sibling `/root/metroforge` checkout. This requires `bun` on `PATH` (or at
+   `~/.bun/bin/bun`) and that checkout to have the sidecar source present.
+
+```sh
+# option A: point at a prebuilt sidecar binary
 MF_SIDECAR_PATH=/path/to/metroforge-sidecar cargo run -p mf-game
 
-# checks CI also runs
+# option B: let mf-net fall back to `bun run sidecar/index.ts` in ../metroforge
+cargo run -p mf-game
+```
+
+Set `MF_AUTOSTART=<presetKey>` (e.g. `MF_AUTOSTART=nyc`) to skip the `MainMenu` city
+picker and jump straight to `Loading` with that city on Normal difficulty. Useful on
+a box with no display to click through, and for scripted screenshots (see
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for the full headless verification
+recipe).
+
+Same checks CI runs:
+
+```sh
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-During development, if `$MF_SIDECAR_PATH` is unset, `mf-net` falls back to `bun run sidecar`
-with cwd `../metroforge` (requires `bun` on `PATH` and the sidecar to exist there).
+## Quality tiers
+
+Auto-detected from the GPU adapter at boot: a discrete GPU picks High; an integrated
+GPU picks Low, unless its name matches a known software/low-power renderer (Intel
+UHD/HD Graphics, llvmpipe, lavapipe, SwiftShader), in which case it picks Potato;
+anything unrecognized picks Medium. A `config.toml` override always wins over
+auto-detection. Target: Potato holds 60 fps on an Intel UHD 620 at 12 km building
+draw distance in NYC.
+
+| knob | potato | low | medium | high |
+|---|---|---|---|---|
+| present mode | no vsync | vsync | vsync | vsync |
+| render scale | 0.75 | 1.0 | 1.0 | 1.0 |
+| MSAA | off | off | 4x | 4x |
+| shadows | off | off | 2048 cascade | 4096 cascade |
+| material | unlit vertex color | unlit | lit (StandardMaterial) | lit (StandardMaterial) |
+| building draw distance | 3 km | 6 km | 12 km | unlimited |
+| agent cap | 0 | 100 | 250 | 400 |
+| vehicle mesh | quad billboard | low-poly box | box | chamfered box |
+| terrain subdivision | coarsest | coarse | full | full |
+| day/night cycle | off (fixed noon) | on | on | on |
+
+Unlit rendering plus flat vertex colors and zero textures is the whole art style, not
+just the cheap fallback, so Potato still looks like MetroForge. Higher tiers only add
+shadows, MSAA, emissive glow, and chamfered vehicle meshes on top.
+
+## Architecture
+
+```
+ +-------------------+       WebSocket (mf-wire v1)        +-----------------------+
+ |  metroforge-native |  <------------------------------>  |  metroforge-sidecar   |
+ |  (Rust / Bevy)     |   JSON control frames (handshake,   |  (Bun, compiled from  |
+ |                    |   2 Hz UI, commands, toasts)        |  ../metroforge/       |
+ |  mf-protocol       |   binary hot frames (50 ms ticks,   |  sidecar/)            |
+ |  mf-net            |   fields, traffic, static masks)    |                       |
+ |  mf-state          |                                     |  wraps the exact      |
+ |  mf-render         |                                     |  deterministic TS     |
+ |  mf-game (bin)     |                                     |  sim core             |
+ +-------------------+                                     +-----------------------+
+          ^                                                          ^
+          |  spawned as a local child process                        |
+          |  (or connects to one already running)                    |
+          +----------------------------------------------------------+
+```
+
+`mf-net` is the only crate that knows the sim lives in a separate process. On mobile,
+where subprocesses aren't allowed (notably iOS), a future in-process transport
+satisfies the same `SimTransport` trait with no changes anywhere else. See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Repo map
+
+```
+metroforge-native/
+  Cargo.toml                 workspace manifest
+  rust-toolchain.toml        pinned Rust channel
+  crates/
+    mf-protocol/             wire types + binary codec, no Bevy dependency
+    mf-net/                  SimTransport, WebSocket client, sidecar process mgmt
+    mf-state/                shared Bevy resources (city/fields/ui/frame/quality)
+    mf-render/               the 3D renderer (terrain/roads/buildings/transit/...)
+    mf-game/                 the game shell (bin `metroforge`): states/camera/HUD
+  docs/
+    ARCHITECTURE.md          crate responsibilities, determinism, design rationale
+    PROTOCOL.md              mf-wire v1 full reference
+    DEVELOPMENT.md           build/test/release workflow
+  scripts/
+    package.sh               stages a client + sidecar + font into a release archive
+  .github/workflows/         CI and release automation
+```
+
+The sidecar's TypeScript source lives in the sibling `metroforge` repo under
+`sidecar/`, not in this repo; see
+[`/root/metroforge/sidecar/README.md`](../metroforge/sidecar/README.md).
+
+## License
+
+The bundled font (Inter) is licensed under the SIL Open Font License 1.1; its full
+text and attribution ship as `OFL.txt` alongside every release
+(`crates/mf-game/assets/fonts/OFL.txt`). No other licensing terms are declared for
+this project at this time.
