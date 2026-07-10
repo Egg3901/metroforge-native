@@ -28,7 +28,7 @@ fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "MetroForge".to_string(),
-                resolution: (1440.0, 900.0).into(),
+                resolution: (1440.0_f32, 900.0_f32).into(),
                 present_mode: PresentMode::AutoVsync,
                 ..default()
             }),
