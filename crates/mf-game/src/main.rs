@@ -3,9 +3,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
+mod build_ui;
 mod camera;
 mod command_bus;
 mod config;
+mod design_system;
 mod hud;
 mod input;
 mod quality_boot;
@@ -60,6 +62,7 @@ fn main() {
             // integration, not merged with the real implementations.
             tools::MfToolsStubPlugin,
             command_bus::MfCommandBusStubPlugin,
+            build_ui::MfBuildUiPlugin,
         ));
     // MF_PERF_LOG=1: log frame-time diagnostics (avg/FPS) once per second.
     // Costs nothing when unset; gives players and CI a zero-setup way to
