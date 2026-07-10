@@ -5,6 +5,7 @@
 mod audio;
 mod build_ui;
 mod camera;
+mod campaign;
 mod command_bus;
 mod config;
 mod design_system;
@@ -15,6 +16,7 @@ mod overlays;
 mod panels;
 mod quality_boot;
 mod reveal_input;
+mod saves;
 mod state;
 mod tools;
 mod verify;
@@ -52,6 +54,7 @@ fn main() {
             input::MfInputPlugin,
             reveal_input::MfRevealInputPlugin,
             hud::MfHudPlugin,
+            saves::MfSavesPlugin,
             verify::MfVerifyPlugin,
             MfQualityBootPlugin,
             audio::MfAudioPlugin,
