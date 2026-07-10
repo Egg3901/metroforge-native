@@ -59,12 +59,6 @@ impl Plugin for MfHudPlugin {
         app.add_plugins(EguiPlugin::default())
             .init_resource::<ToastLog>()
             .init_resource::<EguiStyleApplied>()
-            // INTEGRATION STUB: the real `v04/campaign` branch should own
-            // this `init_resource` call (likely alongside its own save/load
-            // for star progress) — see `campaign.rs`'s module doc. Kept
-            // here for now so the main menu's city grid has a
-            // `CampaignProgress` to read.
-            .init_resource::<CampaignProgress>()
             .add_systems(Update, collect_toasts_system)
             .add_systems(
                 EguiPrimaryContextPass,
@@ -290,10 +284,9 @@ fn field_label(ui: &mut egui::Ui, text: &str) {
 /// convexity a star doesn't have. `filled` picks a solid `color` fill
 /// (earned) vs. a hollow outline in `color` (not yet earned).
 ///
-/// INTEGRATION: swap this whole function out for
-/// `design_system::icon(painter, rect, design_system::IconKind::Star, ...)`
-/// once the `v04/campaign` branch adds that variant — `design_system.rs` is
-/// read-only for this wave (owned by that branch's ship-plan split).
+/// Kept local rather than routed through `design_system::icon`: the menu
+/// needs the filled-vs-hollow earned/unearned distinction, which the
+/// stroke-style `IconKind::Star` does not model.
 fn draw_star(
     painter: &egui::Painter,
     center: egui::Pos2,
@@ -601,147 +594,153 @@ fn main_menu_hud_system(
             });
         });
 
-    egui::CentralPanel::default().show(ctx, |ui| {
-        ui.set_opacity(fade);
-        ui.vertical_centered(|ui| {
-            // Roughly centers the card vertically for typical window
-            // heights without measuring the card first.
-            ui.add_space((ui.available_height() * 0.22).max(24.0));
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE)
+        .show(ctx, |ui| {
+            ui.set_opacity(fade);
+            ui.vertical_centered(|ui| {
+                // Roughly centers the card vertically for typical window
+                // heights without measuring the card first.
+                ui.add_space((ui.available_height() * 0.22).max(24.0));
 
-            ui.scope(|ui| {
-                ui.set_width(460.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new("MetroForge").size(34.0).strong());
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new("Build the network. Move the city.")
-                            .size(14.0)
-                            .color(MUTED_TEXT),
-                    );
-                    ui.add_space(24.0);
+                ui.scope(|ui| {
+                    ui.set_width(460.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(egui::RichText::new("MetroForge").size(34.0).strong());
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("Build the network. Move the city.")
+                                .size(14.0)
+                                .color(MUTED_TEXT),
+                        );
+                        ui.add_space(24.0);
 
-                    let cities = hello
-                        .0
-                        .as_ref()
-                        .map(|h| h.city_list.as_slice())
-                        .unwrap_or(&[]);
-                    let total_stars: u32 = campaign::CITY_ORDER
-                        .iter()
-                        .map(|&key| progress.stars(key) as u32)
-                        .sum();
+                        let cities = hello
+                            .0
+                            .as_ref()
+                            .map(|h| h.city_list.as_slice())
+                            .unwrap_or(&[]);
+                        let total_stars: u32 = campaign::CITY_ORDER
+                            .iter()
+                            .map(|&key| progress.stars(key) as u32)
+                            .sum();
 
-                    field_label(ui, "City");
-                    ui.add_space(4.0);
-                    const CARD_SIZE: egui::Vec2 = egui::vec2(216.0, 96.0);
-                    const CARD_GAP: f32 = 12.0;
-                    egui::Grid::new("city_grid")
-                        .num_columns(2)
-                        .spacing(egui::vec2(CARD_GAP, CARD_GAP))
-                        .show(ui, |ui| {
-                            for (i, &key) in campaign::CITY_ORDER.iter().enumerate() {
-                                let label = cities
-                                    .iter()
-                                    .find(|c| c.key == key)
-                                    .map(|c| c.label.clone())
-                                    .unwrap_or_else(|| capitalize(key));
-                                let stars = progress.stars(key);
-                                let unlocked = progress.city_unlocked(key);
-                                let selected = pending.preset_key == key;
-                                // Duplicates the unlock formula from
-                                // `campaign::CampaignProgress::city_unlocked`
-                                // purely to render the "earn N more" caption
-                                // - the real gate below always calls
-                                // `city_unlocked` itself rather than trusting
-                                // this local recomputation.
-                                let stars_needed = (2 * i as u32).saturating_sub(total_stars);
-                                let clicked = city_card(
-                                    ui,
-                                    CARD_SIZE,
-                                    &label,
-                                    stars,
-                                    unlocked,
-                                    selected,
-                                    stars_needed,
-                                    &mut hovered,
-                                    &mut sfx,
-                                );
-                                if clicked {
-                                    pending.preset_key = key.to_string();
-                                    sfx.write(PlaySfx(Sfx::Confirm));
+                        field_label(ui, "City");
+                        ui.add_space(4.0);
+                        const CARD_SIZE: egui::Vec2 = egui::vec2(216.0, 96.0);
+                        const CARD_GAP: f32 = 12.0;
+                        egui::Grid::new("city_grid")
+                            .num_columns(2)
+                            .spacing(egui::vec2(CARD_GAP, CARD_GAP))
+                            .show(ui, |ui| {
+                                for (i, &key) in campaign::CITY_ORDER.iter().enumerate() {
+                                    let label = cities
+                                        .iter()
+                                        .find(|c| c.key == key)
+                                        .map(|c| c.label.clone())
+                                        .unwrap_or_else(|| capitalize(key));
+                                    let stars = progress.stars(key);
+                                    let unlocked = progress.city_unlocked(key);
+                                    let selected = pending.preset_key == key;
+                                    // Duplicates the unlock formula from
+                                    // `campaign::CampaignProgress::city_unlocked`
+                                    // purely to render the "earn N more" caption
+                                    // - the real gate below always calls
+                                    // `city_unlocked` itself rather than trusting
+                                    // this local recomputation.
+                                    let stars_needed = (2 * i as u32).saturating_sub(total_stars);
+                                    let clicked = city_card(
+                                        ui,
+                                        CARD_SIZE,
+                                        &label,
+                                        stars,
+                                        unlocked,
+                                        selected,
+                                        stars_needed,
+                                        &mut hovered,
+                                        &mut sfx,
+                                    );
+                                    if clicked {
+                                        pending.preset_key = key.to_string();
+                                        sfx.write(PlaySfx(Sfx::Confirm));
+                                    }
+                                    if i % 2 == 1 {
+                                        ui.end_row();
+                                    }
                                 }
-                                if i % 2 == 1 {
+                                if !campaign::CITY_ORDER.len().is_multiple_of(2) {
                                     ui.end_row();
                                 }
-                            }
-                            if !campaign::CITY_ORDER.len().is_multiple_of(2) {
-                                ui.end_row();
-                            }
-                        });
+                            });
 
-                    ui.add_space(20.0);
-                    thin_separator(ui);
-                    ui.add_space(8.0);
-                    field_label(ui, "Continue");
-                    ui.add_space(4.0);
-                    for entry in slots {
-                        let clicked = continue_slot_row(
-                            ui,
-                            460.0,
-                            entry.slot,
-                            entry.meta.as_ref(),
-                            &mut hovered,
-                            &mut sfx,
+                        ui.add_space(20.0);
+                        thin_separator(ui);
+                        ui.add_space(8.0);
+                        field_label(ui, "Continue");
+                        ui.add_space(4.0);
+                        for entry in slots {
+                            let clicked = continue_slot_row(
+                                ui,
+                                460.0,
+                                entry.slot,
+                                entry.meta.as_ref(),
+                                &mut hovered,
+                                &mut sfx,
+                            );
+                            ui.add_space(6.0);
+                            if clicked
+                                && save_manager
+                                    .load(entry.slot, &mut toasts, &mut sfx)
+                                    .is_some()
+                            {
+                                next_state.set(AppState::Loading);
+                            }
+                        }
+
+                        ui.add_space(12.0);
+                        field_label(ui, "Difficulty");
+                        egui::ComboBox::from_id_salt("difficulty_picker")
+                            .selected_text(format!("{:?}", pending.difficulty))
+                            .width(300.0)
+                            .show_ui(ui, |ui| {
+                                for d in [Difficulty::Easy, Difficulty::Normal, Difficulty::Hard] {
+                                    ui.selectable_value(
+                                        &mut pending.difficulty,
+                                        d,
+                                        format!("{d:?}"),
+                                    );
+                                }
+                            });
+
+                        ui.add_space(12.0);
+                        field_label(ui, "Quality");
+                        egui::ComboBox::from_id_salt("quality_picker")
+                            .selected_text(format!("{:?}", *quality))
+                            .width(300.0)
+                            .show_ui(ui, |ui| {
+                                quality_options(ui, &mut quality, &mut config, &mut sfx)
+                            });
+
+                        ui.add_space(28.0);
+                        let start = ui.add_sized(
+                            [220.0, 44.0],
+                            egui::Button::new(
+                                egui::RichText::new("Start")
+                                    .color(egui::Color32::WHITE)
+                                    .size(16.0)
+                                    .strong(),
+                            )
+                            .fill(ACCENT),
                         );
-                        ui.add_space(6.0);
-                        if clicked
-                            && save_manager
-                                .load(entry.slot, &mut toasts, &mut sfx)
-                                .is_some()
-                        {
+                        hover_tick(&start, &mut hovered, &mut sfx);
+                        if start.clicked() {
+                            sfx.write(PlaySfx(Sfx::Confirm));
                             next_state.set(AppState::Loading);
                         }
-                    }
-
-                    ui.add_space(12.0);
-                    field_label(ui, "Difficulty");
-                    egui::ComboBox::from_id_salt("difficulty_picker")
-                        .selected_text(format!("{:?}", pending.difficulty))
-                        .width(300.0)
-                        .show_ui(ui, |ui| {
-                            for d in [Difficulty::Easy, Difficulty::Normal, Difficulty::Hard] {
-                                ui.selectable_value(&mut pending.difficulty, d, format!("{d:?}"));
-                            }
-                        });
-
-                    ui.add_space(12.0);
-                    field_label(ui, "Quality");
-                    egui::ComboBox::from_id_salt("quality_picker")
-                        .selected_text(format!("{:?}", *quality))
-                        .width(300.0)
-                        .show_ui(ui, |ui| {
-                            quality_options(ui, &mut quality, &mut config, &mut sfx)
-                        });
-
-                    ui.add_space(28.0);
-                    let start = ui.add_sized(
-                        [220.0, 44.0],
-                        egui::Button::new(
-                            egui::RichText::new("Start")
-                                .color(egui::Color32::WHITE)
-                                .size(16.0)
-                                .strong(),
-                        )
-                        .fill(ACCENT),
-                    );
-                    hover_tick(&start, &mut hovered, &mut sfx);
-                    if start.clicked() {
-                        sfx.write(PlaySfx(Sfx::Confirm));
-                        next_state.set(AppState::Loading);
-                    }
+                    });
                 });
             });
         });
-    });
     Ok(())
 }
 

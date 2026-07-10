@@ -193,6 +193,13 @@ pub struct SaveManager {
 }
 
 impl SaveManager {
+    /// True when a slot load is staged for `send_pending_load_system`;
+    /// `state.rs` consults this to skip the throwaway fresh `Init` that
+    /// would otherwise briefly build a city the `LoadSave` then replaces.
+    pub fn has_pending_load(&self) -> bool {
+        self.pending_load.is_some()
+    }
+
     /// Start a save into `slot`: sends `ToSim::RequestSave` and remembers
     /// `slot` plus the metadata snapshotted right now (`city_label`/`day`/
     /// `cash` — whatever's true the instant the player clicked, not

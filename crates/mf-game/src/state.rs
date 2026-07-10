@@ -230,7 +230,17 @@ fn send_init_system(
     link: Option<Res<SimLink>>,
     pending: Res<PendingInit>,
     attract: Option<ResMut<AttractState>>,
+    saves: Option<Res<crate::saves::SaveManager>>,
 ) {
+    // A staged slot load supersedes a fresh init entirely: LoadSave carries
+    // the whole sim state, so the fresh city this would build is thrown
+    // away the same frame (and briefly wastes sidecar work).
+    if saves
+        .as_deref()
+        .is_some_and(crate::saves::SaveManager::has_pending_load)
+    {
+        return;
+    }
     let Some(link) = link else {
         tracing::warn!("mf-game: entered Loading with no SimLink");
         return;

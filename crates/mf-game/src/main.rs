@@ -63,9 +63,15 @@ fn main() {
             command_bus::MfCommandBusPlugin,
             tools::MfToolsPlugin,
             build_ui::MfBuildUiPlugin,
+        ))
+        // Bevy's Plugins tuple impl caps at 15 elements; second batch.
+        .add_plugins((
             overlays::MfOverlaysPlugin,
             map_mode::MfMapModePlugin,
             panels::MfPanelsPlugin,
+            campaign::MfCampaignPlugin,
+            report_ui::MfReportUiPlugin,
+            attract::MfAttractPlugin,
         ));
     // MF_PERF_LOG=1: log frame-time diagnostics (avg/FPS) once per second.
     // Costs nothing when unset; gives players and CI a zero-setup way to
