@@ -16,7 +16,7 @@ use crate::audio::{PlaySfx, Sfx};
 use crate::campaign::{self, CampaignProgress};
 use crate::config::MfConfig;
 use crate::saves::{self, SaveManager, SaveSlot};
-use crate::state::{toggle_pause, AppState, PauseState, PendingInit, SimHello};
+use crate::state::{toggle_pause, AppState, MenuScreen, PauseState, PendingInit, SimHello};
 
 // Art-direction §1/§8 palette. `GOOD`/`WARN`/`BAD` are fixed semantic
 // status colors (they read fine on all three themes' panels); every other
@@ -442,8 +442,10 @@ fn capitalize(key: &str) -> String {
 
 /// One city card in the main menu's select grid: label, up-to-3 star
 /// glyphs, and (if locked) a dimmed treatment plus lock glyph + "Earn N more
-/// stars" caption. Returns whether the card was clicked (always `false` for
-/// a locked card — `Sense::hover()` only, so it isn't even interactive).
+/// stars" caption. Returns `(clicked, double_clicked)` (always `(false,
+/// false)` for a locked card - `Sense::hover()` only, so it isn't even
+/// interactive). A double-click is the "actually select and play"
+/// shortcut straight into Start (see `city_select_screen_ui`).
 #[allow(clippy::too_many_arguments)]
 fn city_card(
     ui: &mut egui::Ui,
@@ -455,7 +457,7 @@ fn city_card(
     stars_needed: u32,
     hovered: &mut Option<egui::Id>,
     sfx: &mut EventWriter<PlaySfx>,
-) -> bool {
+) -> (bool, bool) {
     let sense = if unlocked {
         egui::Sense::click()
     } else {
@@ -528,7 +530,10 @@ fn city_card(
         });
     }
 
-    unlocked && response.clicked()
+    (
+        unlocked && response.clicked(),
+        unlocked && response.double_clicked(),
+    )
 }
 
 /// One row in the main menu's "Continue" section: an autosave or numbered
@@ -611,40 +616,114 @@ fn continue_slot_row(
 
 #[allow(clippy::too_many_arguments)]
 fn main_menu_hud_system(
-    mut contexts: EguiContexts,
+    contexts: EguiContexts,
     hello: Res<SimHello>,
     progress: Res<CampaignProgress>,
-    mut pending: ResMut<PendingInit>,
-    mut quality: ResMut<QualityTier>,
-    mut theme: ResMut<Theme>,
-    mut config: ResMut<MfConfig>,
-    mut save_manager: ResMut<SaveManager>,
-    mut toasts: ResMut<ToastLog>,
+    pending: ResMut<PendingInit>,
+    quality: ResMut<QualityTier>,
+    theme: ResMut<Theme>,
+    config: ResMut<MfConfig>,
+    save_manager: ResMut<SaveManager>,
+    toasts: ResMut<ToastLog>,
     state: Res<State<AppState>>,
-    mut next_state: ResMut<NextState<AppState>>,
+    next_state: ResMut<NextState<AppState>>,
+    screen: ResMut<MenuScreen>,
+    sfx: EventWriter<PlaySfx>,
+    exit: EventWriter<AppExit>,
+    hovered: Local<Option<egui::Id>>,
+    slots_cache: Local<Option<Vec<saves::SlotEntry>>>,
+) -> Result {
+    match *screen {
+        MenuScreen::Title => title_screen_ui(contexts, screen, exit, sfx, hovered)?,
+        MenuScreen::CitySelect => city_select_screen_ui(
+            contexts,
+            hello,
+            progress,
+            pending,
+            save_manager,
+            toasts,
+            state,
+            next_state,
+            screen,
+            sfx,
+            hovered,
+            slots_cache,
+        )?,
+        MenuScreen::Settings => {
+            let mut screen = screen;
+            if settings_screen_ui(contexts, quality, theme, config, sfx, hovered)? {
+                *screen = MenuScreen::Title;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Website wordmark (`https://` storefront's `<link rel="icon">` inline
+/// SVG: dark rounded-rect badge, four colored spokes meeting a ringed
+/// center circle — see `metroforge/index.html`'s favicon data URI). Drawn
+/// with the egui painter rather than shipping a rasterized PNG: it's four
+/// strokes and a circle, so reproducing the exact same geometry/colors as
+/// vector primitives is pixel-faithful to the source SVG without adding an
+/// image-loading dependency (no `image`/`egui_extras` crate wired into
+/// this workspace yet) just for one static mark.
+fn draw_logo(ui: &mut egui::Ui, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let bg = egui::Color32::from_rgb(0x0b, 0x0d, 0x10);
+    painter.rect_filled(rect, egui::CornerRadius::same((size * 0.22) as u8), bg);
+
+    let center = rect.center();
+    let arm = size * 0.35;
+    let stroke_w = size * 0.1;
+    let corners = [
+        (
+            egui::vec2(-arm, -arm),
+            egui::Color32::from_rgb(0x7e, 0xf2, 0x9a),
+        ),
+        (
+            egui::vec2(arm, -arm),
+            egui::Color32::from_rgb(0x54, 0xd0, 0xff),
+        ),
+        (
+            egui::vec2(arm, arm),
+            egui::Color32::from_rgb(0xff, 0xb6, 0x3d),
+        ),
+        (
+            egui::vec2(-arm, arm),
+            egui::Color32::from_rgb(0xff, 0x5d, 0x6c),
+        ),
+    ];
+    for (offset, color) in corners {
+        painter.line_segment(
+            [center, center + offset],
+            egui::Stroke::new(stroke_w, color),
+        );
+    }
+    let hub_r = size * 0.15;
+    painter.circle_filled(center, hub_r, bg);
+    painter.circle_stroke(
+        center,
+        hub_r,
+        egui::Stroke::new(size * 0.075, egui::Color32::from_rgb(0xf4, 0xf4, 0xf5)),
+    );
+}
+
+/// Title screen (owner feedback: menu must not "take me right to city
+/// select" — this is what the player sees first, every time `MainMenu` is
+/// entered). Logo + tagline + Play/Settings/Quit, nothing else: city
+/// picking and options both live one click away on their own screens.
+fn title_screen_ui(
+    mut contexts: EguiContexts,
+    mut screen: ResMut<MenuScreen>,
+    mut exit: EventWriter<AppExit>,
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
-    mut slots_cache: Local<Option<Vec<saves::SlotEntry>>>,
 ) -> Result {
-    // Reread the save slots from disk once on entry to `MainMenu` (or the
-    // very first time this system runs) rather than every single frame —
-    // the slot files only change from a pause-overlay save or an autosave,
-    // both of which happen while `InGame`, so a menu-entry refresh is
-    // enough to stay current without doing disk IO at 60 Hz for a screen
-    // that just sits there between clicks.
-    if state.is_changed() || slots_cache.is_none() {
-        *slots_cache = Some(saves::list());
-    }
-    let slots = slots_cache.as_ref().expect("populated just above");
-
     let ctx = contexts.ctx_mut()?;
-    // Fade in over ~200ms on entry. `set_opacity` (rather than fighting
-    // egui for a per-widget alpha) multiplies the whole panel's painted
-    // output, text included, so both the dim scrim of a prior state and
-    // this menu's own controls ease in together.
-    let fade = ctx.animate_value_with_time(egui::Id::new("main_menu_fade"), 1.0, 0.2);
+    let fade = ctx.animate_value_with_time(egui::Id::new("title_fade"), 1.0, 0.2);
 
-    egui::TopBottomPanel::bottom("main_menu_version")
+    egui::TopBottomPanel::bottom("title_version")
         .frame(
             egui::Frame::default()
                 .fill(panel_bg())
@@ -663,135 +742,342 @@ fn main_menu_hud_system(
         });
 
     egui::CentralPanel::default()
-        .frame(egui::Frame::NONE)
+        .frame(egui::Frame::default().fill(panel_bg()))
         .show(ctx, |ui| {
             ui.set_opacity(fade);
             ui.vertical_centered(|ui| {
-                // Roughly centers the card vertically for typical window
-                // heights without measuring the card first.
-                ui.add_space((ui.available_height() * 0.22).max(24.0));
+                ui.add_space((ui.available_height() * 0.24).max(24.0));
+                draw_logo(ui, 88.0);
+                ui.add_space(18.0);
+                ui.label(egui::RichText::new("MetroForge").size(40.0).strong());
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new("Build the network. Move the city.")
+                        .size(15.0)
+                        .color(muted_text()),
+                );
+                ui.add_space(36.0);
 
-                ui.scope(|ui| {
-                    ui.set_width(460.0);
+                let play = ui.add_sized(
+                    [240.0, 46.0],
+                    egui::Button::new(
+                        egui::RichText::new("Play")
+                            .color(egui::Color32::WHITE)
+                            .size(17.0)
+                            .strong(),
+                    )
+                    .fill(accent()),
+                );
+                hover_tick(&play, &mut hovered, &mut sfx);
+                if play.clicked() {
+                    sfx.write(PlaySfx(Sfx::Confirm));
+                    *screen = MenuScreen::CitySelect;
+                }
+
+                ui.add_space(10.0);
+                let settings = ui.add_sized(
+                    [240.0, 40.0],
+                    egui::Button::new(egui::RichText::new("Settings").size(14.0)),
+                );
+                hover_tick(&settings, &mut hovered, &mut sfx);
+                if settings.clicked() {
+                    sfx.write(PlaySfx(Sfx::Confirm));
+                    *screen = MenuScreen::Settings;
+                }
+
+                ui.add_space(10.0);
+                let quit = ui.add_sized(
+                    [240.0, 40.0],
+                    egui::Button::new(egui::RichText::new("Quit").size(14.0)),
+                );
+                hover_tick(&quit, &mut hovered, &mut sfx);
+                if quit.clicked() {
+                    sfx.write(PlaySfx(Sfx::Cancel));
+                    exit.write(AppExit::Success);
+                }
+            });
+        });
+    Ok(())
+}
+
+/// City select (owner feedback: "cant actually select and play" + the card
+/// list truncating on 1080p). Root cause of both: the old single-screen
+/// menu packed the city grid, continue slots, difficulty/quality/theme
+/// pickers AND the Start button into one un-scrolled `CentralPanel` — on a
+/// 1080p window that content is comfortably taller than the viewport, so
+/// Start (the very last widget) rendered below the fold with no
+/// `ScrollArea` to reach it. A city-card click landed fine (it only sets
+/// `pending.preset_key`, no state transition), so the player saw their
+/// click "do nothing" because the one control that actually starts the
+/// game was invisible off-screen. Fixed by giving the scrollable content
+/// its own `ScrollArea` and pinning Start (plus a Back button) in a fixed
+/// bottom panel that's always on-screen regardless of list length.
+/// Double-clicking an unlocked card is also wired as a shortcut straight
+/// into Start, per the ask for "actually select and play".
+#[allow(clippy::too_many_arguments)]
+fn city_select_screen_ui(
+    mut contexts: EguiContexts,
+    hello: Res<SimHello>,
+    progress: Res<CampaignProgress>,
+    mut pending: ResMut<PendingInit>,
+    mut save_manager: ResMut<SaveManager>,
+    mut toasts: ResMut<ToastLog>,
+    state: Res<State<AppState>>,
+    mut next_state: ResMut<NextState<AppState>>,
+    mut screen: ResMut<MenuScreen>,
+    mut sfx: EventWriter<PlaySfx>,
+    mut hovered: Local<Option<egui::Id>>,
+    mut slots_cache: Local<Option<Vec<saves::SlotEntry>>>,
+) -> Result {
+    // Reread the save slots from disk once on entry to `MainMenu` (or the
+    // very first time this system runs) rather than every single frame —
+    // the slot files only change from a pause-overlay save or an autosave,
+    // both of which happen while `InGame`, so a menu-entry refresh is
+    // enough to stay current without doing disk IO at 60 Hz for a screen
+    // that just sits there between clicks.
+    if state.is_changed() || slots_cache.is_none() {
+        *slots_cache = Some(saves::list());
+    }
+    let slots = slots_cache.as_ref().expect("populated just above");
+
+    let ctx = contexts.ctx_mut()?;
+    let fade = ctx.animate_value_with_time(egui::Id::new("city_select_fade"), 1.0, 0.2);
+
+    let mut go_back = false;
+    let mut start_pressed = false;
+
+    egui::TopBottomPanel::top("city_select_top")
+        .frame(
+            egui::Frame::default()
+                .fill(panel_bg())
+                .inner_margin(egui::Margin::symmetric(14, 10)),
+        )
+        .show(ctx, |ui| {
+            ui.set_opacity(fade);
+            let back = ui.add(egui::Button::new(egui::RichText::new("< Back").size(13.0)));
+            hover_tick(&back, &mut hovered, &mut sfx);
+            if back.clicked() {
+                go_back = true;
+            }
+        });
+
+    // Start (and the version label) live in their own bottom panel outside
+    // the ScrollArea below, so they stay reachable at any window height —
+    // see this function's doc comment for why that's the actual fix for
+    // "cant actually select and play".
+    egui::TopBottomPanel::bottom("city_select_bottom")
+        .frame(
+            egui::Frame::default()
+                .fill(panel_bg())
+                .inner_margin(egui::Margin::symmetric(14, 12)),
+        )
+        .show(ctx, |ui| {
+            ui.set_opacity(fade);
+            ui.vertical_centered(|ui| {
+                let start = ui.add_sized(
+                    [220.0, 44.0],
+                    egui::Button::new(
+                        egui::RichText::new("Start")
+                            .color(egui::Color32::WHITE)
+                            .size(16.0)
+                            .strong(),
+                    )
+                    .fill(accent()),
+                );
+                hover_tick(&start, &mut hovered, &mut sfx);
+                if start.clicked() {
+                    start_pressed = true;
+                }
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        .size(11.0)
+                        .color(muted_text()),
+                );
+            });
+        });
+
+    egui::CentralPanel::default()
+        .frame(egui::Frame::default().fill(panel_bg()))
+        .show(ctx, |ui| {
+            ui.set_opacity(fade);
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
                     ui.vertical_centered(|ui| {
-                        ui.label(egui::RichText::new("MetroForge").size(34.0).strong());
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new("Build the network. Move the city.")
-                                .size(14.0)
-                                .color(muted_text()),
-                        );
-                        ui.add_space(24.0);
+                        ui.add_space(16.0);
+                        ui.scope(|ui| {
+                            ui.set_width(460.0);
+                            ui.vertical_centered(|ui| {
+                                let cities = hello
+                                    .0
+                                    .as_ref()
+                                    .map(|h| h.city_list.as_slice())
+                                    .unwrap_or(&[]);
+                                let total_stars: u32 = campaign::CITY_ORDER
+                                    .iter()
+                                    .map(|&key| progress.stars(key) as u32)
+                                    .sum();
 
-                        let cities = hello
-                            .0
-                            .as_ref()
-                            .map(|h| h.city_list.as_slice())
-                            .unwrap_or(&[]);
-                        let total_stars: u32 = campaign::CITY_ORDER
-                            .iter()
-                            .map(|&key| progress.stars(key) as u32)
-                            .sum();
+                                field_label(ui, "City");
+                                ui.add_space(4.0);
+                                const CARD_SIZE: egui::Vec2 = egui::vec2(216.0, 96.0);
+                                const CARD_GAP: f32 = 12.0;
+                                egui::Grid::new("city_grid")
+                                    .num_columns(2)
+                                    .spacing(egui::vec2(CARD_GAP, CARD_GAP))
+                                    .show(ui, |ui| {
+                                        for (i, &key) in campaign::CITY_ORDER.iter().enumerate() {
+                                            let label = cities
+                                                .iter()
+                                                .find(|c| c.key == key)
+                                                .map(|c| c.label.clone())
+                                                .unwrap_or_else(|| capitalize(key));
+                                            let stars = progress.stars(key);
+                                            let unlocked = progress.city_unlocked(key);
+                                            let selected = pending.preset_key == key;
+                                            // Duplicates the unlock formula from
+                                            // `campaign::CampaignProgress::city_unlocked`
+                                            // purely to render the "earn N more" caption
+                                            // - the real gate below always calls
+                                            // `city_unlocked` itself rather than trusting
+                                            // this local recomputation.
+                                            let stars_needed =
+                                                (2 * i as u32).saturating_sub(total_stars);
+                                            let (clicked, double_clicked) = city_card(
+                                                ui,
+                                                CARD_SIZE,
+                                                &label,
+                                                stars,
+                                                unlocked,
+                                                selected,
+                                                stars_needed,
+                                                &mut hovered,
+                                                &mut sfx,
+                                            );
+                                            if clicked {
+                                                pending.preset_key = key.to_string();
+                                                sfx.write(PlaySfx(Sfx::Confirm));
+                                            }
+                                            if double_clicked {
+                                                pending.preset_key = key.to_string();
+                                                start_pressed = true;
+                                            }
+                                            if i % 2 == 1 {
+                                                ui.end_row();
+                                            }
+                                        }
+                                        if !campaign::CITY_ORDER.len().is_multiple_of(2) {
+                                            ui.end_row();
+                                        }
+                                    });
 
-                        field_label(ui, "City");
-                        ui.add_space(4.0);
-                        const CARD_SIZE: egui::Vec2 = egui::vec2(216.0, 96.0);
-                        const CARD_GAP: f32 = 12.0;
-                        egui::Grid::new("city_grid")
-                            .num_columns(2)
-                            .spacing(egui::vec2(CARD_GAP, CARD_GAP))
-                            .show(ui, |ui| {
-                                for (i, &key) in campaign::CITY_ORDER.iter().enumerate() {
-                                    let label = cities
-                                        .iter()
-                                        .find(|c| c.key == key)
-                                        .map(|c| c.label.clone())
-                                        .unwrap_or_else(|| capitalize(key));
-                                    let stars = progress.stars(key);
-                                    let unlocked = progress.city_unlocked(key);
-                                    let selected = pending.preset_key == key;
-                                    // Duplicates the unlock formula from
-                                    // `campaign::CampaignProgress::city_unlocked`
-                                    // purely to render the "earn N more" caption
-                                    // - the real gate below always calls
-                                    // `city_unlocked` itself rather than trusting
-                                    // this local recomputation.
-                                    let stars_needed = (2 * i as u32).saturating_sub(total_stars);
-                                    let clicked = city_card(
+                                ui.add_space(20.0);
+                                thin_separator(ui);
+                                ui.add_space(8.0);
+                                field_label(ui, "Continue");
+                                ui.add_space(4.0);
+                                for entry in slots {
+                                    let clicked = continue_slot_row(
                                         ui,
-                                        CARD_SIZE,
-                                        &label,
-                                        stars,
-                                        unlocked,
-                                        selected,
-                                        stars_needed,
+                                        460.0,
+                                        entry.slot,
+                                        entry.meta.as_ref(),
                                         &mut hovered,
                                         &mut sfx,
                                     );
-                                    if clicked {
-                                        pending.preset_key = key.to_string();
-                                        sfx.write(PlaySfx(Sfx::Confirm));
+                                    ui.add_space(6.0);
+                                    if clicked
+                                        && save_manager
+                                            .load(entry.slot, &mut toasts, &mut sfx)
+                                            .is_some()
+                                    {
+                                        next_state.set(AppState::Loading);
                                     }
-                                    if i % 2 == 1 {
-                                        ui.end_row();
-                                    }
                                 }
-                                if !campaign::CITY_ORDER.len().is_multiple_of(2) {
-                                    ui.end_row();
-                                }
+
+                                ui.add_space(12.0);
+                                field_label(ui, "Difficulty");
+                                egui::ComboBox::from_id_salt("difficulty_picker")
+                                    .selected_text(format!("{:?}", pending.difficulty))
+                                    .width(300.0)
+                                    .show_ui(ui, |ui| {
+                                        for d in
+                                            [Difficulty::Easy, Difficulty::Normal, Difficulty::Hard]
+                                        {
+                                            ui.selectable_value(
+                                                &mut pending.difficulty,
+                                                d,
+                                                format!("{d:?}"),
+                                            );
+                                        }
+                                    });
+
+                                // Bottom padding so the last widget doesn't sit flush
+                                // against the pinned Start panel when scrolled all the
+                                // way down.
+                                ui.add_space(20.0);
                             });
+                        });
+                    });
+                });
+        });
 
-                        ui.add_space(20.0);
-                        thin_separator(ui);
-                        ui.add_space(8.0);
-                        field_label(ui, "Continue");
-                        ui.add_space(4.0);
-                        for entry in slots {
-                            let clicked = continue_slot_row(
-                                ui,
-                                460.0,
-                                entry.slot,
-                                entry.meta.as_ref(),
-                                &mut hovered,
-                                &mut sfx,
-                            );
-                            ui.add_space(6.0);
-                            if clicked
-                                && save_manager
-                                    .load(entry.slot, &mut toasts, &mut sfx)
-                                    .is_some()
-                            {
-                                next_state.set(AppState::Loading);
-                            }
-                        }
+    if start_pressed {
+        sfx.write(PlaySfx(Sfx::Confirm));
+        next_state.set(AppState::Loading);
+    }
+    if go_back {
+        sfx.write(PlaySfx(Sfx::Cancel));
+        *screen = MenuScreen::Title;
+    }
+    Ok(())
+}
 
-                        ui.add_space(12.0);
-                        field_label(ui, "Difficulty");
-                        egui::ComboBox::from_id_salt("difficulty_picker")
-                            .selected_text(format!("{:?}", pending.difficulty))
-                            .width(300.0)
-                            .show_ui(ui, |ui| {
-                                for d in [Difficulty::Easy, Difficulty::Normal, Difficulty::Hard] {
-                                    ui.selectable_value(
-                                        &mut pending.difficulty,
-                                        d,
-                                        format!("{d:?}"),
-                                    );
-                                }
-                            });
+/// Settings screen: quality tier + theme, the two overrides `config.rs`
+/// actually persists to `config.toml` (there's nothing else in that file
+/// to expose yet). Shared verbatim by the title screen's Settings button
+/// and the in-game pause menu's Settings button — both call sites own
+/// what "Back" means for them (return to `MenuScreen::Title` vs. close
+/// the pause-menu settings panel) via this function's `bool` return
+/// (true == Back was clicked this frame).
+fn settings_screen_ui(
+    mut contexts: EguiContexts,
+    mut quality: ResMut<QualityTier>,
+    mut theme: ResMut<Theme>,
+    mut config: ResMut<MfConfig>,
+    mut sfx: EventWriter<PlaySfx>,
+    mut hovered: Local<Option<egui::Id>>,
+) -> Result<bool> {
+    let mut back_clicked = false;
+    let ctx = contexts.ctx_mut()?;
+    let fade = ctx.animate_value_with_time(egui::Id::new("settings_fade"), 1.0, 0.2);
 
-                        ui.add_space(12.0);
+    egui::CentralPanel::default()
+        .frame(egui::Frame::default().fill(panel_bg()))
+        .show(ctx, |ui| {
+            ui.set_opacity(fade);
+            ui.vertical_centered(|ui| {
+                ui.add_space((ui.available_height() * 0.22).max(24.0));
+                ui.scope(|ui| {
+                    ui.set_width(320.0);
+                    ui.vertical_centered(|ui| {
+                        draw_logo(ui, 36.0);
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new("Settings").size(28.0).strong());
+                        ui.add_space(24.0);
+
                         field_label(ui, "Quality");
-                        egui::ComboBox::from_id_salt("quality_picker")
+                        egui::ComboBox::from_id_salt("settings_quality")
                             .selected_text(format!("{:?}", *quality))
                             .width(300.0)
                             .show_ui(ui, |ui| {
                                 quality_options(ui, &mut quality, &mut config, &mut sfx)
                             });
 
-                        ui.add_space(12.0);
+                        ui.add_space(14.0);
                         field_label(ui, "Theme");
-                        egui::ComboBox::from_id_salt("theme_picker")
+                        egui::ComboBox::from_id_salt("settings_theme")
                             .selected_text(theme.label())
                             .width(300.0)
                             .show_ui(ui, |ui| {
@@ -799,26 +1085,20 @@ fn main_menu_hud_system(
                             });
 
                         ui.add_space(28.0);
-                        let start = ui.add_sized(
-                            [220.0, 44.0],
-                            egui::Button::new(
-                                egui::RichText::new("Start")
-                                    .color(egui::Color32::WHITE)
-                                    .size(16.0)
-                                    .strong(),
-                            )
-                            .fill(accent()),
+                        let back = ui.add_sized(
+                            [220.0, 40.0],
+                            egui::Button::new(egui::RichText::new("Back").size(14.0)),
                         );
-                        hover_tick(&start, &mut hovered, &mut sfx);
-                        if start.clicked() {
-                            sfx.write(PlaySfx(Sfx::Confirm));
-                            next_state.set(AppState::Loading);
+                        hover_tick(&back, &mut hovered, &mut sfx);
+                        if back.clicked() {
+                            sfx.write(PlaySfx(Sfx::Cancel));
+                            back_clicked = true;
                         }
                     });
                 });
             });
         });
-    Ok(())
+    Ok(back_clicked)
 }
 
 fn loading_hud_system(
@@ -1022,13 +1302,13 @@ fn in_game_hud_system(
 /// that file.
 #[allow(clippy::too_many_arguments)]
 fn pause_overlay_system(
-    mut contexts: EguiContexts,
+    contexts: EguiContexts,
     mut pause: ResMut<PauseState>,
     ui_state: Res<LatestUi>,
     link: Option<Res<SimLink>>,
-    mut quality: ResMut<QualityTier>,
-    mut theme: ResMut<Theme>,
-    mut config: ResMut<MfConfig>,
+    quality: ResMut<QualityTier>,
+    theme: ResMut<Theme>,
+    config: ResMut<MfConfig>,
     mut save_manager: ResMut<SaveManager>,
     mut toasts: ResMut<ToastLog>,
     pending: Res<PendingInit>,
@@ -1036,10 +1316,22 @@ fn pause_overlay_system(
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
     mut slot_occupied_cache: Local<Option<[bool; SAVE_SLOT_COUNT]>>,
+    mut pause_settings_open: Local<bool>,
 ) -> Result {
     if !pause.active {
         return Ok(());
     }
+    // Owner ask: Settings must be reachable "from the in-game pause menu",
+    // not just the title screen. Reuses `settings_screen_ui` verbatim
+    // (same quality/theme controls, same widget layout) rather than a
+    // second copy of the ComboBoxes bolted onto the pause panel.
+    if *pause_settings_open {
+        if settings_screen_ui(contexts, quality, theme, config, sfx, hovered)? {
+            *pause_settings_open = false;
+        }
+        return Ok(());
+    }
+    let mut contexts = contexts;
     // Refresh the occupied/empty cache once per pause session (on the
     // false->true transition, which flags `pause` as changed) rather than
     // re-reading 3 slot files from disk every single frame the pause panel
@@ -1058,6 +1350,7 @@ fn pause_overlay_system(
     }
     let slot_occupied = slot_occupied_cache.expect("populated just above");
 
+    let mut settings_open_pressed = false;
     let ctx = contexts.ctx_mut()?;
 
     egui::Area::new(egui::Id::new("pause_scrim"))
@@ -1084,6 +1377,8 @@ fn pause_overlay_system(
                 .show(ui, |ui| {
                     ui.set_width(260.0);
                     ui.vertical_centered(|ui| {
+                        draw_logo(ui, 36.0);
+                        ui.add_space(6.0);
                         ui.label(egui::RichText::new("Paused").size(24.0).strong());
                         ui.add_space(18.0);
 
@@ -1102,23 +1397,16 @@ fn pause_overlay_system(
                             sfx.write(PlaySfx(Sfx::Unpause));
                         }
 
-                        ui.add_space(14.0);
-                        field_label(ui, "Quality");
-                        egui::ComboBox::from_id_salt("pause_quality")
-                            .selected_text(format!("{:?}", *quality))
-                            .width(220.0)
-                            .show_ui(ui, |ui| {
-                                quality_options(ui, &mut quality, &mut config, &mut sfx)
-                            });
-
-                        ui.add_space(14.0);
-                        field_label(ui, "Theme");
-                        egui::ComboBox::from_id_salt("pause_theme")
-                            .selected_text(theme.label())
-                            .width(220.0)
-                            .show_ui(ui, |ui| {
-                                theme_options(ui, &mut theme, &mut config, &mut sfx)
-                            });
+                        ui.add_space(10.0);
+                        let settings = ui.add_sized(
+                            [220.0, 36.0],
+                            egui::Button::new(egui::RichText::new("Settings").size(13.0)),
+                        );
+                        hover_tick(&settings, &mut hovered, &mut sfx);
+                        if settings.clicked() {
+                            sfx.write(PlaySfx(Sfx::Confirm));
+                            settings_open_pressed = true;
+                        }
 
                         ui.add_space(14.0);
                         field_label(ui, "Save game");
@@ -1166,6 +1454,9 @@ fn pause_overlay_system(
                 });
         });
 
+    if settings_open_pressed {
+        *pause_settings_open = true;
+    }
     Ok(())
 }
 

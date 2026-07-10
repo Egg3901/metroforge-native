@@ -23,6 +23,21 @@ pub enum AppState {
     InGame,
 }
 
+/// Which screen `hud.rs`'s `AppState::MainMenu` systems are showing right
+/// now. Not a second `States` machine (that's overkill for three egui
+/// panels) — a plain resource `hud.rs` reads/writes directly, since
+/// nothing outside the menu (net status, sim init, etc.) reacts to it.
+///
+/// Owner feedback ("takes me right to city select"): the player must land
+/// on `Title` first and explicitly click Play before seeing city cards.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MenuScreen {
+    #[default]
+    Title,
+    CitySelect,
+    Settings,
+}
+
 /// Sidecar `hello` payload (city list + default world size), once received.
 #[derive(Resource, Default)]
 pub struct SimHello(pub Option<HelloInfo>);
@@ -113,7 +128,9 @@ impl Plugin for MfGameStatePlugin {
             // preset inited, so every `Loading` entry inits exactly as it
             // did before this wave) whether or not that wiring has landed.
             .init_resource::<AttractState>()
+            .init_resource::<MenuScreen>()
             .add_systems(OnEnter(AppState::Boot), boot_system)
+            .add_systems(OnEnter(AppState::MainMenu), reset_menu_screen_system)
             .add_systems(OnExit(AppState::InGame), clear_pause_on_exit_ingame)
             .add_systems(Update, net_status_watchdog)
             .add_systems(
@@ -130,6 +147,32 @@ impl Plugin for MfGameStatePlugin {
                 autostart_system.run_if(in_state(AppState::MainMenu)),
             )
             .add_systems(Update, graceful_quit_system);
+    }
+}
+
+/// Re-entering `MainMenu` (fresh boot, or the fatal-reconnect watchdog
+/// dropping back here from mid-game) must always start at `Title` — never
+/// resume wherever the player happened to leave the menu screen state
+/// last time, since that could strand a returning player on a stale
+/// `CitySelect`/`Settings` screen with no visible way back to Play.
+fn reset_menu_screen_system(mut screen: ResMut<MenuScreen>) {
+    *screen = menu_screen_override().unwrap_or(MenuScreen::Title);
+}
+
+/// Verify/screenshot-tooling escape hatch: `MF_MENU_SCREEN=title|city|
+/// settings` forces which `MenuScreen` `MainMenu` opens on, so the verify
+/// harness can capture all three screens without a player driving egui
+/// clicks by hand (no display server input under `xvfb-run`). Unset (the
+/// normal player path) always lands on `Title` per the fixed state
+/// machine above. A malformed/unknown value degrades to "unset" for the
+/// same reason `MF_AUTOSTART`'s parsing does — a stray env var must not
+/// strand anything.
+fn menu_screen_override() -> Option<MenuScreen> {
+    match std::env::var("MF_MENU_SCREEN").ok()?.trim() {
+        "title" => Some(MenuScreen::Title),
+        "city" => Some(MenuScreen::CitySelect),
+        "settings" => Some(MenuScreen::Settings),
+        _ => None,
     }
 }
 
