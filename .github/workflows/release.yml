@@ -8,46 +8,40 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            bun_target: bun-linux-x64
-            sidecar_name: metroforge-sidecar
-            client_name: metroforge
-            archive: tar.gz
-          - os: windows-latest
-            bun_target: bun-windows-x64
-            sidecar_name: metroforge-sidecar.exe
-            client_name: metroforge.exe
-            archive: zip
-          - os: macos-latest
-            # GitHub's macos-latest runners are Apple Silicon.
-            bun_target: bun-darwin-arm64
-            sidecar_name: metroforge-sidecar
-            client_name: metroforge
-            archive: zip
-
-    runs-on: ${{ matrix.os }}
-
+  # Linux + Windows both build on ubuntu-latest: the Windows client is
+  # cross-compiled with cargo-xwin (no windows-latest runner needed/paid
+  # for), and both Bun sidecar targets cross-compile from Linux too.
+  linux-and-windows:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout metroforge-native
         uses: actions/checkout@v4
         with:
           path: metroforge-native
 
-      # Pinned to a known-good SHA (see ci.yml) rather than floating on a
-      # branch, so a release build can't be silently broken by an unrelated
-      # upstream metroforge change.
+      # The TypeScript sidecar (spec §2) lives in a sibling repo.
+      #
+      # TODO(sidecar-merge): the sidecar currently lives on the
+      # `feat/sim-sidecar` branch of Egg3901/metroforge, not yet merged to
+      # master. FLIP `ref` BELOW TO `master` ONCE THAT BRANCH MERGES, and
+      # ideally pin it to a specific commit SHA/tag at that point rather
+      # than floating on a branch name, so an unrelated upstream metroforge
+      # change can't silently break a release build.
       - name: Checkout metroforge (sidecar source)
         uses: actions/checkout@v4
         with:
           repository: Egg3901/metroforge
-          ref: aeac1c620b736cf67067af50f7522741e69cb431
+          ref: feat/sim-sidecar
           path: metroforge
+
+      - name: Derive version from tag
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -55,12 +49,115 @@ jobs:
           bun-version: 1.3
 
       - name: bun install (sidecar deps)
-        working-directory: metroforge
+        working-directory: metroforge/sidecar
         run: bun install
 
-      - name: Compile sidecar (${{ matrix.bun_target }})
+      - name: Create dist-sidecar staging dir
+        run: mkdir -p metroforge-native/dist-sidecar
+
+      - name: Compile sidecar (linux-x64)
         working-directory: metroforge
-        run: bun build --compile --target=${{ matrix.bun_target }} ./sidecar/index.ts --outfile ${{ matrix.sidecar_name }}
+        run: bun build --compile --target=bun-linux-x64 ./sidecar/index.ts --outfile ../metroforge-native/dist-sidecar/metroforge-sidecar
+
+      - name: Compile sidecar (windows-x64)
+        working-directory: metroforge
+        run: bun build --compile --target=bun-windows-x64 ./sidecar/index.ts --outfile ../metroforge-native/dist-sidecar/metroforge-sidecar.exe
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: metroforge-native
+
+      # cargo-xwin downloads the MSVC CRT/Windows SDK on first use (a few
+      # hundred MB) and the tool itself takes a couple minutes to build from
+      # source — both are cacheable across runs. Bump the `v1` suffix below
+      # to force-invalidate if a cargo-xwin/SDK upgrade ever needs a clean
+      # cache.
+      - name: Cache cargo-xwin tool + Windows SDK + cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-xwin
+            ~/.cargo/registry
+            ~/.cache/cargo-xwin
+          key: ubuntu-cargo-xwin-v1-${{ hashFiles('metroforge-native/Cargo.lock') }}
+          restore-keys: |
+            ubuntu-cargo-xwin-v1-
+
+      - name: Install cross-compile toolchain (clang/llvm/lld)
+        run: sudo apt-get update && sudo apt-get install -y clang llvm lld
+
+      - name: Add Windows rustup target
+        run: rustup target add x86_64-pc-windows-msvc
+
+      - name: Install cargo-xwin
+        run: command -v cargo-xwin || cargo install cargo-xwin
+
+      - name: cargo build --release -p mf-game (linux)
+        working-directory: metroforge-native
+        run: cargo build --release -p mf-game
+
+      - name: cargo xwin build --release -p mf-game (windows)
+        working-directory: metroforge-native
+        run: cargo xwin build --release -p mf-game --target x86_64-pc-windows-msvc
+
+      - name: Package (linux)
+        working-directory: metroforge-native
+        run: ./scripts/package.sh linux "${{ steps.version.outputs.value }}"
+
+      - name: Package (windows)
+        working-directory: metroforge-native
+        run: ./scripts/package.sh windows "${{ steps.version.outputs.value }}"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            metroforge-native/release-artifacts/metroforge-${{ steps.version.outputs.value }}-linux-x64.tar.gz
+            metroforge-native/release-artifacts/metroforge-${{ steps.version.outputs.value }}-windows-x64.zip
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout metroforge-native
+        uses: actions/checkout@v4
+        with:
+          path: metroforge-native
+
+      # TODO(sidecar-merge): see the identical checkout step in the
+      # linux-and-windows job above — same branch, same caveat, same TODO.
+      - name: Checkout metroforge (sidecar source)
+        uses: actions/checkout@v4
+        with:
+          repository: Egg3901/metroforge
+          ref: feat/sim-sidecar
+          path: metroforge
+
+      - name: Derive version from tag
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3
+
+      - name: bun install (sidecar deps)
+        working-directory: metroforge/sidecar
+        run: bun install
+
+      - name: Create dist-sidecar staging dir
+        run: mkdir -p metroforge-native/dist-sidecar
+
+      # GitHub's macos-latest runners are Apple Silicon.
+      - name: Compile sidecar (darwin-arm64)
+        working-directory: metroforge
+        run: bun build --compile --target=bun-darwin-arm64 ./sidecar/index.ts --outfile ../metroforge-native/dist-sidecar/metroforge-sidecar-darwin-arm64
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -74,38 +171,14 @@ jobs:
         working-directory: metroforge-native
         run: cargo build --release -p mf-game
 
-      - name: Stage release contents
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p dist/stage
-          cp "metroforge-native/target/release/${{ matrix.client_name }}" dist/stage/
-          cp "metroforge/${{ matrix.sidecar_name }}" dist/stage/
-          cp metroforge-native/crates/mf-game/assets/fonts/OFL.txt dist/stage/
-
-      - name: Package (zip)
-        if: matrix.archive == 'zip'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd dist/stage
-          if command -v zip >/dev/null 2>&1; then
-            zip -r "../metroforge-${{ matrix.os }}.zip" .
-          else
-            powershell -Command "Compress-Archive -Path * -DestinationPath ../metroforge-${{ matrix.os }}.zip"
-          fi
-
-      - name: Package (tar.gz)
-        if: matrix.archive == 'tar.gz'
-        shell: bash
-        run: |
-          set -euo pipefail
-          tar -czf "dist/metroforge-${{ matrix.os }}.tar.gz" -C dist/stage .
+      - name: Package (macos)
+        working-directory: metroforge-native
+        run: ./scripts/package.sh macos "${{ steps.version.outputs.value }}"
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
-            dist/metroforge-${{ matrix.os }}.zip
-            dist/metroforge-${{ matrix.os }}.tar.gz
-          fail_on_unmatched_files: false
+            metroforge-native/release-artifacts/metroforge-${{ steps.version.outputs.value }}-macos-arm64.zip

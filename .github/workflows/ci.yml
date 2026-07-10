@@ -9,24 +9,13 @@ on:
 # carry a per-minute cost multiplier that isn't worth paying for every push.
 # release.yml is where the 3-OS matrix lives.
 jobs:
-  ci:
+  rust:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout metroforge-native
         uses: actions/checkout@v4
         with:
           path: metroforge-native
-
-      # The TypeScript sidecar (spec §2) lives in a sibling repo. Pinned to a
-      # known-good SHA rather than floating on a branch, so upstream
-      # metroforge changes can't silently break this CI job — bump this SHA
-      # deliberately when the sidecar changes in a way this repo needs.
-      - name: Checkout metroforge (sidecar source)
-        uses: actions/checkout@v4
-        with:
-          repository: Egg3901/metroforge
-          ref: aeac1c620b736cf67067af50f7522741e69cb431
-          path: metroforge
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -50,18 +39,39 @@ jobs:
         working-directory: metroforge-native
         run: cargo test --workspace
 
+  sidecar-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      # The TypeScript sidecar (spec §2) lives in a sibling repo. This job
+      # only exercises the sidecar in isolation (pure Bun/TS, no GPU, no
+      # Rust client involved), so it doesn't need to check out
+      # metroforge-native at all.
+      #
+      # TODO(sidecar-merge): the sidecar currently lives on the
+      # `feat/sim-sidecar` branch of Egg3901/metroforge, not yet merged to
+      # master. FLIP `ref` BELOW TO `master` ONCE THAT BRANCH MERGES, and
+      # ideally pin it to a specific commit SHA/tag at that point rather
+      # than floating on a branch name, so upstream metroforge changes can't
+      # silently break this CI job.
+      - name: Checkout metroforge (sidecar source)
+        uses: actions/checkout@v4
+        with:
+          repository: Egg3901/metroforge
+          ref: feat/sim-sidecar
+          path: metroforge
+
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3
 
       - name: bun install (sidecar deps)
-        working-directory: metroforge
+        working-directory: metroforge/sidecar
         run: bun install
 
       # Determinism regression gate (spec §2.6): two runs of the same seed
       # must produce identical stateHash and observed vehicle motion. No GPU
       # needed.
       - name: bun sidecar smoke test
-        working-directory: metroforge
-        run: bun run sidecar/smoke-test.ts
+        working-directory: metroforge/sidecar
+        run: bun run smoke-test.ts
