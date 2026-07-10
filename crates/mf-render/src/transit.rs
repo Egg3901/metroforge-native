@@ -166,9 +166,10 @@ fn rebuild_stations(
             .anchor(bevy::render::mesh::CylinderAnchor::Bottom),
     );
     let ring_mesh = meshes.add(Annulus::new(STATION_RING_INNER, STATION_RING_OUTER));
+    // Solid cylinder, always opaque, built by Bevy's own `Cylinder` primitive
+    // (correctly wound by construction) — single-sided/back-face-culled is
+    // correct.
     let body_material = materials.add(StandardMaterial {
-        double_sided: true,
-        cull_mode: None,
         base_color: palette::building_top(),
         ..default()
     });
@@ -184,9 +185,18 @@ fn rebuild_stations(
                 Name::new(format!("station-{}", st.id)),
             ))
             .id();
+        // Verified single-sided-safe: Bevy's `Annulus` mesh builder emits a
+        // flat disc in local XY with every normal `(0,0,1)` (local +Z), and
+        // its own source comment states the index order is deliberately CCW
+        // as seen from +Z (bevy_mesh dim2.rs `AnnulusMeshBuilder::build`).
+        // This entity's transform rotates it `-FRAC_PI_2` around X; applying
+        // the standard X-rotation matrix to local +Z gives
+        // `(0, -sin(-PI/2), cos(-PI/2)) = (0, 1, 0)` — world `+Y`, i.e.
+        // facing straight up at the top-down camera. Rotation doesn't flip
+        // winding (no reflection), so front-face-CCW-from-+Z stays
+        // front-face-CCW-from-+Y: single-sided is correct here, not just a
+        // "leave it double-sided to be safe" case.
         let ring_material = materials.add(StandardMaterial {
-            double_sided: true,
-            cull_mode: None,
             base_color: palette::mode_accent(st.mode),
             emissive: palette::emissive(palette::mode_accent(st.mode), 0.15),
             ..default()
@@ -294,6 +304,15 @@ fn rebuild_tracks(
         }
         let alpha = if grade == "tunnel" { 0.18 } else { 0.28 };
         let mesh = meshes.add(buf.build());
+        // Genuinely translucent always (0.18/0.28, never faded to 1.0 by
+        // subway.rs) — stays `Blend`, unlike the road/stripe materials.
+        // `double_sided`/`cull_mode` also stay as before: this is an
+        // `append_ribbon`-built, `Blend`-mode, no-reactive-`unlit`-updater
+        // material — the same shape as roads.rs's road-class materials,
+        // where single-siding was A/B-diff-verified to visibly brighten the
+        // subway+low-quality combination versus baseline (see the long
+        // comment there). Reverted alongside that fix out of caution rather
+        // than independently re-verified.
         let material = materials.add(StandardMaterial {
             double_sided: true,
             cull_mode: None,
@@ -407,6 +426,18 @@ fn rebuild_routes(
         );
         append_chevrons(&mut normal_buf, &path, height_at, color);
         let mesh = meshes.add(normal_buf.build());
+        // `Blend`, not `Opaque` — see the long comment on the road-class
+        // materials in `roads.rs` for why: dynamically flipping this to
+        // `Opaque` when steady and back to `Blend` mid-fade (this crate's
+        // other candidate for the same perf win) broke rendering in
+        // practice once verified via headless screenshot diffing, so this
+        // stays unconditionally `Blend` like the original code.
+        // `double_sided`/`cull_mode` also stay as before — same
+        // append_ribbon/Blend/stale-`unlit` shape as roads.rs's materials,
+        // where single-siding was A/B-diff-verified to visibly brighten the
+        // subway+low-quality combination (see that comment); not
+        // independently re-verified for this material, reverted out of
+        // caution.
         let material = materials.add(StandardMaterial {
             double_sided: true,
             cull_mode: None,
@@ -438,9 +469,11 @@ fn rebuild_routes(
                 |x, z| height_at.sample(x, z),
             );
             let bold_mesh = meshes.add(bold_buf.build());
+            // Solid whenever visible (subway.rs only ever toggles this
+            // entity's Visibility, never its alpha) — `..default()` already
+            // gives `AlphaMode::Opaque`, kept implicit here since nothing
+            // ever changes it.
             let bold_material = materials.add(StandardMaterial {
-                double_sided: true,
-                cull_mode: None,
                 base_color: Color::WHITE,
                 emissive: palette::emissive(color, 0.8),
                 ..default()
@@ -477,10 +510,17 @@ fn append_chevrons(buf: &mut MeshBuffers, path: &[Vec2], height_at: &HeightAt, c
             let tip = pos + dir * CHEVRON_LENGTH;
             let left = pos - dir * CHEVRON_LENGTH * 0.3 + perp * CHEVRON_WIDTH * 0.5;
             let right = pos - dir * CHEVRON_LENGTH * 0.3 - perp * CHEVRON_WIDTH * 0.5;
+            // Winding vs the declared `+Y` normal: with `perp = (-dz, dx)`,
+            // `v1 = left-tip` and `v2 = right-tip` work out (using
+            // dx^2+dz^2 == 1) to a right-hand cross product of `-2*a*b*Y`
+            // (a,b > 0) — i.e. `(tip,left,right)` winds CCW as seen from
+            // below, not from above. `push_tri` needs (p0,p1,p2) CCW from
+            // `normal`, so swap the last two args to `(tip,right,left)`,
+            // which flips the cross product to `+Y`.
             buf.push_tri(
                 Vec3::new(tip.x, y, tip.y),
-                Vec3::new(left.x, y, left.y),
                 Vec3::new(right.x, y, right.y),
+                Vec3::new(left.x, y, left.y),
                 Vec3::Y,
                 bright,
             );

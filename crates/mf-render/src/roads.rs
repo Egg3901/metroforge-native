@@ -30,6 +30,7 @@ impl Plugin for MfRoadsPlugin {
             (
                 build_roads_system.in_set(crate::MfRenderSet::Statics),
                 local_road_lod_system.in_set(crate::MfRenderSet::Dynamic),
+                apply_quality_to_roads_material_system.in_set(crate::MfRenderSet::Dynamic),
             ),
         );
     }
@@ -53,6 +54,13 @@ struct LocalRoadMarker;
 /// view without reaching into this module's internals.
 #[derive(Component)]
 pub struct RoadSurface;
+
+/// Marker on just the 3 road-class entities (arterial/collector/local) —
+/// NOT the arterial edge, which is intentionally always lit regardless of
+/// tier. Lets `apply_quality_to_roads_material_system` retarget only the
+/// materials whose `unlit` should track the tier.
+#[derive(Component)]
+struct RoadClassSurface;
 
 fn build_roads_system(
     mut commands: Commands,
@@ -127,12 +135,59 @@ fn build_roads_system(
             continue;
         }
         let mesh = meshes.add(buf.build());
+        // `Blend`, not `Opaque`: this surface renders at alpha 1.0 except
+        // during the subway-view fade (`subway.rs`'s
+        // `fade_road_and_stripe_alpha_system`, which lowers alpha toward
+        // `FADED_ALPHA`). An earlier version of this fix created this
+        // `Opaque` and had `subway.rs` flip it to `Blend` only while
+        // actually translucent, to skip the transparent pass (no depth
+        // write, per-entity sort, guaranteed overdraw) for the overwhelming
+        // majority of opaque-alpha frames. That broke rendering in
+        // practice — verified via headless screenshot A/B diffing, not just
+        // suspected — regardless of whether the mode was flipped by
+        // mutating the existing material asset in place or by swapping in a
+        // freshly-added material and reassigning the entity's
+        // `MeshMaterial3d` handle (which should force Bevy to re-queue the
+        // entity into the correct render phase, and didn't fix it either):
+        // both left the road/stripe geometry either invisible or wrongly
+        // blended once subway view settled. Root cause not fully isolated
+        // within this fix's scope; staying `Blend` unconditionally here
+        // (this crate's second blanket-material decision, `roads.rs`
+        // rebuild_routes's normal stripe in `transit.rs` is the other one)
+        // is the correctness-first fallback so the rendered scene doesn't
+        // change.
+        //
+        // `cull_mode`/`double_sided` are fixed below (Part 2 of issue #5):
+        // `append_ribbon`'s winding is verified CCW-from-+Y (mesh_utils.rs),
+        // making single-sided/back-face-culled correct for a ribbon only
+        // ever seen from above. This alone wasn't enough during
+        // verification — A/B screenshot diffing turned up a brightness
+        // regression in the subway+Potato combination, root-caused to
+        // `unlit` going stale (baked in once at build time, never updated
+        // on a runtime tier change, unlike buildings.rs/terrain.rs) so roads
+        // stayed on the LIT path after switching to Potato; combined with
+        // `double_sided`'s back-face normal flip, the "corrected" winding
+        // changed which normal direction actually receives direct light,
+        // visibly brightening the surface. `apply_quality_to_roads_material_
+        // system` below fixes that root cause (keeps `unlit` in sync with
+        // the tier, like buildings/terrain already do), which is what makes
+        // single-siding safe here.
+        // Color at the MATERIAL level, not vertex colors: vertex colors do
+        // not reach the shader for alpha-blended StandardMaterials in this
+        // Bevy 0.16 setup (terrain's vertex colors work fine - it is
+        // Opaque), which is why roads rendered white-on-white for so long
+        // ("streets barely read", the oldest item in the render backlog).
+        // A single-color ribbon never needed per-vertex color anyway.
         let material = materials.add(StandardMaterial {
-            double_sided: true,
-            cull_mode: None,
-            base_color: Color::WHITE,
+            base_color: road_color,
             unlit,
             alpha_mode: AlphaMode::Blend,
+            // Fully matte: with the ribbon winding fixed and single-siding
+            // on, these surfaces now receive direct sun for the first time,
+            // and the default reflectance (4% F0) paints a specular sheen
+            // that blows near-black asphalt out to white at high sun angles.
+            perceptual_roughness: 1.0,
+            reflectance: 0.0,
             ..default()
         });
         let mut entity_commands = commands.spawn((
@@ -141,6 +196,7 @@ fn build_roads_system(
             Transform::IDENTITY,
             Visibility::default(),
             RoadSurface,
+            RoadClassSurface,
             Name::new(format!("roads-{}", names[i])),
         ));
         if names[i] == "local" {
@@ -153,12 +209,22 @@ fn build_roads_system(
     // Arterial hairline edge, medium/high tier only (art-direction §1).
     if !unlit && !edge_buf.is_empty() {
         let mesh = meshes.add(edge_buf.build());
+        // `Blend` for the same reason as the class materials above.
+        // `double_sided`/`cull_mode` stay as-is (unlike the class materials):
+        // this one is *always* lit by design (`unlit: false` hardcoded, not
+        // tier-driven — it only exists on medium/high tier to begin with),
+        // so there's no stale-`unlit` root cause to fix here the way there
+        // was for the class materials, and it wasn't independently
+        // re-verified as single-siding-safe under the always-lit path. Low
+        // stakes either way: a 1-3m hairline accent, not the road fill.
         let material = materials.add(StandardMaterial {
-            double_sided: true,
-            cull_mode: None,
-            base_color: Color::WHITE,
+            // Same transparent-pass vertex-color caveat as the class
+            // materials above: color the material directly.
+            base_color: palette::road_edge(),
             unlit: false,
             alpha_mode: AlphaMode::Blend,
+            perceptual_roughness: 1.0,
+            reflectance: 0.0,
             ..default()
         });
         let e = commands
@@ -199,4 +265,31 @@ fn local_road_lod_system(
     } else {
         Visibility::Visible
     };
+}
+
+/// Flip the 3 road-class materials' `unlit` flag when the quality tier
+/// changes, mirroring `buildings.rs`'s `apply_quality_to_buildings_material_
+/// system` and `terrain.rs`'s equivalent. Without this, `unlit` — baked in
+/// once at `build_roads_system` time — goes stale after a runtime tier
+/// change (e.g. dropping to Potato mid-session): roads keep rendering via
+/// the LIT path with a directional light, while terrain/buildings correctly
+/// switch to flat unlit vertex colors, and the mismatch is visible (found
+/// via A/B screenshot diffing while fixing this crate's winding/culling —
+/// see the `append_ribbon` comment in mesh_utils.rs). The arterial edge
+/// deliberately stays out of this (`RoadClassSurface` excludes it) since
+/// it's always lit by design, independent of tier.
+fn apply_quality_to_roads_material_system(
+    quality: Res<QualityTier>,
+    roads: Query<&MeshMaterial3d<StandardMaterial>, With<RoadClassSurface>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if !quality.is_changed() {
+        return;
+    }
+    let unlit = quality.knobs().unlit_material;
+    for handle in &roads {
+        if let Some(mat) = materials.get_mut(&handle.0) {
+            mat.unlit = unlit;
+        }
+    }
 }

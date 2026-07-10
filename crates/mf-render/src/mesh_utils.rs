@@ -267,7 +267,18 @@ pub fn append_ribbon(
         let a1 = Vec3::new(a.x - perp.x, ya, a.y - perp.y);
         let b0 = Vec3::new(b.x + perp.x, yb, b.y + perp.y);
         let b1 = Vec3::new(b.x - perp.x, yb, b.y - perp.y);
-        buf.push_flat_quad(a1, b1, b0, a0, Vec3::Y, color);
+        // Winding: with `dir = (dx, dz)` and `perp = (-dz, dx) * half`, the
+        // triangle (a1, b1, b0) has edges `v1 = b1-a1 ~= (dx, dz)*len` and
+        // `v2 = b0-a1 ~= (dx,dz)*len - perp*2`; the right-hand cross product
+        // `v1 x v2` works out to `-2*half*len*Y` (since `dx^2+dz^2 == 1`) —
+        // i.e. it points opposite the declared `+Y` normal. `push_quad`'s
+        // `[0,1,2,0,2,3]` index order requires (p0,p1,p2) wound CCW as seen
+        // from `normal` (Bevy/wgpu front-face = CCW), so `(a1,b1,b0,a0)`
+        // is backwards; passing `(a0,b0,b1,a1)` (the same quad, reversed)
+        // flips the sign to `+Y` and matches the normal. Verified by hand
+        // with dir=(1,0): (a1,b1,b0)=(0,-1)->(1,-1)->(1,1) gives cross=-Y;
+        // (a0,b0,b1)=(0,1)->(1,1)->(1,-1) gives cross=+Y.
+        buf.push_flat_quad(a0, b0, b1, a1, Vec3::Y, color);
     }
 }
 
