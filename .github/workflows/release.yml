@@ -114,6 +114,44 @@ jobs:
         working-directory: metroforge-native
         run: ./scripts/package.sh windows "${{ steps.version.outputs.value }}"
 
+      # Gate: run the packaged linux artifact exactly as a player would (cold,
+      # no MF_* env vars) and fail the release if the window is a solid-color
+      # void. v0.1.0-alpha shipped with an invisible menu because nothing
+      # between `cargo build` and a player's double-click ever executed the
+      # bytes players actually download.
+      - name: Install artifact smoke-test deps (xvfb + software vulkan + imagemagick)
+        run: sudo apt-get install -y xvfb mesa-vulkan-drivers libvulkan1 imagemagick
+
+      - name: Smoke-test packaged linux artifact (cold player run)
+        working-directory: metroforge-native
+        run: |
+          mkdir -p /tmp/mf-smoke
+          tar xzf "release-artifacts/metroforge-${{ steps.version.outputs.value }}-linux-x64.tar.gz" -C /tmp/mf-smoke
+          cd /tmp/mf-smoke
+          Xvfb :99 -screen 0 1280x800x24 & echo $! > xvfb.pid
+          sleep 3
+          DISPLAY=:99 ./metroforge > run.log 2>&1 & echo $! > game.pid
+          sleep 75
+          DISPLAY=:99 import -window root shot.png
+          kill "$(cat game.pid)" 2>/dev/null || true
+          kill "$(cat xvfb.pid)" 2>/dev/null || true
+          UNIQUE=$(identify -format %k shot.png)
+          echo "smoke screenshot unique colors: $UNIQUE"
+          echo "--- last 40 lines of game log ---"
+          tail -40 run.log || true
+          if [ "$UNIQUE" -lt 50 ]; then
+            echo "::error::Artifact smoke test FAILED: screen is a near-solid void ($UNIQUE unique colors) - the packaged game did not reach a rendered menu"
+            exit 1
+          fi
+
+      - name: Upload smoke screenshot (always, for eyeballing)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-smoke-screenshot
+          path: /tmp/mf-smoke/shot.png
+          if-no-files-found: ignore
+
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
@@ -125,6 +163,9 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    # The linux job carries the cold-player smoke test; if the packaged build
+    # is a void, no platform's assets should reach the release.
+    needs: linux-and-windows
     steps:
       - name: Checkout metroforge-native
         uses: actions/checkout@v4
