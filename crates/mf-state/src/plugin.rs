@@ -7,9 +7,11 @@ use mf_net::{NetSet, SimEvent};
 use mf_protocol::{FromSimJson, FromSimMsg};
 
 use crate::city::CurrentCity;
+use crate::demand::LatestDemand;
 use crate::fields::LatestFields;
 use crate::frame::LatestFrame;
 use crate::height::HeightAt;
+use crate::overlay::OverlayState;
 use crate::quality::QualityTier;
 use crate::reveal::RevealState;
 use crate::subway::SubwayView;
@@ -27,6 +29,8 @@ impl Plugin for MfStatePlugin {
             .init_resource::<SubwayView>()
             .init_resource::<HeightAt>()
             .init_resource::<RevealState>()
+            .init_resource::<LatestDemand>()
+            .init_resource::<OverlayState>()
             // `add_event` is idempotent (it's an `init_resource` under the
             // hood), so it's safe whether or not `MfNetPlugin` was added
             // first; declared explicitly here since `mf-state` reads it.
@@ -44,6 +48,7 @@ fn apply_sim_events_system(
     mut fields: ResMut<LatestFields>,
     mut ui: ResMut<LatestUi>,
     mut frame: ResMut<LatestFrame>,
+    mut demand: ResMut<LatestDemand>,
 ) {
     for SimEvent(msg) in events.read() {
         match msg {
@@ -65,8 +70,11 @@ fn apply_sim_events_system(
             FromSimMsg::Json(FromSimJson::Ui(u)) => {
                 ui.0 = Some(u.clone());
             }
-            // Other JSON messages (hello/demand/commandResult/trackCost/
-            // saved/replay/toast/pong/bye) and the Traffic binary frame are
+            FromSimMsg::Json(FromSimJson::Demand(d)) => {
+                demand.0 = Some(d.clone());
+            }
+            // Other JSON messages (hello/commandResult/trackCost/saved/
+            // replay/toast/pong/bye) and the Traffic binary frame are
             // consumed directly by `mf-game`/`mf-render` systems that need
             // them (HUD toasts, command result correlation, traffic overlay
             // — out of v1 scope per spec §5) rather than mirrored here.

@@ -10,6 +10,7 @@ mod config;
 mod design_system;
 mod hud;
 mod input;
+mod overlays;
 mod quality_boot;
 mod reveal_input;
 mod state;
