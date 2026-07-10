@@ -12,8 +12,18 @@ use mf_state::{CurrentCity, HeightAt, QualityTier};
 use crate::mesh_utils::{append_ribbon, MeshBuffers};
 use crate::palette;
 
-/// Road surface sits just above bare ground (spec: "heightAt + 0.5").
-const ROAD_Y_OFFSET: f32 = 0.5;
+/// Road surface lift above ground. The spec said 0.5, but at overview zoom
+/// on near-flat terrain a 0.5m offset loses the depth fight against the
+/// terrain mesh at grazing angles (roads visibly vanish from skyline
+/// framings; found on the flattened real-city relief). 2m is still
+/// imperceptible as elevation at street zoom and keeps the ribbons winning
+/// depth at distance.
+const ROAD_Y_OFFSET: f32 = 2.0;
+/// Water-crossing segments ride a fixed deck height instead of hugging
+/// `WATER_LEVEL_Y` — a road at water level renders as a barely-visible black
+/// sliver mid-river (owner-flagged on the East River bridges). A flat
+/// causeway a few meters up reads as a bridge at city zoom.
+const BRIDGE_DECK_Y: f32 = 8.0;
 /// Widths per spec §3.3 (already includes `roadScale` multiplication).
 // Widened ~1.5x from real-world-ish 40/24/13: at overview zoom the true
 // widths are a few pixels and vanish into the bright ground (the oldest
@@ -127,13 +137,21 @@ fn build_roads_system(
             "collector" => (1usize, COLLECTOR_WIDTH as f32 * road_scale),
             _ => (2usize, LOCAL_WIDTH as f32 * road_scale),
         };
+        let deck_height = |x: f32, z: f32| {
+            let h = height_at.sample(x, z);
+            if h <= crate::terrain::WATER_LEVEL_Y + 0.01 {
+                BRIDGE_DECK_Y
+            } else {
+                h
+            }
+        };
         append_ribbon(
             &mut by_class[idx],
             &pts,
             ROAD_Y_OFFSET,
             width,
             road_color,
-            |x, z| height_at.sample(x, z),
+            deck_height,
         );
         if idx == 0 {
             append_ribbon(
@@ -142,7 +160,7 @@ fn build_roads_system(
                 ROAD_Y_OFFSET + 0.05,
                 width + 2.0,
                 palette::road_edge(),
-                |x, z| height_at.sample(x, z),
+                deck_height,
             );
         }
     }
