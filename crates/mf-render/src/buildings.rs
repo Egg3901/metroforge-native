@@ -1,15 +1,26 @@
 //! Building fabric (spec §3.3 `buildings.rs`): merged per-chunk meshes (8x8
-//! world chunks), white cuboids with TOP/SIDE/BASE vertex colors + ±3%
-//! per-building brightness jitter (art-direction §1). Rebuilt whenever
-//! `LatestFields.version` changes (mirrors `renderer.ts`'s
-//! `setFields -> drawBuildings` gate).
+//! world chunks), white cel-shaded masses with TOP/SIDE/BASE vertex colors +
+//! ±3% per-building brightness jitter (art-direction §1). Rebuilt whenever
+//! `LatestFields.version` changes, or when `CurrentCity.buildings` arrives
+//! or its content changes (see `BuildingsState::rebuild_key`) — mirrors
+//! `renderer.ts`'s `setFields -> drawBuildings` gate, extended for the
+//! native-only vector footprint data `renderer.ts` has no equivalent of.
 //!
-//! Real cities (a `buildingMask` present) sample the mask exactly per
-//! `renderer.ts`'s `drawIsoBuildings`: `step = max(2, floor(res/96))`, a
-//! ≥5/9 neighbor filter, footprint half-extent `cell*step*0.42`. Procedural
-//! cities (no mask) walk local-road polylines, porting the typology
-//! thresholds from `renderer.ts`'s `drawBuildings` (tower/apartment/
-//! rowhouse/house by jobs/population density).
+//! Three paths, tried in this priority order:
+//! - **Real-footprint path** (`CurrentCity.buildings` present and
+//!   non-empty): extrudes the actual per-building polygon (`BuildingFootprint`,
+//!   spec §1.2 msgType=5) into a prism via `mesh_utils::append_prism` — real
+//!   OSM building shapes, not axis-aligned boxes. This is the owner's north
+//!   star (real Google-Maps-3D-massing-style per-building geometry) and is
+//!   used whenever the sidecar has sent it, superseding both paths below.
+//! - **Mask path** (`buildingMask` present, no vector data): samples the
+//!   mask exactly per `renderer.ts`'s `drawIsoBuildings`: `step =
+//!   max(2, floor(res/96))`, a ≥5/9 neighbor filter, footprint half-extent
+//!   `cell*step*0.42`, decomposed into greedy rectangles. Kept as a
+//!   fallback for cities the sidecar hasn't sent vector footprints for yet.
+//! - **Procedural path** (neither): walks local-road polylines, porting the
+//!   typology thresholds from `renderer.ts`'s `drawBuildings` (tower/
+//!   apartment/rowhouse/house by jobs/population density).
 //!
 //! **Deviation from `renderer.ts` (documented):** the web renderer is a 2D
 //! isometric fake-extrusion (fixed `ISO_EXTRUDE = 140`) — it has no literal
@@ -18,13 +29,18 @@
 //! `renderer.ts` uses for typology selection (`towerness = jobs/60`,
 //! `resDensity = pop/55`), via `height = BASE + jobs*JOBS_WEIGHT +
 //! pop*POP_WEIGHT` clamped to `[MIN_HEIGHT, MAX_HEIGHT]` for the real-mask
-//! path, and fixed per-typology ranges for the procedural path.
+//! path, and fixed per-typology ranges for the procedural path. The
+//! real-footprint path uses `BuildingFootprint.height_dm` verbatim when
+//! present (`> 0`), falling back to this same density formula (clamped to
+//! its own, wider range — see `FOOTPRINT_MIN_HEIGHT`/`FOOTPRINT_MAX_HEIGHT`)
+//! for buildings the sidecar didn't have a real height for (`height_dm == 0`).
 
 use bevy::prelude::*;
 
+use mf_protocol::BuildingFootprint;
 use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier};
 
-use crate::mesh_utils::{append_cuboid, hash01, MeshBuffers};
+use crate::mesh_utils::{append_cuboid, append_prism, hash01, polygon_area, MeshBuffers};
 use crate::palette;
 
 const CHUNKS_PER_SIDE: usize = 8;
@@ -36,6 +52,21 @@ const JOBS_WEIGHT: f32 = 1.6;
 const POP_WEIGHT: f32 = 0.9;
 const MIN_HEIGHT: f32 = 6.0;
 const MAX_HEIGHT: f32 = 220.0;
+
+// Real-footprint path height clamp — wider than the mask path's
+// `MIN_HEIGHT`/`MAX_HEIGHT` because real vector footprints carry actual
+// building geometry (down to small rowhouses, up past supertalls) instead of
+// a coarse rasterized mask cell, so the plausible range is wider in both
+// directions.
+const FOOTPRINT_MIN_HEIGHT: f32 = 3.0;
+const FOOTPRINT_MAX_HEIGHT: f32 = 500.0;
+
+// Wall cel-shading tint amounts relative to plain `building_side` (art
+// direction: a flat, quantized three-tone read, no shader work). See
+// `mesh_utils::append_prism`'s doc for the sun-direction dot-product
+// thresholds that pick between these and plain `side`.
+const WALL_SUNLIT_BRIGHTEN: f32 = 0.04;
+const WALL_SHADED_DARKEN: f32 = -0.07;
 
 /// Marker on each chunk entity so `subway.rs` can find them all to animate
 /// the Y-scale squash.
@@ -66,6 +97,18 @@ impl Plugin for MfBuildingsPlugin {
 #[derive(Resource, Default)]
 struct BuildingsState {
     version: Option<u32>,
+    /// Building count of the last-seen `CurrentCity.buildings` (`None` if it
+    /// hadn't arrived yet, `Some(0)` is never observed since the real-
+    /// footprint path only exists when the vec is non-empty — see
+    /// `rebuild_key`). `StaticBuildings` (spec §1.2 msgType=5) arrives once,
+    /// shortly after `ready`, and can land AFTER the first `Fields`-version-
+    /// triggered rebuild already ran with the mask/procedural fallback.
+    /// Tracking this alongside `version` means that late arrival flips this
+    /// field and forces exactly one more rebuild onto the real-footprint
+    /// path, instead of being silently missed until the next unrelated
+    /// `Fields.version` bump (which may be minutes away, or never, on a
+    /// paused city).
+    buildings_count: Option<usize>,
     chunks: Vec<Entity>,
     material: Option<Handle<StandardMaterial>>,
     /// Night-dim factor (quantized, see `quantize_night_factor`) already
@@ -74,6 +117,20 @@ struct BuildingsState {
     /// if the ambient `night_factor` hasn't itself moved since the last
     /// rebuild — the new material always starts back at flat white.
     applied_night_factor_bucket: Option<i32>,
+}
+
+impl BuildingsState {
+    /// `(fields.version, buildings-present key)` — the rebuild gate. Bundled
+    /// as one method so the "when do we redo the geometry" decision has one
+    /// definition instead of two fields compared ad hoc at each call site.
+    fn rebuild_key(city: &CurrentCity, fields_version: u32) -> (u32, Option<usize>) {
+        let buildings_count = city
+            .buildings
+            .as_ref()
+            .map(|b| b.buildings.len())
+            .filter(|&n| n > 0);
+        (fields_version, buildings_count)
+    }
 }
 
 /// World-space (X, Z) center of the densest building chunk (most lots
@@ -96,6 +153,47 @@ fn chunk_index(pos: Vec2, world_size: f32) -> (usize, usize) {
     (cx, cz)
 }
 
+/// Emit one real building's prism (walls + roof cap) into `buf`, given the
+/// already-resolved `ground_y`/`height`/colors. Factored out of
+/// `build_buildings_system`'s per-building loop so it's unit-testable
+/// without a Bevy `App`: it takes the wire type directly and touches nothing
+/// but `mesh_utils`. Returns `(vertices_added, indices_added)` straight from
+/// `append_prism`. A footprint with fewer than 3 verts is a no-op (decode
+/// already enforces the wire's 3..=64 range, but this never trusts that
+/// twice).
+#[allow(clippy::too_many_arguments)]
+fn emit_building_prism(
+    buf: &mut MeshBuffers,
+    building: &BuildingFootprint,
+    ground_y: f32,
+    height: f32,
+    top: Color,
+    side_plain: Color,
+    side_sunlit: Color,
+    side_shaded: Color,
+    base: Color,
+) -> (usize, usize) {
+    if building.verts.len() < 3 {
+        return (0, 0);
+    }
+    let ring: Vec<Vec2> = building
+        .verts
+        .iter()
+        .map(|v| Vec2::new(v[0], v[1]))
+        .collect();
+    append_prism(
+        buf,
+        &ring,
+        ground_y,
+        height,
+        top,
+        side_plain,
+        side_sunlit,
+        side_shaded,
+        base,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_buildings_system(
     mut commands: Commands,
@@ -115,10 +213,12 @@ fn build_buildings_system(
     let Some(f) = &fields.0 else {
         return;
     };
-    if state.version == Some(f.version) {
+    let (new_version, new_buildings_count) = BuildingsState::rebuild_key(&city, f.version);
+    if state.version == Some(new_version) && state.buildings_count == new_buildings_count {
         return;
     }
-    state.version = Some(f.version);
+    state.version = Some(new_version);
+    state.buildings_count = new_buildings_count;
 
     for e in state.chunks.drain(..) {
         commands.entity(e).despawn();
@@ -126,8 +226,36 @@ fn build_buildings_system(
 
     let world_size = city_json.world_size as f32;
     let chunk_size = world_size / CHUNKS_PER_SIDE as f32;
+    let real_footprints = city.buildings.as_ref().filter(|b| !b.buildings.is_empty());
+    // Real building data ships with a per-city vertex total; estimate each
+    // building's final contribution as `4*vc` wall vertices (one quad per
+    // ring edge) + `3*(vc-2)` cap-triangle vertices, spread evenly across
+    // the 64 chunks (a uniform-density approximation — cheap and good
+    // enough to avoid most of `Vec`'s repeated-doubling reallocs across the
+    // ~2M-vertex NYC case; it's fine if a few dense chunks still grow past
+    // it, this is a perf hint, not a correctness bound).
+    let prealloc = real_footprints.map(|b| {
+        let total: usize = b
+            .buildings
+            .iter()
+            .map(|bd| {
+                let vc = bd.verts.len();
+                if vc >= 3 {
+                    4 * vc + 3 * (vc - 2)
+                } else {
+                    0
+                }
+            })
+            .sum();
+        let per_chunk_v = total / (CHUNKS_PER_SIDE * CHUNKS_PER_SIDE) + 64;
+        let per_chunk_i = per_chunk_v * 3 / 2 + 96;
+        (per_chunk_v, per_chunk_i)
+    });
     let mut chunk_bufs: Vec<MeshBuffers> = (0..CHUNKS_PER_SIDE * CHUNKS_PER_SIDE)
-        .map(|_| MeshBuffers::new())
+        .map(|_| match prealloc {
+            Some((v, i)) => MeshBuffers::with_capacity(v, i),
+            None => MeshBuffers::new(),
+        })
         .collect();
     // Built VOLUME per chunk (footprint × height), purely to find the urban
     // core for `BuildingsDenseCenter` — not used for geometry. Lot COUNT
@@ -138,6 +266,8 @@ fn build_buildings_system(
     let top = palette::building_top();
     let side = palette::building_side();
     let base = palette::building_base();
+    let side_sunlit = palette::brighten(side, WALL_SUNLIT_BRIGHTEN);
+    let side_shaded = palette::brighten(side, WALL_SHADED_DARKEN);
 
     let field_w = city_json.field_w;
     let field_h = city_json.field_h;
@@ -158,8 +288,78 @@ fn build_buildings_system(
     };
 
     let res = city_json.mask_res.unwrap_or(0);
-    if let (Some(mask), true) = (&city.building_mask, res > 0) {
-        // Real-city path — exact port of renderer.ts `drawIsoBuildings`'s
+    if let Some(buildings) = real_footprints {
+        // Real-footprint path (owner's north star): extrude the actual
+        // per-building polygon instead of any rectangle approximation. Takes
+        // priority over both fallbacks below whenever the sidecar has sent
+        // vector data for this city.
+        let mut prism_vertex_total = 0usize;
+        for bd in &buildings.buildings {
+            if bd.verts.len() < 3 {
+                continue; // decode already enforces 3..=64; never trust twice
+            }
+            let ring: Vec<Vec2> = bd.verts.iter().map(|v| Vec2::new(v[0], v[1])).collect();
+            let centroid = ring.iter().fold(Vec2::ZERO, |acc, p| acc + *p) / ring.len() as f32;
+            let jitter_key = (centroid.x as i32, centroid.y as i32);
+
+            let height = if bd.height_dm > 0 {
+                bd.height_dm as f32 / 10.0
+            } else {
+                // Unknown real height: fall back to the same density formula
+                // (and hvar jitter) the mask path uses, so buildings the
+                // sidecar didn't have height data for still read as varied
+                // masses instead of a flat plateau.
+                let (jobs, pop) = land_use_at(centroid.x, centroid.y);
+                let hvar = 0.8
+                    + hash01(
+                        jitter_key.0.wrapping_mul(7) + 3,
+                        jitter_key.1.wrapping_mul(13) + 1,
+                    ) * 0.5;
+                (BASE_HEIGHT + jobs * JOBS_WEIGHT + pop * POP_WEIGHT) * hvar
+            }
+            .clamp(FOOTPRINT_MIN_HEIGHT, FOOTPRINT_MAX_HEIGHT);
+
+            let jitter = 1.0 + (hash01(jitter_key.0, jitter_key.1) - 0.5) * 0.06;
+            let tint = |c: Color| -> Color {
+                let s = c.to_srgba();
+                Color::srgba(
+                    (s.red * jitter).clamp(0.0, 1.0),
+                    (s.green * jitter).clamp(0.0, 1.0),
+                    (s.blue * jitter).clamp(0.0, 1.0),
+                    s.alpha,
+                )
+            };
+
+            let ground_y = height_at.sample(centroid.x, centroid.y);
+            let (cx, cz) = chunk_index(centroid, world_size);
+            // Same volume-argmax semantics as the mask path above (footprint
+            // AREA x height, not lot count) — real polygon area this time
+            // instead of a rectangle's half-extent product.
+            chunk_lot_counts[cz * CHUNKS_PER_SIDE + cx] += polygon_area(&ring).max(1.0) * height;
+
+            let (v, _i) = emit_building_prism(
+                &mut chunk_bufs[cz * CHUNKS_PER_SIDE + cx],
+                bd,
+                ground_y,
+                height,
+                tint(top),
+                tint(side),
+                tint(side_sunlit),
+                tint(side_shaded),
+                tint(base),
+            );
+            prism_vertex_total += v;
+        }
+        let chunks_used = chunk_bufs.iter().filter(|b| !b.is_empty()).count();
+        info!(
+            "buildings: real-footprint path building_count={} prism_vertex_total={} chunks_used={}/{}",
+            buildings.buildings.len(),
+            prism_vertex_total,
+            chunks_used,
+            CHUNKS_PER_SIDE * CHUNKS_PER_SIDE
+        );
+    } else if let (Some(mask), true) = (&city.building_mask, res > 0) {
+        // Mask path — exact port of renderer.ts `drawIsoBuildings`'s
         // mask sampling rules.
         let mut place_lot = |x: f32, z: f32, half_x: f32, half_z: f32, jitter_key: (i32, i32)| {
             let (jobs, pop) = land_use_at(x, z);
@@ -379,9 +579,10 @@ fn build_buildings_system(
     } else {
         Color::WHITE
     };
-    // `append_cuboid`'s 5 quads (top cap + 4 walls) are each individually
-    // verified CCW-from-declared-normal (see mesh_utils.rs) — single-sided,
-    // back-face-culled is correct. (Same note as terrain.rs: an initially-
+    // Both `append_cuboid` (mask/procedural paths) and `append_prism`
+    // (real-footprint path) are individually verified CCW-from-declared-
+    // normal (see mesh_utils.rs) — single-sided, back-face-culled is
+    // correct for all three. (Same note as terrain.rs: an initially-
     // suspected brightness regression here root-caused to roads.rs's stale
     // `unlit` flag, not to this material — this one's `unlit` already
     // updates reactively via `apply_quality_to_buildings_material_system`
@@ -518,4 +719,92 @@ fn apply_night_dim_system(
         mat.base_color = Color::WHITE.mix(&palette::building_night(), day_night.night_factor);
     }
     state.applied_night_factor_bucket = Some(bucket);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Concave hexagon: 2x2 square with a 1x1 corner notch removed
+    /// (area = 3) — same shape as `mesh_utils`'s ear-clip `l_shape` test,
+    /// reused here to check the per-building wire-type path end to end.
+    fn l_shape_footprint(height_dm: u16) -> BuildingFootprint {
+        BuildingFootprint {
+            height_dm,
+            verts: vec![
+                [0.0, 0.0],
+                [2.0, 0.0],
+                [2.0, 1.0],
+                [1.0, 1.0],
+                [1.0, 2.0],
+                [0.0, 2.0],
+            ],
+        }
+    }
+
+    #[test]
+    fn emit_building_prism_l_shape_wall_and_cap_counts() {
+        let building = l_shape_footprint(300);
+        let mut buf = MeshBuffers::new();
+        let white = Color::WHITE;
+        let (v, i) = emit_building_prism(
+            &mut buf, &building, 0.0, 30.0, white, white, white, white, white,
+        );
+        let n = building.verts.len();
+        // One wall quad per ring edge (4 verts / 6 indices each) plus one
+        // cap triangle per `n - 2` (3 verts / 3 indices each) — the same
+        // invariant `ear_clip_indices` guarantees in mesh_utils.rs.
+        assert_eq!(n, 6, "fixture should be the 6-vertex L-shape");
+        assert_eq!(v, n * 4 + (n - 2) * 3);
+        assert_eq!(i, n * 6 + (n - 2) * 3);
+        assert_eq!(buf.vertex_count(), v);
+        assert_eq!(buf.index_count(), i);
+    }
+
+    #[test]
+    fn emit_building_prism_degenerate_ring_is_a_noop() {
+        let building = BuildingFootprint {
+            height_dm: 100,
+            verts: vec![[0.0, 0.0], [1.0, 0.0]],
+        };
+        let mut buf = MeshBuffers::new();
+        let white = Color::WHITE;
+        let (v, i) = emit_building_prism(
+            &mut buf, &building, 0.0, 10.0, white, white, white, white, white,
+        );
+        assert_eq!((v, i), (0, 0));
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn rebuild_key_forces_rebuild_when_buildings_arrive_after_fields() {
+        // Reproduces the "StaticBuildings lands after the first
+        // Fields-triggered build" race the rebuild key exists to catch:
+        // `fields.version` alone would miss this since it never changes.
+        let mut city = CurrentCity::default();
+        let key_before = BuildingsState::rebuild_key(&city, 5);
+        assert_eq!(key_before, (5, None));
+
+        city.apply_buildings(mf_protocol::StaticBuildings {
+            buildings: vec![l_shape_footprint(0)],
+        });
+        let key_after = BuildingsState::rebuild_key(&city, 5);
+        assert_ne!(
+            key_before, key_after,
+            "buildings arriving with unchanged fields.version must still change the rebuild key"
+        );
+    }
+
+    #[test]
+    fn rebuild_key_ignores_an_empty_buildings_list() {
+        // An explicitly-empty `StaticBuildings` (valid but pointless) must
+        // not be treated as "real footprint data present" — the real-
+        // footprint branch itself guards on non-empty (`real_footprints`),
+        // so the rebuild key must agree or it would force a no-op rebuild
+        // forever whenever `fields.version` is otherwise stable.
+        let mut city = CurrentCity::default();
+        city.apply_buildings(mf_protocol::StaticBuildings { buildings: vec![] });
+        let key = BuildingsState::rebuild_key(&city, 5);
+        assert_eq!(key, (5, None));
+    }
 }
