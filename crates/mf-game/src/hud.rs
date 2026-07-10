@@ -71,7 +71,8 @@ impl Plugin for MfHudPlugin {
                     pause_overlay_system.run_if(in_state(AppState::InGame)),
                     fatal_banner_system,
                 )
-                    .chain(),
+                    .chain()
+                    .run_if(|| !crate::design_system::hud_hidden()),
             );
     }
 }

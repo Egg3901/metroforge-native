@@ -582,6 +582,34 @@ pub fn point_along(pts: &[Vec2], cum: &[f32], d: f32) -> (Vec2, Vec2) {
 /// joins) — per art-direction §2, overlapping intersections in the same
 /// flat color read fine without seams, so this is a deliberate
 /// simplification, not a bug.
+/// Insert intermediate points every `step` meters along a polyline so a
+/// terrain-following ribbon actually follows the terrain: source polylines
+/// are simplified to long straight segments, and any relief between two
+/// original vertices otherwise swallows the ribbon whole (the root cause of
+/// streets reading faint and dashed since v0.1).
+pub fn densify_polyline(pts: &[Vec2], step: f32) -> Vec<Vec2> {
+    if pts.len() < 2 || step <= 0.0 {
+        return pts.to_vec();
+    }
+    let mut out = Vec::with_capacity(pts.len() * 2);
+    for w in pts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        out.push(a);
+        let len = a.distance(b);
+        if len > step {
+            let n = (len / step).floor() as usize;
+            for i in 1..=n {
+                let t = i as f32 * step / len;
+                if t < 0.999 {
+                    out.push(a.lerp(b, t));
+                }
+            }
+        }
+    }
+    out.push(pts[pts.len() - 1]);
+    out
+}
+
 pub fn append_ribbon(
     buf: &mut MeshBuffers,
     points: &[Vec2],

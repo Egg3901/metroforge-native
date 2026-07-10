@@ -15,7 +15,10 @@ use crate::mesh_utils::MeshBuffers;
 use crate::palette;
 
 /// Max relief per spec §3.3 ("max relief 200-400 m") — picked the midpoint.
-pub const TERRAIN_Z_SCALE: f32 = 300.0;
+// Was 300 (spec: max relief 200-400m): that much artificial relief buried
+// road ribbons between their sparse vertices and sliced terrain through
+// building prisms on slopes. 90m reads as gentle real-city relief.
+pub const TERRAIN_Z_SCALE: f32 = 90.0;
 /// Water is rendered dead flat, slightly below the nominal ground plane so
 /// shorelines don't z-fight with adjacent land vertices.
 pub const WATER_LEVEL_Y: f32 = -0.4;

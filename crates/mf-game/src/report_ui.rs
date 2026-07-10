@@ -267,7 +267,9 @@ impl Plugin for MfReportUiPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             EguiPrimaryContextPass,
-            report_ui_system.run_if(in_state(AppState::InGame)),
+            report_ui_system
+                .run_if(in_state(AppState::InGame))
+                .run_if(|| !crate::design_system::hud_hidden()),
         );
     }
 }

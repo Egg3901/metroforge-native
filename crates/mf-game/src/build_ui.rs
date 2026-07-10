@@ -820,7 +820,8 @@ impl Plugin for MfBuildUiPlugin {
                 EguiPrimaryContextPass,
                 (build_toolbar_system, route_panel_system)
                     .chain()
-                    .run_if(in_state(AppState::InGame)),
+                    .run_if(in_state(AppState::InGame))
+                    .run_if(|| !crate::design_system::hud_hidden()),
             );
     }
 }

@@ -125,6 +125,13 @@ pub const HOVER_BG: egui::Color32 = egui::Color32::from_rgb(0xdc, 0xde, 0xd8);
 // `EguiStyleApplied` visuals setup and its own literal `CornerRadius::same(2)`
 // calls).
 
+/// MF_HIDE_HUD=1 suppresses every egui layer for clean marketing frames
+/// (promo harness); checked once, cheap everywhere.
+pub fn hud_hidden() -> bool {
+    static ONCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ONCE.get_or_init(|| std::env::var_os("MF_HIDE_HUD").is_some())
+}
+
 pub const CORNER_RADIUS_PX: u8 = 2;
 pub const CORNER_RADIUS: egui::CornerRadius = egui::CornerRadius::same(CORNER_RADIUS_PX);
 

@@ -572,7 +572,9 @@ impl Plugin for MfPanelsPlugin {
             )
             .add_systems(
                 EguiPrimaryContextPass,
-                (station_panel_system, finance_panel_system).run_if(in_state(AppState::InGame)),
+                (station_panel_system, finance_panel_system)
+                    .run_if(in_state(AppState::InGame))
+                    .run_if(|| !crate::design_system::hud_hidden()),
             );
     }
 }

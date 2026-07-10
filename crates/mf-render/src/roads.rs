@@ -108,6 +108,8 @@ fn build_roads_system(
         if pts.len() < 2 {
             continue;
         }
+        // Follow the terrain, not just the sparse simplified vertices.
+        let pts = crate::mesh_utils::densify_polyline(&pts, 24.0);
         let (idx, width) = match road.cls.as_str() {
             "arterial" => (0usize, ARTERIAL_WIDTH as f32 * road_scale),
             "collector" => (1usize, COLLECTOR_WIDTH as f32 * road_scale),

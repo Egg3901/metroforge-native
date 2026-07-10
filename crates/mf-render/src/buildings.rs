@@ -400,7 +400,17 @@ fn build_buildings_system(
                 )
             };
 
-            let ground_y = height_at.sample(centroid.x, centroid.y);
+            // Base at the footprint's LOWEST corner minus a 3m foundation
+            // skirt: a centroid-only sample let sloped terrain slice a
+            // white plane through one side of a prism while the other side
+            // floated (owner report). Sinking the base under the lowest
+            // point keeps every wall grounded on any slope the tamed
+            // terrain can produce.
+            let ground_y = ring
+                .iter()
+                .map(|v| height_at.sample(v.x, v.y))
+                .fold(height_at.sample(centroid.x, centroid.y), f32::min)
+                - 3.0;
             let (cx, cz) = chunk_index(centroid, world_size);
             // Same volume-argmax semantics as the mask path above (footprint
             // AREA x height, not lot count), real polygon area this time

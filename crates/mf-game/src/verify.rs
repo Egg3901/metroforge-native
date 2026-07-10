@@ -102,7 +102,8 @@ pub struct MfVerifyPlugin;
 
 impl Plugin for MfVerifyPlugin {
     fn build(&self, app: &mut App) {
-        if std::env::var_os("MF_VERIFY_DIR").is_none() {
+        if std::env::var_os("MF_VERIFY_DIR").is_none() && std::env::var_os("MF_PROMO_DIR").is_none()
+        {
             return; // inert in every normal build/run
         }
         app.init_resource::<VerifyState>()
@@ -128,6 +129,7 @@ enum Stage {
     /// again and takes `transit.png`.
     NetworkSettle,
     NetworkShot,
+    Parked,
     Elevated,
     Street,
     Subway,
@@ -642,7 +644,13 @@ fn verify_sequence_system(
     city: Res<CurrentCity>,
     mut sim_events: EventReader<SimEvent>,
 ) {
-    let Some(dir) = std::env::var_os("MF_VERIFY_DIR").map(|s| s.to_string_lossy().into_owned())
+    // Promo mode (MF_PROMO_DIR without MF_VERIFY_DIR): this machine only
+    // drives the network build, then parks; promo.rs owns every camera and
+    // screenshot from there.
+    let promo_only = std::env::var_os("MF_VERIFY_DIR").is_none();
+    let Some(dir) = std::env::var_os("MF_VERIFY_DIR")
+        .or_else(|| std::env::var_os("MF_PROMO_DIR"))
+        .map(|s| s.to_string_lossy().into_owned())
     else {
         return;
     };
@@ -767,10 +775,15 @@ fn verify_sequence_system(
             }
         }
         Stage::NetworkShot => {
-            if elapsed_in_stage == SETTLE_FRAMES {
+            if promo_only {
+                advance_to = Some(Stage::Parked);
+            } else if elapsed_in_stage == SETTLE_FRAMES {
                 take_screenshot(&mut commands, format!("{dir}/transit.png"));
                 advance_to = Some(Stage::Elevated);
             }
+        }
+        Stage::Parked => {
+            // promo.rs is in charge now; never exit, never screenshot.
         }
         Stage::Elevated => {
             // Re-framed on entry (not just relied on from whatever stage
@@ -852,6 +865,7 @@ fn verify_sequence_system(
 /// can run — the menu being invisible (no camera = no egui context) shipped
 /// in v0.1.0-alpha because no verify path ever rendered it.
 fn menu_screenshot_system(mut state: Local<u64>, mut commands: Commands) {
+    // Verify-only: promo runs (MF_PROMO_DIR alone) take no menu shot.
     let Some(dir) = std::env::var_os("MF_VERIFY_DIR").map(|s| s.to_string_lossy().into_owned())
     else {
         return;
