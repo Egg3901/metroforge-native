@@ -15,9 +15,13 @@ use crate::palette;
 /// Road surface sits just above bare ground (spec: "heightAt + 0.5").
 const ROAD_Y_OFFSET: f32 = 0.5;
 /// Widths per spec §3.3 (already includes `roadScale` multiplication).
-const ARTERIAL_WIDTH: f64 = 40.0;
-const COLLECTOR_WIDTH: f64 = 24.0;
-const LOCAL_WIDTH: f64 = 13.0;
+// Widened ~1.5x from real-world-ish 40/24/13: at overview zoom the true
+// widths are a few pixels and vanish into the bright ground (the oldest
+// render-backlog item, owner-flagged twice). Slight exaggeration is the
+// standard map-style tradeoff.
+const ARTERIAL_WIDTH: f64 = 60.0;
+const COLLECTOR_WIDTH: f64 = 36.0;
+const LOCAL_WIDTH: f64 = 20.0;
 /// Camera height above which local-road detail is hidden (LOD).
 const LOCAL_ROAD_LOD_HEIGHT: f32 = 4_000.0;
 
