@@ -10,6 +10,7 @@ use mf_protocol::envelope::FromSimJson;
 use mf_protocol::{Difficulty, FromSimMsg, ToSim, ToastTone};
 use mf_state::{LatestUi, QualityTier, SubwayView};
 
+use crate::audio::{PlaySfx, Sfx};
 use crate::config::MfConfig;
 use crate::state::{toggle_pause, AppState, PauseState, PendingInit, SimHello};
 
@@ -136,6 +137,20 @@ fn thin_separator(ui: &mut egui::Ui) {
     ui.add(egui::Separator::default().shrink(6.0));
 }
 
+/// One hover tick the first frame the pointer lands on a widget; re-arms
+/// when it leaves, so re-entering the same widget ticks again. `last` is
+/// per-system `Local` state, so two systems can't fight over it.
+fn hover_tick(resp: &egui::Response, last: &mut Option<egui::Id>, sfx: &mut EventWriter<PlaySfx>) {
+    if resp.hovered() {
+        if *last != Some(resp.id) {
+            sfx.write(PlaySfx(Sfx::Hover));
+            *last = Some(resp.id);
+        }
+    } else if *last == Some(resp.id) {
+        *last = None;
+    }
+}
+
 /// Comma-grouped integer (e.g. `146015` -> `"146,015"`). Plain
 /// `{:.0}`-formatted cash/population numbers change width every tick they
 /// cross a digit boundary, which visibly shifts every group to their right
@@ -177,7 +192,12 @@ fn fixed_width_label(ui: &mut egui::Ui, text: egui::RichText, width: f32) {
 /// main menu) — split out from [`quality_selector`] so the main menu can
 /// pair it with its own stacked-above label instead of `from_label`'s
 /// beside-the-box one, without a second copy of the tier list/persist call.
-fn quality_options(ui: &mut egui::Ui, quality: &mut QualityTier, config: &mut MfConfig) {
+fn quality_options(
+    ui: &mut egui::Ui,
+    quality: &mut QualityTier,
+    config: &mut MfConfig,
+    sfx: &mut EventWriter<PlaySfx>,
+) {
     for tier in [
         QualityTier::Potato,
         QualityTier::Low,
@@ -190,14 +210,20 @@ fn quality_options(ui: &mut egui::Ui, quality: &mut QualityTier, config: &mut Mf
         {
             *quality = tier;
             config.set_quality_override(Some(tier));
+            sfx.write(PlaySfx(Sfx::Confirm));
         }
     }
 }
 
-fn quality_selector(ui: &mut egui::Ui, quality: &mut QualityTier, config: &mut MfConfig) {
+fn quality_selector(
+    ui: &mut egui::Ui,
+    quality: &mut QualityTier,
+    config: &mut MfConfig,
+    sfx: &mut EventWriter<PlaySfx>,
+) {
     egui::ComboBox::from_label("Quality")
         .selected_text(format!("{quality:?}"))
-        .show_ui(ui, |ui| quality_options(ui, quality, config));
+        .show_ui(ui, |ui| quality_options(ui, quality, config, sfx));
 }
 
 /// ConnectingSim previously registered NO ui system at all, so a player whose
@@ -234,6 +260,7 @@ fn field_label(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).size(12.0).color(MUTED_TEXT));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn main_menu_hud_system(
     mut contexts: EguiContexts,
     hello: Res<SimHello>,
@@ -241,6 +268,8 @@ fn main_menu_hud_system(
     mut quality: ResMut<QualityTier>,
     mut config: ResMut<MfConfig>,
     mut next_state: ResMut<NextState<AppState>>,
+    mut sfx: EventWriter<PlaySfx>,
+    mut hovered: Local<Option<egui::Id>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     // Fade in over ~200ms on entry. `set_opacity` (rather than fighting
@@ -343,22 +372,24 @@ fn main_menu_hud_system(
                     egui::ComboBox::from_id_salt("quality_picker")
                         .selected_text(format!("{:?}", *quality))
                         .width(300.0)
-                        .show_ui(ui, |ui| quality_options(ui, &mut quality, &mut config));
+                        .show_ui(ui, |ui| {
+                            quality_options(ui, &mut quality, &mut config, &mut sfx)
+                        });
 
                     ui.add_space(28.0);
-                    if ui
-                        .add_sized(
-                            [220.0, 44.0],
-                            egui::Button::new(
-                                egui::RichText::new("Start")
-                                    .color(egui::Color32::WHITE)
-                                    .size(16.0)
-                                    .strong(),
-                            )
-                            .fill(ACCENT),
+                    let start = ui.add_sized(
+                        [220.0, 44.0],
+                        egui::Button::new(
+                            egui::RichText::new("Start")
+                                .color(egui::Color32::WHITE)
+                                .size(16.0)
+                                .strong(),
                         )
-                        .clicked()
-                    {
+                        .fill(ACCENT),
+                    );
+                    hover_tick(&start, &mut hovered, &mut sfx);
+                    if start.clicked() {
+                        sfx.write(PlaySfx(Sfx::Confirm));
                         next_state.set(AppState::Loading);
                     }
                 });
@@ -396,6 +427,7 @@ fn loading_hud_system(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn in_game_hud_system(
     mut contexts: EguiContexts,
     ui_state: Res<LatestUi>,
@@ -404,6 +436,8 @@ fn in_game_hud_system(
     mut config: ResMut<MfConfig>,
     mut subway: ResMut<SubwayView>,
     toasts: Res<ToastLog>,
+    mut sfx: EventWriter<PlaySfx>,
+    mut hovered: Local<Option<egui::Id>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
 
@@ -489,8 +523,11 @@ fn in_game_hud_system(
                     } else {
                         egui::Color32::from_rgb(0xe9, 0xea, 0xe5)
                     });
-                    if ui.add(button).clicked() {
+                    let resp = ui.add(button);
+                    hover_tick(&resp, &mut hovered, &mut sfx);
+                    if resp.clicked() {
                         if let Some(link) = &link {
+                            sfx.write(PlaySfx(Sfx::SpeedTick));
                             let _ = link
                                 .transport
                                 .send(ToSim::SetSpeed(mf_protocol::SetSpeedPayload { speed }));
@@ -509,12 +546,19 @@ fn in_game_hud_system(
                 } else {
                     egui::Color32::from_rgb(0xe9, 0xea, 0xe5)
                 });
-                if ui.add(subway_button).clicked() {
+                let subway_resp = ui.add(subway_button);
+                hover_tick(&subway_resp, &mut hovered, &mut sfx);
+                if subway_resp.clicked() {
                     subway.toggle();
+                    sfx.write(PlaySfx(if subway.active {
+                        Sfx::Confirm
+                    } else {
+                        Sfx::Cancel
+                    }));
                 }
 
                 thin_separator(ui);
-                quality_selector(ui, &mut quality, &mut config);
+                quality_selector(ui, &mut quality, &mut config, &mut sfx);
             });
         });
 
@@ -554,6 +598,7 @@ fn in_game_hud_system(
 /// layer at the cursor), so `camera.rs`'s existing egui-capture check keeps
 /// world drag/zoom from leaking through while paused, with no change to
 /// that file.
+#[allow(clippy::too_many_arguments)]
 fn pause_overlay_system(
     mut contexts: EguiContexts,
     mut pause: ResMut<PauseState>,
@@ -562,6 +607,8 @@ fn pause_overlay_system(
     mut quality: ResMut<QualityTier>,
     mut config: ResMut<MfConfig>,
     mut exit: EventWriter<AppExit>,
+    mut sfx: EventWriter<PlaySfx>,
+    mut hovered: Local<Option<egui::Id>>,
 ) -> Result {
     if !pause.active {
         return Ok(());
@@ -595,30 +642,36 @@ fn pause_overlay_system(
                         ui.label(egui::RichText::new("Paused").size(24.0).strong());
                         ui.add_space(18.0);
 
-                        if ui
-                            .add_sized(
-                                [220.0, 40.0],
-                                egui::Button::new(
-                                    egui::RichText::new("Resume")
-                                        .color(egui::Color32::WHITE)
-                                        .strong(),
-                                )
-                                .fill(ACCENT),
+                        let resume = ui.add_sized(
+                            [220.0, 40.0],
+                            egui::Button::new(
+                                egui::RichText::new("Resume")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
                             )
-                            .clicked()
+                            .fill(ACCENT),
+                        );
+                        hover_tick(&resume, &mut hovered, &mut sfx);
+                        if resume.clicked() && toggle_pause(&mut pause, &ui_state, link.as_deref())
                         {
-                            toggle_pause(&mut pause, &ui_state, link.as_deref());
+                            sfx.write(PlaySfx(Sfx::Unpause));
                         }
 
                         ui.add_space(14.0);
                         field_label(ui, "Quality");
-                        quality_selector(ui, &mut quality, &mut config);
+                        egui::ComboBox::from_id_salt("pause_quality")
+                            .selected_text(format!("{:?}", *quality))
+                            .width(220.0)
+                            .show_ui(ui, |ui| {
+                                quality_options(ui, &mut quality, &mut config, &mut sfx)
+                            });
 
                         ui.add_space(14.0);
-                        if ui
-                            .add_sized([220.0, 40.0], egui::Button::new("Quit to desktop"))
-                            .clicked()
-                        {
+                        let quit =
+                            ui.add_sized([220.0, 40.0], egui::Button::new("Quit to desktop"));
+                        hover_tick(&quit, &mut hovered, &mut sfx);
+                        if quit.clicked() {
+                            sfx.write(PlaySfx(Sfx::Cancel));
                             exit.write(AppExit::Success);
                         }
                     });
@@ -631,10 +684,20 @@ fn pause_overlay_system(
 /// Surfaces `mf-net`'s fatal reconnect failure as a banner rather than a
 /// silent black screen (spec §3.2 reconnect: "5 attempts -> fatal error
 /// screen"; `state.rs`'s watchdog already dropped us back to `MainMenu`).
-fn fatal_banner_system(mut contexts: EguiContexts, reconnect: Res<ReconnectState>) -> Result {
+fn fatal_banner_system(
+    mut contexts: EguiContexts,
+    reconnect: Res<ReconnectState>,
+    mut sfx: EventWriter<PlaySfx>,
+    mut error_played: Local<bool>,
+) -> Result {
     let NetStatus::Fatal(msg) = &reconnect.status else {
+        *error_played = false;
         return Ok(());
     };
+    if !*error_played {
+        sfx.write(PlaySfx(Sfx::Error));
+        *error_played = true;
+    }
     let ctx = contexts.ctx_mut()?;
     egui::TopBottomPanel::bottom("fatal_banner").show(ctx, |ui| {
         ui.colored_label(BAD, format!("Lost connection to the sim: {msg}"));

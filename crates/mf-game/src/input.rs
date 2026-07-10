@@ -8,6 +8,7 @@ use bevy::prelude::*;
 use mf_net::SimLink;
 use mf_state::{LatestUi, SubwayView};
 
+use crate::audio::{PlaySfx, Sfx};
 use crate::state::{toggle_pause, PauseState};
 
 pub struct MfInputPlugin;
@@ -22,9 +23,18 @@ impl Plugin for MfInputPlugin {
     }
 }
 
-fn subway_toggle_system(keys: Res<ButtonInput<KeyCode>>, mut subway: ResMut<SubwayView>) {
+fn subway_toggle_system(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut subway: ResMut<SubwayView>,
+    mut sfx: EventWriter<PlaySfx>,
+) {
     if keys.just_pressed(KeyCode::Tab) {
         subway.toggle();
+        sfx.write(PlaySfx(if subway.active {
+            Sfx::Confirm
+        } else {
+            Sfx::Cancel
+        }));
     }
 }
 
@@ -36,9 +46,16 @@ fn pause_toggle_system(
     mut pause: ResMut<PauseState>,
     ui_state: Res<LatestUi>,
     link: Option<Res<SimLink>>,
+    mut sfx: EventWriter<PlaySfx>,
 ) {
     if !keys.just_pressed(KeyCode::Escape) {
         return;
     }
-    toggle_pause(&mut pause, &ui_state, link.as_deref());
+    if toggle_pause(&mut pause, &ui_state, link.as_deref()) {
+        sfx.write(PlaySfx(if pause.active {
+            Sfx::Pause
+        } else {
+            Sfx::Unpause
+        }));
+    }
 }

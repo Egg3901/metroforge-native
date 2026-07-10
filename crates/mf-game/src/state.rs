@@ -69,9 +69,12 @@ impl Default for PauseState {
 /// Toggle pause. Shared by `input.rs` (Esc) and `hud.rs` (the "Resume"
 /// button) so both call sites agree on what "current speed" means and
 /// can't drift into disagreeing about whether we're paused.
-pub fn toggle_pause(pause: &mut PauseState, ui: &LatestUi, link: Option<&SimLink>) {
+/// Returns true when the toggle actually happened (a missing `SimLink`
+/// means neither the freeze nor the resume was sent, so callers must not
+/// react as if it did, e.g. by playing a pause sound).
+pub fn toggle_pause(pause: &mut PauseState, ui: &LatestUi, link: Option<&SimLink>) -> bool {
     let Some(link) = link else {
-        return;
+        return false;
     };
     if pause.active {
         pause.active = false;
@@ -89,6 +92,7 @@ pub fn toggle_pause(pause: &mut PauseState, ui: &LatestUi, link: Option<&SimLink
             .transport
             .send(ToSim::SetSpeed(SetSpeedPayload { speed: 0.0 }));
     }
+    true
 }
 
 pub struct MfGameStatePlugin;
