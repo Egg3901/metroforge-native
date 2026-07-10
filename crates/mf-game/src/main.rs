@@ -10,6 +10,9 @@ mod config;
 mod design_system;
 mod hud;
 mod input;
+mod map_mode; // v0.3 map mode (ship-plan #25): plugin registration left for
+              // integration, see map_mode.rs's module doc - main.rs's
+              // add_plugins tuple is a contended file this wave.
 mod quality_boot;
 mod reveal_input;
 mod state;
