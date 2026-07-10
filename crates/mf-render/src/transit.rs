@@ -339,6 +339,36 @@ fn rebuild_tracks(
     }
 }
 
+/// Per-STATION-PAIR ribbon widths for a route's stripe (v0.3, ship-plan
+/// #25): `STRIPE_WIDTH * (0.7 + load/max_load)` when `segment_loads` aligns
+/// 1:1 with `pair_count` (`r.station_ids.windows(2)` count) — the busiest
+/// pair on the route always lands at `STRIPE_WIDTH * 1.7`, an empty one at
+/// `STRIPE_WIDTH * 0.7`. Falls back to `STRIPE_WIDTH` uniformly for every
+/// pair when the lengths don't match (stale sim data, a future protocol
+/// change) or every load is non-positive (nothing to normalize against) —
+/// defensive by construction, this must never index out of bounds or paint
+/// a route with a nonsensical width. Pure function (no ECS/mesh types), so
+/// the normalization and both fallback paths are unit-testable directly.
+fn segment_widths(pair_count: usize, segment_loads: &[f64]) -> Vec<f32> {
+    if pair_count == 0 {
+        return Vec::new();
+    }
+    let aligned = segment_loads.len() == pair_count;
+    let max_load = if aligned {
+        segment_loads.iter().cloned().fold(0.0_f64, f64::max)
+    } else {
+        0.0
+    };
+    if aligned && max_load > 0.0 {
+        segment_loads
+            .iter()
+            .map(|&load| STRIPE_WIDTH * (0.7 + (load / max_load) as f32))
+            .collect()
+    } else {
+        vec![STRIPE_WIDTH; pair_count]
+    }
+}
+
 fn rebuild_routes(
     commands: &mut Commands,
     ui: &UiState,
@@ -391,7 +421,19 @@ fn rebuild_routes(
 
     for (ri, r) in ui.routes.iter().enumerate() {
         let mut path: Vec<Vec2> = Vec::new();
-        for w in r.station_ids.windows(2) {
+        // Per-STATION-PAIR segments (post-bundling-offset), tagged with
+        // that pair's index into `r.station_ids.windows(2)` — this is the
+        // same indexing `r.segment_loads` uses (one load entry per station
+        // pair), NOT per drawn point: a pair's track can itself carry
+        // several intermediate points (a curve/detour), and every one of
+        // those sub-segments must inherit that ONE pair's width rather than
+        // each somehow getting its own. Collected separately from `path`
+        // (which stays the full concatenated polyline, still needed as-is
+        // for `append_chevrons`/the metro bold tube below) so the
+        // width-scaled ribbon loop can walk pair-by-pair instead of point-
+        // by-point.
+        let mut pair_segs: Vec<(usize, Vec<Vec2>)> = Vec::new();
+        for (pi, w) in r.station_ids.windows(2).enumerate() {
             let (a, b) = (w[0], w[1]);
             let mut seg = track_by_pair.get(&(a, b)).cloned().unwrap_or_else(|| {
                 match (station_by_id.get(&a), station_by_id.get(&b)) {
@@ -414,6 +456,7 @@ fn rebuild_routes(
                 path.push(seg[0]);
             }
             path.extend_from_slice(&seg[1..]);
+            pair_segs.push((pi, seg));
         }
         if path.len() < 2 {
             continue;
@@ -421,14 +464,22 @@ fn rebuild_routes(
 
         let color = palette::vivid_route_color(ri);
         let mut normal_buf = MeshBuffers::new();
-        append_ribbon(
-            &mut normal_buf,
-            &path,
-            STRIPE_Y_OFFSET,
-            STRIPE_WIDTH,
-            color,
-            |x, z| height_at.sample(x, z),
-        );
+        // Per-segment load width (v0.3, ship-plan #25): one ribbon width
+        // per station pair rather than one uniform width for the whole
+        // route, so a crowded stretch reads visibly fatter. `segment_widths`
+        // is the pure normalization (also unit-tested below); it already
+        // falls back to `STRIPE_WIDTH` uniformly when `r.segment_loads`
+        // doesn't align 1:1 with the route's station-pair count, so this
+        // loop doesn't need its own separate defensive branch — every
+        // `pair_segs` entry always gets SOME width from `widths`.
+        let expected_pairs = r.station_ids.len().saturating_sub(1);
+        let widths = segment_widths(expected_pairs, &r.segment_loads);
+        for (pi, seg) in &pair_segs {
+            let width = widths.get(*pi).copied().unwrap_or(STRIPE_WIDTH);
+            append_ribbon(&mut normal_buf, seg, STRIPE_Y_OFFSET, width, color, |x, z| {
+                height_at.sample(x, z)
+            });
+        }
         append_chevrons(&mut normal_buf, &path, height_at, color);
         let mesh = meshes.add(normal_buf.build());
         // `Blend`, not `Opaque` — see the long comment on the road-class
@@ -558,5 +609,54 @@ fn append_chevrons(buf: &mut MeshBuffers, path: &[Vec2], height_at: &HeightAt, c
             );
         }
         d += CHEVRON_SPACING;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn segment_widths_zero_pairs_is_empty() {
+        assert!(segment_widths(0, &[]).is_empty());
+    }
+
+    #[test]
+    fn segment_widths_empty_loads_falls_back_to_uniform() {
+        let widths = segment_widths(3, &[]);
+        assert_eq!(widths, vec![STRIPE_WIDTH; 3]);
+    }
+
+    #[test]
+    fn segment_widths_mismatched_length_falls_back_to_uniform() {
+        // 3 pairs but only 2 load entries — must not panic or misattribute
+        // a load to the wrong pair, just fall back uniformly.
+        let widths = segment_widths(3, &[10.0, 20.0]);
+        assert_eq!(widths, vec![STRIPE_WIDTH; 3]);
+    }
+
+    #[test]
+    fn segment_widths_all_zero_falls_back_to_uniform() {
+        let widths = segment_widths(3, &[0.0, 0.0, 0.0]);
+        assert_eq!(widths, vec![STRIPE_WIDTH; 3]);
+    }
+
+    #[test]
+    fn segment_widths_normalizes_busiest_pair_to_1_7x_stripe_width() {
+        let widths = segment_widths(3, &[0.0, 50.0, 100.0]);
+        assert_eq!(widths.len(), 3);
+        assert!((widths[0] - STRIPE_WIDTH * 0.7).abs() < 0.001);
+        assert!((widths[2] - STRIPE_WIDTH * 1.7).abs() < 0.001);
+        let mid = STRIPE_WIDTH * (0.7 + 0.5);
+        assert!((widths[1] - mid).abs() < 0.001);
+    }
+
+    #[test]
+    fn segment_widths_single_pair_uses_full_load_as_its_own_max() {
+        // One pair, one load: that load IS the max, so it normalizes to
+        // 1.0 and lands at the ceiling, not some degenerate divide.
+        let widths = segment_widths(1, &[42.0]);
+        assert_eq!(widths.len(), 1);
+        assert!((widths[0] - STRIPE_WIDTH * 1.7).abs() < 0.001);
     }
 }

@@ -20,7 +20,7 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 use mf_net::SimLink;
-use mf_protocol::{Command, ToastTone, TransitMode, UiRoute};
+use mf_protocol::{Command, ToastTone, TransitMode, UiRoute, UiStation};
 use mf_state::LatestUi;
 
 use crate::audio::{PlaySfx, Sfx};
@@ -554,6 +554,8 @@ fn route_panel_system(
                     route_editor(
                         ui,
                         route,
+                        &state.stations,
+                        vivid_route_color(idx),
                         &mut panel,
                         &mut bus,
                         link.as_deref(),
@@ -571,6 +573,28 @@ fn route_panel_system(
     Ok(())
 }
 
+/// Station labels for [`ds::route_line_diagram`], in the route's own
+/// station order: each station's own `name` when it has one (the normal
+/// case - `UiStation` does carry a `name` field, see `mf-protocol`'s
+/// `types.rs`), else a positional "S<n>" fallback (1-based, matching the
+/// existing "Line {n}" 1-based convention a few lines up) for the data-gap
+/// case of a blank name. Looking a station up by id rather than assuming
+/// `stations` iterates in route order - `state.stations` and a route's
+/// `station_ids` are two independently-ordered lists over the wire.
+fn route_station_labels(route: &UiRoute, stations: &[UiStation]) -> Vec<String> {
+    let by_id: std::collections::HashMap<i64, &UiStation> =
+        stations.iter().map(|s| (s.id, s)).collect();
+    route
+        .station_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| match by_id.get(id) {
+            Some(st) if !st.name.trim().is_empty() => st.name.clone(),
+            _ => format!("S{}", i + 1),
+        })
+        .collect()
+}
+
 /// The expanded per-route editor drawn under a selected route's row:
 /// vehicle count stepper, fare drag, name field, delete (2-click confirm).
 /// Every mutating control here submits through `CommandBus` with
@@ -582,6 +606,8 @@ fn route_panel_system(
 fn route_editor(
     ui: &mut egui::Ui,
     route: &UiRoute,
+    stations: &[UiStation],
+    color: egui::Color32,
     panel: &mut RoutePanelState,
     bus: &mut CommandBus,
     link: Option<&SimLink>,
@@ -595,6 +621,14 @@ fn route_editor(
         panel.delete_armed = None;
     }
 
+    ui.add_space(ds::SPACE_XXS);
+
+    // Line diagram (ship-plan #25, v0.3 map mode wave): the route's color,
+    // its stations in order, and its per-segment load, so a glance shows
+    // both the line's shape and where it's crowded without leaving this
+    // panel for the 3D scene.
+    let labels = route_station_labels(route, stations);
+    ds::route_line_diagram(ui, color, &labels, &route.segment_loads);
     ui.add_space(ds::SPACE_XXS);
 
     ui.horizontal(|ui| {
@@ -837,5 +871,92 @@ mod tests {
         ] {
             assert!(!mode_word(mode).contains(['-', '\u{2013}', '\u{2014}']));
         }
+    }
+
+    // --- route_station_labels ---------------------------------------------
+
+    fn test_station(id: i64, name: &str) -> UiStation {
+        UiStation {
+            id,
+            name: name.to_string(),
+            x: 0.0,
+            y: 0.0,
+            mode: TransitMode::Bus,
+            level: 0,
+            ridership: 0.0,
+            alightings: 0.0,
+        }
+    }
+
+    fn test_route(station_ids: Vec<i64>) -> UiRoute {
+        UiRoute {
+            id: 1,
+            name: "Test".to_string(),
+            color: "#000000".to_string(),
+            mode: TransitMode::Bus,
+            station_ids,
+            headway_seconds: 300.0,
+            fare: 2.0,
+            vehicle_count: 1,
+            daily_ridership: 0.0,
+            daily_revenue: 0.0,
+            length_meters: 0.0,
+            capacity: 0.0,
+            load: 0.0,
+            crowding: 0.0,
+            segment_loads: vec![],
+        }
+    }
+
+    #[test]
+    fn route_station_labels_uses_station_name_when_present() {
+        let stations = vec![test_station(10, "Union Sq"), test_station(20, "Park St")];
+        let route = test_route(vec![10, 20]);
+        assert_eq!(
+            route_station_labels(&route, &stations),
+            vec!["Union Sq".to_string(), "Park St".to_string()]
+        );
+    }
+
+    #[test]
+    fn route_station_labels_falls_back_to_positional_when_name_blank() {
+        let stations = vec![test_station(10, ""), test_station(20, "  ")];
+        let route = test_route(vec![10, 20]);
+        assert_eq!(
+            route_station_labels(&route, &stations),
+            vec!["S1".to_string(), "S2".to_string()]
+        );
+    }
+
+    #[test]
+    fn route_station_labels_falls_back_when_station_id_is_unknown() {
+        // Route references a station id not present in `stations` (e.g. a
+        // stale/racing update) - must not panic or drop the slot, just fall
+        // back to the positional label for that one entry.
+        let stations = vec![test_station(10, "Union Sq")];
+        let route = test_route(vec![10, 999]);
+        assert_eq!(
+            route_station_labels(&route, &stations),
+            vec!["Union Sq".to_string(), "S2".to_string()]
+        );
+    }
+
+    #[test]
+    fn route_station_labels_looks_up_by_id_not_list_order() {
+        // `stations` given in the OPPOSITE order from the route's
+        // `station_ids` - labels must still follow the route's order, i.e.
+        // this is a real id lookup, not a zip-by-index shortcut.
+        let stations = vec![test_station(20, "Park St"), test_station(10, "Union Sq")];
+        let route = test_route(vec![10, 20]);
+        assert_eq!(
+            route_station_labels(&route, &stations),
+            vec!["Union Sq".to_string(), "Park St".to_string()]
+        );
+    }
+
+    #[test]
+    fn route_station_labels_empty_route_is_empty() {
+        let route = test_route(vec![]);
+        assert!(route_station_labels(&route, &[]).is_empty());
     }
 }
