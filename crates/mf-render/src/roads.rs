@@ -42,10 +42,12 @@ impl Plugin for MfRoadsPlugin {
 
 #[derive(Resource, Default)]
 struct RoadsState {
-    /// Cheap structural signature: `(roads.len(), total point count)`. Roads
-    /// never change after `ready` in v1, but this keys the rebuild the same
-    /// way the other layers key off `fieldsVersion`/UI structural hashes.
-    signature: Option<(usize, usize)>,
+    /// Cheap structural signature: `(fields version, roads.len(), total
+    /// point count)`. Road geometry never changes after `ready` in v1, but
+    /// the terrain the ribbons drape over rebuilds on every fields version —
+    /// baking only once left roads buried under relief that arrived in a
+    /// later version (the residual half of the roads race).
+    signature: Option<(u32, usize, usize)>,
     entities: Vec<Entity>,
     local_entity: Option<Entity>,
 }
@@ -85,11 +87,11 @@ fn build_roads_system(
     // placeholder flat HeightAt buried every road under the real relief
     // (intermittently, per frame timing: the recurring "why are the roads
     // never showing"). Wait for real terrain before baking.
-    if fields.0.is_none() {
+    let Some(f) = &fields.0 else {
         return;
-    }
+    };
     let total_points: usize = city_json.roads.iter().map(|r| r.points.len()).sum();
-    let signature = (city_json.roads.len(), total_points);
+    let signature = (f.version, city_json.roads.len(), total_points);
     if state.signature == Some(signature) {
         return;
     }
