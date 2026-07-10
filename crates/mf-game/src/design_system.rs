@@ -19,6 +19,7 @@
 #![allow(dead_code)]
 
 use bevy_egui::egui;
+use mf_state::Theme;
 
 // ---------------------------------------------------------------------
 // Spacing scale
@@ -116,6 +117,64 @@ pub const MUTED: egui::Color32 = egui::Color32::from_rgb(0x6b, 0x6d, 0x72);
 pub const INACTIVE_BG: egui::Color32 = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
 /// Fill for a hovered idle control, one notch darker than [`INACTIVE_BG`].
 pub const HOVER_BG: egui::Color32 = egui::Color32::from_rgb(0xdc, 0xde, 0xd8);
+
+// ---------------------------------------------------------------------
+// Theme-indexed chrome colors (issue #32)
+// ---------------------------------------------------------------------
+// The handful of egui-chrome roles that actually vary by theme: panel/
+// window fill, primary text, the one accent, and the two idle-widget
+// background shades. `PANEL_BG`/`TEXT`/`ACCENT`/`INACTIVE_BG`/`HOVER_BG`
+// above stay fixed as the `Theme::Light` values (nothing currently reads
+// them, per this module's doc comment, so there's no call site to migrate);
+// `theme_colors` is the theme-aware source `hud.rs`'s
+// `setup_egui_style_system` pulls from instead of hand-rolling its own copy
+// per theme.
+
+/// Theme-indexed mirror of [`PANEL_BG`]/[`TEXT`]/[`ACCENT`]/[`INACTIVE_BG`]/
+/// [`HOVER_BG`] — see [`theme_colors`].
+pub struct ThemeColors {
+    pub panel_bg: egui::Color32,
+    pub text: egui::Color32,
+    pub accent: egui::Color32,
+    pub extreme_bg: egui::Color32,
+    pub inactive_bg: egui::Color32,
+    pub hover_bg: egui::Color32,
+}
+
+/// The egui chrome palette for `theme`. `Theme::Light` reproduces
+/// [`PANEL_BG`]/[`TEXT`]/[`ACCENT`]/[`INACTIVE_BG`]/[`HOVER_BG`] exactly
+/// (zero visual change when Light is selected, per issue #32's
+/// requirement); `Dark`/`Purple` mirror `mf-render::palette`'s Dark/Purple
+/// render tables so the 3D scene and the UI chrome read as one coherent
+/// theme rather than two independently-tuned palettes.
+pub fn theme_colors(theme: Theme) -> ThemeColors {
+    match theme {
+        Theme::Light => ThemeColors {
+            panel_bg: PANEL_BG,
+            text: TEXT,
+            accent: ACCENT,
+            extreme_bg: INACTIVE_BG,
+            inactive_bg: INACTIVE_BG,
+            hover_bg: HOVER_BG,
+        },
+        Theme::Dark => ThemeColors {
+            panel_bg: egui::Color32::from_rgb(0x1c, 0x1e, 0x22),
+            text: egui::Color32::from_rgb(0xf0, 0xf1, 0xf3),
+            accent: egui::Color32::from_rgb(0x6b, 0xbb, 0xff),
+            extreme_bg: egui::Color32::from_rgb(0x0e, 0x0f, 0x12),
+            inactive_bg: egui::Color32::from_rgb(0x27, 0x29, 0x2e),
+            hover_bg: egui::Color32::from_rgb(0x34, 0x37, 0x3d),
+        },
+        Theme::Purple => ThemeColors {
+            panel_bg: egui::Color32::from_rgb(0x2b, 0x1b, 0x4e),
+            text: egui::Color32::from_rgb(0xf1, 0xe9, 0xff),
+            accent: egui::Color32::from_rgb(0xff, 0x2e, 0xc4),
+            extreme_bg: egui::Color32::from_rgb(0x1a, 0x10, 0x30),
+            inactive_bg: egui::Color32::from_rgb(0x38, 0x25, 0x63),
+            hover_bg: egui::Color32::from_rgb(0x47, 0x30, 0x78),
+        },
+    }
+}
 
 // ---------------------------------------------------------------------
 // Corner radius

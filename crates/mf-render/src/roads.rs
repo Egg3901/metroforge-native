@@ -7,7 +7,7 @@
 
 use bevy::prelude::*;
 
-use mf_state::{CurrentCity, HeightAt, QualityTier};
+use mf_state::{CurrentCity, HeightAt, QualityTier, Theme};
 
 use crate::mesh_utils::{append_ribbon, MeshBuffers};
 use crate::palette;
@@ -42,10 +42,13 @@ impl Plugin for MfRoadsPlugin {
 
 #[derive(Resource, Default)]
 struct RoadsState {
-    /// Cheap structural signature: `(roads.len(), total point count)`. Roads
-    /// never change after `ready` in v1, but this keys the rebuild the same
-    /// way the other layers key off `fieldsVersion`/UI structural hashes.
-    signature: Option<(usize, usize)>,
+    /// Cheap structural signature: `(roads.len(), total point count,
+    /// theme)`. Roads never change after `ready` in v1, but this keys the
+    /// rebuild the same way the other layers key off `fieldsVersion`/UI
+    /// structural hashes — `Theme` rides along so a theme switch forces a
+    /// full rebuild (road color is baked into the mesh vertex color at
+    /// build time, not read from the material each frame).
+    signature: Option<(usize, usize, Theme)>,
     entities: Vec<Entity>,
     local_entity: Option<Entity>,
 }
@@ -76,6 +79,7 @@ fn build_roads_system(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     quality: Res<QualityTier>,
+    theme: Res<Theme>,
 ) {
     let Some(city_json) = &city.static_city else {
         return;
@@ -89,7 +93,7 @@ fn build_roads_system(
         return;
     }
     let total_points: usize = city_json.roads.iter().map(|r| r.points.len()).sum();
-    let signature = (city_json.roads.len(), total_points);
+    let signature = (city_json.roads.len(), total_points, *theme);
     if state.signature == Some(signature) {
         return;
     }

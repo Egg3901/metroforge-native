@@ -10,7 +10,7 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 use mf_net::{NetStatus, ReconnectState, SimEvent, SimLink};
 use mf_protocol::envelope::FromSimJson;
 use mf_protocol::{Difficulty, FromSimMsg, ToSim, ToastTone};
-use mf_state::{LatestUi, QualityTier, SubwayView};
+use mf_state::{LatestUi, QualityTier, SubwayView, Theme};
 
 use crate::audio::{PlaySfx, Sfx};
 use crate::campaign::{self, CampaignProgress};
@@ -18,13 +18,24 @@ use crate::config::MfConfig;
 use crate::saves::{self, SaveManager, SaveSlot};
 use crate::state::{toggle_pause, AppState, PauseState, PendingInit, SimHello};
 
-// Art-direction §1/§8 palette, in egui's 0..255 sRGB `Color32`.
+// Art-direction §1/§8 palette, in egui's 0..255 sRGB `Color32`. These are
+// the `Theme::Light` values specifically — `hud_visuals_for` below is the
+// theme-indexed source of truth for the egui chrome (panel/window fill,
+// text, accent); these top-level consts stay fixed (badge/status colors
+// like GOOD/WARN/BAD and card fills carry semantic meaning independent of
+// theme, and changing every one of their many call sites throughout this
+// file is out of scope for issue #32 — only the overall panel/text/accent
+// chrome and the day/night/transit render palette are theme-indexed).
 const PANEL_BG: egui::Color32 = egui::Color32::from_rgb(0xf4, 0xf5, 0xf2); // near-white
 const TEXT_COLOR: egui::Color32 = egui::Color32::from_rgb(0x17, 0x18, 0x1c); // rich black
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x00, 0x7a, 0xff); // metro blue
 const GOOD: egui::Color32 = egui::Color32::from_rgb(0x34, 0xc7, 0x59);
 const WARN: egui::Color32 = egui::Color32::from_rgb(0xff, 0x95, 0x00);
 const BAD: egui::Color32 = egui::Color32::from_rgb(0xff, 0x3b, 0x30);
+
+// Theme-indexed egui chrome colors (panel/window fill, primary text, the
+// accent, idle-widget backgrounds) live in `design_system::theme_colors` —
+// see [`setup_egui_style_system`] below, the one call site.
 
 const INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
 // Muted secondary text (subtitle/labels/version) — art-direction reserves
@@ -77,20 +88,27 @@ impl Plugin for MfHudPlugin {
     }
 }
 
-/// Guards [`setup_egui_style_system`] so it only does its (cheap but
-/// non-trivial) font/visuals work once it actually succeeds. Deliberately
-/// NOT a `Startup` system: at `Startup` the primary window's egui context
-/// isn't guaranteed to exist yet (bevy_egui wires it up once the window
-/// backend is ready), so a one-shot `Startup` system silently no-ops and
-/// the HUD is stuck on bevy_egui's default dark theme forever — this bit
-/// during initial implementation (art-direction §8's off-white panels
-/// never appeared). Retrying every `EguiPrimaryContextPass` tick until it
-/// succeeds fixes that with no observable per-frame cost once applied.
+/// Guards [`setup_egui_style_system`]'s (cheap but non-trivial) font/visuals
+/// work: skips it once it has already applied the *current* theme.
+/// Deliberately NOT a `Startup` system: at `Startup` the primary window's
+/// egui context isn't guaranteed to exist yet (bevy_egui wires it up once
+/// the window backend is ready), so a one-shot `Startup` system silently
+/// no-ops and the HUD is stuck on bevy_egui's default dark theme forever —
+/// this bit during initial implementation (art-direction §8's off-white
+/// panels never appeared). Retrying every `EguiPrimaryContextPass` tick
+/// until it succeeds fixes that with no observable per-frame cost once
+/// applied — and re-applies whenever `applied_theme` no longer matches the
+/// live `Theme` resource, so a HUD theme pick takes effect on the very next
+/// frame instead of needing a restart.
 #[derive(Resource, Default)]
-struct EguiStyleApplied(bool);
+struct EguiStyleApplied(Option<Theme>);
 
-fn setup_egui_style_system(mut contexts: EguiContexts, mut applied: ResMut<EguiStyleApplied>) {
-    if applied.0 {
+fn setup_egui_style_system(
+    mut contexts: EguiContexts,
+    theme: Res<Theme>,
+    mut applied: ResMut<EguiStyleApplied>,
+) {
+    if applied.0 == Some(*theme) {
         return;
     }
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -109,19 +127,24 @@ fn setup_egui_style_system(mut contexts: EguiContexts, mut applied: ResMut<EguiS
         .insert(0, "inter".to_owned());
     ctx.set_fonts(fonts);
 
-    let mut visuals = egui::Visuals::light();
-    visuals.panel_fill = PANEL_BG;
-    visuals.window_fill = PANEL_BG;
-    visuals.extreme_bg_color = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
-    visuals.faint_bg_color = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
-    visuals.override_text_color = Some(TEXT_COLOR);
-    visuals.widgets.noninteractive.bg_fill = PANEL_BG;
-    visuals.widgets.noninteractive.weak_bg_fill = PANEL_BG;
-    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
-    visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(0xdc, 0xde, 0xd8);
-    visuals.widgets.active.bg_fill = ACCENT;
-    visuals.selection.bg_fill = ACCENT;
+    let hv = crate::design_system::theme_colors(*theme);
+    let mut visuals = if *theme == Theme::Light {
+        egui::Visuals::light()
+    } else {
+        egui::Visuals::dark()
+    };
+    visuals.panel_fill = hv.panel_bg;
+    visuals.window_fill = hv.panel_bg;
+    visuals.extreme_bg_color = hv.extreme_bg;
+    visuals.faint_bg_color = hv.extreme_bg;
+    visuals.override_text_color = Some(hv.text);
+    visuals.widgets.noninteractive.bg_fill = hv.panel_bg;
+    visuals.widgets.noninteractive.weak_bg_fill = hv.panel_bg;
+    visuals.widgets.inactive.bg_fill = hv.inactive_bg;
+    visuals.widgets.inactive.weak_bg_fill = hv.inactive_bg;
+    visuals.widgets.hovered.bg_fill = hv.hover_bg;
+    visuals.widgets.active.bg_fill = hv.accent;
+    visuals.selection.bg_fill = hv.accent;
     // Art-direction: "no rounded-corner excess" — keep corners near-square.
     visuals.window_corner_radius = egui::CornerRadius::same(2);
     visuals.menu_corner_radius = egui::CornerRadius::same(2);
@@ -134,7 +157,7 @@ fn setup_egui_style_system(mut contexts: EguiContexts, mut applied: ResMut<EguiS
         widget.corner_radius = egui::CornerRadius::same(2);
     }
     ctx.set_visuals(visuals);
-    applied.0 = true;
+    applied.0 = Some(*theme);
 }
 
 fn collect_toasts_system(mut events: EventReader<SimEvent>, mut log: ResMut<ToastLog>) {
@@ -242,6 +265,37 @@ fn quality_selector(
     egui::ComboBox::from_label("Quality")
         .selected_text(format!("{quality:?}"))
         .show_ui(ui, |ui| quality_options(ui, quality, config, sfx));
+}
+
+/// The theme rows shared by every theme combo box (pause overlay, main
+/// menu) — same split-out shape as [`quality_options`] above, issue #32.
+fn theme_options(
+    ui: &mut egui::Ui,
+    theme: &mut Theme,
+    config: &mut MfConfig,
+    sfx: &mut EventWriter<PlaySfx>,
+) {
+    for candidate in Theme::ALL {
+        if ui
+            .selectable_label(*theme == candidate, candidate.label())
+            .clicked()
+        {
+            *theme = candidate;
+            config.set_theme_override(Some(candidate));
+            sfx.write(PlaySfx(Sfx::Confirm));
+        }
+    }
+}
+
+fn theme_selector(
+    ui: &mut egui::Ui,
+    theme: &mut Theme,
+    config: &mut MfConfig,
+    sfx: &mut EventWriter<PlaySfx>,
+) {
+    egui::ComboBox::from_label("Theme")
+        .selected_text(theme.label())
+        .show_ui(ui, |ui| theme_options(ui, theme, config, sfx));
 }
 
 /// ConnectingSim previously registered NO ui system at all, so a player whose
@@ -550,6 +604,7 @@ fn main_menu_hud_system(
     progress: Res<CampaignProgress>,
     mut pending: ResMut<PendingInit>,
     mut quality: ResMut<QualityTier>,
+    mut theme: ResMut<Theme>,
     mut config: ResMut<MfConfig>,
     mut save_manager: ResMut<SaveManager>,
     mut toasts: ResMut<ToastLog>,
@@ -722,6 +777,15 @@ fn main_menu_hud_system(
                                 quality_options(ui, &mut quality, &mut config, &mut sfx)
                             });
 
+                        ui.add_space(12.0);
+                        field_label(ui, "Theme");
+                        egui::ComboBox::from_id_salt("theme_picker")
+                            .selected_text(theme.label())
+                            .width(300.0)
+                            .show_ui(ui, |ui| {
+                                theme_options(ui, &mut theme, &mut config, &mut sfx)
+                            });
+
                         ui.add_space(28.0);
                         let start = ui.add_sized(
                             [220.0, 44.0],
@@ -779,6 +843,7 @@ fn in_game_hud_system(
     ui_state: Res<LatestUi>,
     link: Option<Res<SimLink>>,
     mut quality: ResMut<QualityTier>,
+    mut theme: ResMut<Theme>,
     mut config: ResMut<MfConfig>,
     mut subway: ResMut<SubwayView>,
     toasts: Res<ToastLog>,
@@ -905,6 +970,9 @@ fn in_game_hud_system(
 
                 thin_separator(ui);
                 quality_selector(ui, &mut quality, &mut config, &mut sfx);
+
+                thin_separator(ui);
+                theme_selector(ui, &mut theme, &mut config, &mut sfx);
             });
         });
 
@@ -951,6 +1019,7 @@ fn pause_overlay_system(
     ui_state: Res<LatestUi>,
     link: Option<Res<SimLink>>,
     mut quality: ResMut<QualityTier>,
+    mut theme: ResMut<Theme>,
     mut config: ResMut<MfConfig>,
     mut save_manager: ResMut<SaveManager>,
     mut toasts: ResMut<ToastLog>,
@@ -1032,6 +1101,15 @@ fn pause_overlay_system(
                             .width(220.0)
                             .show_ui(ui, |ui| {
                                 quality_options(ui, &mut quality, &mut config, &mut sfx)
+                            });
+
+                        ui.add_space(14.0);
+                        field_label(ui, "Theme");
+                        egui::ComboBox::from_id_salt("pause_theme")
+                            .selected_text(theme.label())
+                            .width(220.0)
+                            .show_ui(ui, |ui| {
+                                theme_options(ui, &mut theme, &mut config, &mut sfx)
                             });
 
                         ui.add_space(14.0);

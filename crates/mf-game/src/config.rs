@@ -1,10 +1,12 @@
 //! Persistent client config (spec §3.4 `config.rs`): a `config.toml` under
 //! the OS config dir (`directories::ProjectDirs("com","ahousedivided",
-//! "MetroForge")`), holding a quality-tier override. Auto-detection (spec
-//! §4) is used whenever no override is set; the override always wins.
+//! "MetroForge")`), holding a quality-tier override and a theme override
+//! (issue #32). Auto-detection (spec §4) is used whenever no quality
+//! override is set; `Theme::Light` is used whenever no theme override is
+//! set. Either override always wins over its default.
 
 use bevy::prelude::*;
-use mf_state::QualityTier;
+use mf_state::{QualityTier, Theme};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -42,17 +44,50 @@ impl From<QualityTier> for ConfigQuality {
     }
 }
 
+/// TOML-serializable mirror of [`Theme`] — same rationale as
+/// [`ConfigQuality`] above (keeps `serde` out of `mf-state`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigTheme {
+    Light,
+    Dark,
+    Purple,
+}
+
+impl From<ConfigTheme> for Theme {
+    fn from(t: ConfigTheme) -> Self {
+        match t {
+            ConfigTheme::Light => Theme::Light,
+            ConfigTheme::Dark => Theme::Dark,
+            ConfigTheme::Purple => Theme::Purple,
+        }
+    }
+}
+
+impl From<Theme> for ConfigTheme {
+    fn from(t: Theme) -> Self {
+        match t {
+            Theme::Light => ConfigTheme::Light,
+            Theme::Dark => ConfigTheme::Dark,
+            Theme::Purple => ConfigTheme::Purple,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct ConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     quality_override: Option<ConfigQuality>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    theme_override: Option<ConfigTheme>,
 }
 
 /// Loaded/persisted client config. A Bevy `Resource` so `hud.rs`'s quality
-/// selector can read/write it directly.
+/// and theme selectors can read/write it directly.
 #[derive(Resource, Debug, Clone, Default)]
 pub struct MfConfig {
     pub quality_override: Option<QualityTier>,
+    pub theme_override: Option<Theme>,
     path: Option<PathBuf>,
 }
 
@@ -67,22 +102,30 @@ impl MfConfig {
     pub fn load() -> Self {
         let Some(path) = Self::config_path() else {
             tracing::warn!(
-                "mf-game: no config dir available on this platform; quality override disabled"
+                "mf-game: no config dir available on this platform; quality/theme overrides disabled"
             );
             return MfConfig::default();
         };
-        let quality_override = std::fs::read_to_string(&path)
+        let parsed = std::fs::read_to_string(&path)
             .ok()
-            .and_then(|s| toml::from_str::<ConfigFile>(&s).ok())
+            .and_then(|s| toml::from_str::<ConfigFile>(&s).ok());
+        let quality_override = parsed
+            .as_ref()
             .and_then(|f| f.quality_override)
             .map(QualityTier::from);
+        let theme_override = parsed
+            .as_ref()
+            .and_then(|f| f.theme_override)
+            .map(Theme::from);
         MfConfig {
             quality_override,
+            theme_override,
             path: Some(path),
         }
     }
 
-    /// Persist the current override (or its absence) back to `config.toml`.
+    /// Persist the current overrides (or their absence) back to
+    /// `config.toml`.
     pub fn save(&self) -> anyhow::Result<()> {
         let Some(path) = &self.path else {
             anyhow::bail!("no config path resolved for this platform");
@@ -92,6 +135,7 @@ impl MfConfig {
         }
         let file = ConfigFile {
             quality_override: self.quality_override.map(ConfigQuality::from),
+            theme_override: self.theme_override.map(ConfigTheme::from),
         };
         let toml_str = toml::to_string_pretty(&file)?;
         std::fs::write(path, toml_str)?;
@@ -100,6 +144,13 @@ impl MfConfig {
 
     pub fn set_quality_override(&mut self, quality: Option<QualityTier>) {
         self.quality_override = quality;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
+
+    pub fn set_theme_override(&mut self, theme: Option<Theme>) {
+        self.theme_override = theme;
         if let Err(e) = self.save() {
             tracing::warn!("mf-game: failed to persist config.toml: {e}");
         }
@@ -114,6 +165,7 @@ mod tests {
     fn config_quality_roundtrips_through_toml() {
         let file = ConfigFile {
             quality_override: Some(ConfigQuality::High),
+            theme_override: None,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("high"));
@@ -125,9 +177,32 @@ mod tests {
     fn missing_override_serializes_to_empty_document() {
         let file = ConfigFile {
             quality_override: None,
+            theme_override: None,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         let back: ConfigFile = toml::from_str(&s).unwrap();
         assert_eq!(back.quality_override, None);
+        assert_eq!(back.theme_override, None);
+    }
+
+    #[test]
+    fn config_theme_roundtrips_through_toml() {
+        let file = ConfigFile {
+            quality_override: None,
+            theme_override: Some(ConfigTheme::Purple),
+        };
+        let s = toml::to_string_pretty(&file).unwrap();
+        assert!(s.contains("purple"));
+        let back: ConfigFile = toml::from_str(&s).unwrap();
+        assert_eq!(back.theme_override, Some(ConfigTheme::Purple));
+    }
+
+    #[test]
+    fn theme_conversion_roundtrips_every_variant() {
+        for theme in Theme::ALL {
+            let cfg: ConfigTheme = theme.into();
+            let back: Theme = cfg.into();
+            assert_eq!(theme, back);
+        }
     }
 }

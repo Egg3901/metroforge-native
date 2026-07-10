@@ -24,7 +24,7 @@ mod vehicles;
 use bevy::pbr::DirectionalLightShadowMap;
 use bevy::prelude::*;
 
-use mf_state::QualityTier;
+use mf_state::{QualityTier, Theme};
 
 pub use buildings::BuildingsDenseCenter;
 
@@ -68,9 +68,26 @@ impl Plugin for MfRenderPlugin {
         ))
         .add_systems(
             Update,
-            apply_quality_render_settings_system.in_set(MfRenderSet::Dynamic),
+            (
+                sync_theme_system.before(MfRenderSet::Terrain),
+                apply_quality_render_settings_system.in_set(MfRenderSet::Dynamic),
+            ),
         );
     }
+}
+
+/// Publishes `Res<Theme>` into `palette.rs`'s process-global (see that
+/// module's doc comment for why) — runs before `MfRenderSet::Terrain` so any
+/// theme change is visible to every material-build system in this same
+/// frame, not the next one. Cheap even every frame (a single atomic store,
+/// gated on `is_changed`), and covers the one-time "just inserted" tick at
+/// startup the same way every other `Res<T>::is_changed()` check in this
+/// crate does.
+fn sync_theme_system(theme: Res<Theme>) {
+    if !theme.is_changed() {
+        return;
+    }
+    palette::set_theme(*theme);
 }
 
 /// Spec §4 knob table, the render-global settings that don't belong to any
