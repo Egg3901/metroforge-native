@@ -12,6 +12,7 @@ mod hud;
 mod input;
 mod map_mode;
 mod overlays;
+mod panels;
 mod quality_boot;
 mod reveal_input;
 mod state;
