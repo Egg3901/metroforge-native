@@ -4,6 +4,10 @@
 
 mod audio;
 mod camera;
+// INTEGRATION STUB - replaced by v02/command-bus. `tools.rs` (v0.2 build
+// tools, ship-plan #25) depends on this module's public API; the real
+// implementation lands, and this stub is deleted, at integration time.
+mod command_bus;
 mod config;
 mod hud;
 mod input;
