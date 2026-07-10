@@ -15,6 +15,19 @@ pub enum BinaryError {
     UnsupportedVersion(u8),
     #[error("unknown StaticMask.which {0}")]
     UnknownMaskWhich(u8),
+    /// A `StaticBuildings` building's `vertexCount` byte was outside the
+    /// wire's documented 3..=64 range. The sidecar is expected to only ever
+    /// emit valid polygons, but decode must not trust that: a future data
+    /// bug on the wire must fail closed here, not panic or read garbage.
+    #[error("StaticBuildings building has vertexCount {got}, must be 3..=64")]
+    InvalidVertexCount { got: u8 },
+    /// `StaticBuildings.vertexTotal` (used by the caller for prealloc) did
+    /// not match the sum of every building's `vertexCount`. Since the
+    /// per-building loop is driven by `buildingCount` alone, this can only
+    /// be checked after decoding all buildings, unlike `TooShort` (which
+    /// fires mid-loop on truncation).
+    #[error("StaticBuildings vertexTotal header says {declared}, buildings summed to {actual}")]
+    VertexTotalMismatch { declared: u32, actual: u32 },
 }
 
 fn u8_at(b: &[u8], off: usize) -> Result<u8, BinaryError> {
@@ -388,6 +401,131 @@ impl StaticMask {
     }
 }
 
+/// msgType=5 — building footprints, sent once (not on the periodic cadence
+/// of Frame/Fields/Traffic). Purely additive: a city with no
+/// `StaticBuildings` message is valid and unremarkable — `mf-render` falls
+/// back to its procedural density formula (see `height_dm` doc below), so
+/// this does NOT gate `mf-game`'s `Loading` state the way `StaticMask` does.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuildingFootprint {
+    /// Height in decimeters, verbatim off the wire (NOT converted to
+    /// meters, unlike `verts`): the renderer both interprets `0` as
+    /// "unknown, use my density formula" and does its own unit conversion,
+    /// so decode has no reason to touch this field.
+    pub height_dm: u16,
+    /// Outer-ring polygon vertices in world meters, origin-centered.
+    /// Converted from the wire's half-meter `i16` fixed point (`/2.0`) at
+    /// decode time. The sidecar normalizes winding to CCW in the wire's
+    /// y-down convention, but decode does NOT trust or check that — winding
+    /// is the renderer's concern, and a future winding/data bug here must
+    /// not crash the client.
+    pub verts: Vec<[f32; 2]>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StaticBuildings {
+    pub buildings: Vec<BuildingFootprint>,
+}
+
+const STATIC_BUILDINGS_HEADER_LEN: usize = 12;
+/// Bytes for one building's fixed header (vertexCount, flags, heightDm),
+/// ahead of its `vertexCount` vertex pairs.
+const BUILDING_HEADER_LEN: usize = 4;
+/// Bytes per vertex: `i16 xHalfM, i16 yHalfM`.
+const BUILDING_VERTEX_LEN: usize = 4;
+
+impl StaticBuildings {
+    pub fn decode(b: &[u8]) -> Result<Self, BinaryError> {
+        if b.len() < STATIC_BUILDINGS_HEADER_LEN {
+            return Err(BinaryError::TooShort {
+                need: STATIC_BUILDINGS_HEADER_LEN,
+                got: b.len(),
+            });
+        }
+        check_msg_type(b, 5)?;
+        let building_count = u32_at(b, 4)? as usize;
+        let vertex_total = u32_at(b, 8)?;
+
+        // Cap the prealloc at what the remaining buffer could possibly hold
+        // (each building needs >= BUILDING_HEADER_LEN bytes) so a corrupt or
+        // hostile `buildingCount` can't force a huge allocation before the
+        // per-building bounds checks below get a chance to reject it.
+        let max_possible = (b.len() - STATIC_BUILDINGS_HEADER_LEN) / BUILDING_HEADER_LEN;
+        let mut buildings = Vec::with_capacity(building_count.min(max_possible));
+
+        let mut off = STATIC_BUILDINGS_HEADER_LEN;
+        let mut vertex_sum: u32 = 0;
+        for _ in 0..building_count {
+            let vertex_count = u8_at(b, off)?;
+            let _flags = u8_at(b, off + 1)?; // reserved, always 0 for now
+            let height_dm = u16_at(b, off + 2)?;
+            off += BUILDING_HEADER_LEN;
+
+            if !(3..=64).contains(&vertex_count) {
+                return Err(BinaryError::InvalidVertexCount { got: vertex_count });
+            }
+
+            let vc = vertex_count as usize;
+            let need = vc * BUILDING_VERTEX_LEN;
+            let vert_bytes = b.get(off..off + need).ok_or(BinaryError::TooShort {
+                need: off + need,
+                got: b.len(),
+            })?;
+            let verts = vert_bytes
+                .chunks_exact(BUILDING_VERTEX_LEN)
+                .map(|c| {
+                    let x_half = i16::from_le_bytes([c[0], c[1]]);
+                    let y_half = i16::from_le_bytes([c[2], c[3]]);
+                    [x_half as f32 / 2.0, y_half as f32 / 2.0]
+                })
+                .collect();
+            off += need;
+
+            vertex_sum += vertex_count as u32;
+            buildings.push(BuildingFootprint { height_dm, verts });
+        }
+
+        if vertex_sum != vertex_total {
+            return Err(BinaryError::VertexTotalMismatch {
+                declared: vertex_total,
+                actual: vertex_sum,
+            });
+        }
+
+        Ok(StaticBuildings { buildings })
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let vertex_total: u32 = self.buildings.iter().map(|bd| bd.verts.len() as u32).sum();
+        let body_len: usize = self
+            .buildings
+            .iter()
+            .map(|bd| BUILDING_HEADER_LEN + bd.verts.len() * BUILDING_VERTEX_LEN)
+            .sum();
+        let mut out = Vec::with_capacity(STATIC_BUILDINGS_HEADER_LEN + body_len);
+        out.push(5); // msgType
+        out.push(1); // version
+        out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+        out.extend_from_slice(&(self.buildings.len() as u32).to_le_bytes());
+        out.extend_from_slice(&vertex_total.to_le_bytes());
+        for building in &self.buildings {
+            out.push(building.verts.len() as u8); // vertexCount
+            out.push(0); // flags, reserved
+            out.extend_from_slice(&building.height_dm.to_le_bytes());
+            for v in &building.verts {
+                // Inverse of decode's `/2.0`; half-meter quantization means
+                // this is exact for values that came from decode, but rounds
+                // arbitrary floats built by hand (documented on the type).
+                let x_half = (v[0] * 2.0).round() as i16;
+                let y_half = (v[1] * 2.0).round() as i16;
+                out.extend_from_slice(&x_half.to_le_bytes());
+                out.extend_from_slice(&y_half.to_le_bytes());
+            }
+        }
+        out
+    }
+}
+
 fn check_msg_type(b: &[u8], expected: u8) -> Result<(), BinaryError> {
     let msg_type = u8_at(b, 0)?;
     if msg_type != expected {
@@ -407,6 +545,7 @@ pub enum BinaryMsg {
     Fields(Fields),
     Traffic(Traffic),
     Mask(StaticMask),
+    Buildings(StaticBuildings),
 }
 
 pub fn decode_binary(b: &[u8]) -> Result<BinaryMsg, BinaryError> {
@@ -416,6 +555,7 @@ pub fn decode_binary(b: &[u8]) -> Result<BinaryMsg, BinaryError> {
         2 => Ok(BinaryMsg::Fields(Fields::decode(b)?)),
         3 => Ok(BinaryMsg::Traffic(Traffic::decode(b)?)),
         4 => Ok(BinaryMsg::Mask(StaticMask::decode(b)?)),
+        5 => Ok(BinaryMsg::Buildings(StaticBuildings::decode(b)?)),
         other => Err(BinaryError::UnknownMsgType(other)),
     }
 }

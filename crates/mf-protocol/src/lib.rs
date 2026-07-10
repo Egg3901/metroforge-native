@@ -3,7 +3,7 @@
 //!
 //! - [`envelope`] / [`types`]: the JSON control channel (text frames).
 //! - [`binary`]: the little-endian typed-array hot-path channel (binary
-//!   frames: FrameSnapshot, Fields, Traffic, StaticMask).
+//!   frames: FrameSnapshot, Fields, Traffic, StaticMask, StaticBuildings).
 //!
 //! [`FromSimMsg`] unifies both into the single event stream `mf-net` forwards
 //! into Bevy.
@@ -13,8 +13,8 @@ pub mod envelope;
 pub mod types;
 
 pub use binary::{
-    decode_binary, BinaryError, BinaryMsg, Fields, FrameSnapshot, MaskWhich, StaticMask, Traffic,
-    TrafficHotspot,
+    decode_binary, BinaryError, BinaryMsg, BuildingFootprint, Fields, FrameSnapshot, MaskWhich,
+    StaticBuildings, StaticMask, Traffic, TrafficHotspot,
 };
 pub use envelope::{
     ClientHelloPayload, CommandPayload, CommandResultPayload, Envelope, EnvelopeError, FromSimJson,
@@ -38,6 +38,9 @@ pub enum FromSimMsg {
     Fields(Fields),
     Traffic(Traffic),
     Mask(StaticMask),
+    /// msgType=5, sent once. Additive/optional (see `BuildingFootprint`
+    /// doc): does NOT bump `PROTOCOL_VERSION`.
+    Buildings(StaticBuildings),
 }
 
 impl From<FromSimJson> for FromSimMsg {
@@ -53,6 +56,7 @@ impl From<BinaryMsg> for FromSimMsg {
             BinaryMsg::Fields(f) => FromSimMsg::Fields(f),
             BinaryMsg::Traffic(t) => FromSimMsg::Traffic(t),
             BinaryMsg::Mask(m) => FromSimMsg::Mask(m),
+            BinaryMsg::Buildings(b) => FromSimMsg::Buildings(b),
         }
     }
 }
