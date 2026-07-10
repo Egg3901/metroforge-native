@@ -70,7 +70,11 @@ fn reveal_input_system(
         .single()
         .ok()
         .and_then(Window::cursor_position)
-        .and_then(|pos| screen_to_ground(camera, camera_transform, &height_at, pos));
+        .and_then(|pos| screen_to_ground(camera, camera_transform, &height_at, pos))
+        // Headless verify hook: Xvfb has no cursor, so a cursor-driven
+        // effect is otherwise invisible to the screenshot harness. Forcing
+        // the hole to the camera target exercises the full shader path.
+        .or_else(|| std::env::var_os("MF_FORCE_REVEAL").map(|_| rig.target));
 
     // (b) Cursor reveal is always the hole's center; when the camera has
     // also dollied in close, widen ITS radii by the camera-distance factor
