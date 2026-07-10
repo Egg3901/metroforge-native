@@ -192,7 +192,18 @@ fn build_terrain_system(
             let (p10, c10) = vertex_at(ix + 1, iy);
             let (p11, c11) = vertex_at(ix + 1, iy + 1);
             let (p01, c01) = vertex_at(ix, iy + 1);
-            buf.push_quad(p00, p10, p11, p01, Vec3::Y, c00, c10, c11, c01);
+            // Winding vs the declared `+Y` normal: `ix` walks `+X`, `iy`
+            // walks `+Z` (`vertex_at`'s `x`/`z` both increase with their
+            // index). Taking `p00` as the origin, `v1 = p10-p00 ~= (dx,0,0)`
+            // and `v2 = p11-p00 ~= (dx,0,dz)` (dx,dz > 0); the right-hand
+            // cross product `v1 x v2 = (0, -dx*dz, 0)` — i.e. `(p00,p10,p11)`
+            // winds CCW as seen from *below* (`-Y`), not from above where
+            // the camera and the declared normal both are. `push_quad`
+            // needs (p0,p1,p2) CCW from `normal` (Bevy/wgpu front-face =
+            // CCW), so the naive `(p00,p10,p11,p01)` order is backwards;
+            // swapping the middle two args to `(p00,p01,p11,p10)` reverses
+            // the same quad and flips the cross product to `+Y`.
+            buf.push_quad(p00, p01, p11, p10, Vec3::Y, c00, c01, c11, c10);
         }
     }
     if buf.is_empty() {
@@ -201,12 +212,20 @@ fn build_terrain_system(
     let mesh = meshes.add(buf.build());
 
     let unlit = quality.knobs().unlit_material;
+    // Grid quads verified CCW-from-+Y below (fixed to match) — single-sided,
+    // back-face-culled is correct for a ground plane only ever seen from
+    // above. (An A/B-diffed brightness regression in the subway+Potato
+    // combination initially looked like it implicated this material too,
+    // but root-caused to roads.rs's `unlit` flag going stale on a runtime
+    // quality change — see the comment on `apply_quality_to_roads_material_
+    // system` there. This material's own `unlit` already updates reactively
+    // via `apply_quality_to_terrain_material_system` below, so it was never
+    // actually the source.)
     let material = materials.add(StandardMaterial {
-        double_sided: true,
-        cull_mode: None,
         base_color: Color::WHITE,
         unlit,
         perceptual_roughness: 1.0,
+        reflectance: 0.0,
         ..default()
     });
     state.material = Some(material.clone());

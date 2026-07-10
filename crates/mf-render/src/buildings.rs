@@ -379,11 +379,18 @@ fn build_buildings_system(
     } else {
         Color::WHITE
     };
+    // `append_cuboid`'s 5 quads (top cap + 4 walls) are each individually
+    // verified CCW-from-declared-normal (see mesh_utils.rs) — single-sided,
+    // back-face-culled is correct. (Same note as terrain.rs: an initially-
+    // suspected brightness regression here root-caused to roads.rs's stale
+    // `unlit` flag, not to this material — this one's `unlit` already
+    // updates reactively via `apply_quality_to_buildings_material_system`
+    // below.)
     let material = materials.add(StandardMaterial {
-        double_sided: true,
-        cull_mode: None,
         base_color,
         unlit,
+        perceptual_roughness: 1.0,
+        reflectance: 0.0,
         ..default()
     });
     state.material = Some(material.clone());

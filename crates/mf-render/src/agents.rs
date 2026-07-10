@@ -90,9 +90,9 @@ fn update_agents_system(
     let entity = if let Some(e) = state.entity {
         e
     } else {
+        // Flat +Y quads viewed only from above (top-down camera) — verified
+        // CCW-from-+Y below (fixed to match), so single-sided is correct.
         let mat = materials.add(StandardMaterial {
-            double_sided: true,
-            cull_mode: None,
             base_color: Color::WHITE,
             unlit: quality.knobs().unlit_material,
             ..default()
@@ -149,11 +149,17 @@ fn update_agents_system(
         };
         let ground_y = height_at.sample(x, y) + AGENT_Y_OFFSET;
         let color = phase_color(phase);
+        // Winding vs the declared `+Y` normal: same corner pattern as
+        // `terrain.rs`'s grid quad ((x0,z0),(x1,z0),(x1,z1),(x0,z1)), which
+        // works out to a `-Y` cross product (CCW from below, not above) —
+        // see the comment there for the derivation. Swapping the middle two
+        // corners to ((x0,z0),(x0,z1),(x1,z1),(x1,z0)) reverses the quad and
+        // flips the cross product to `+Y`, matching the declared normal.
         buf.push_flat_quad(
             Vec3::new(x - half, ground_y, y - half),
-            Vec3::new(x + half, ground_y, y - half),
-            Vec3::new(x + half, ground_y, y + half),
             Vec3::new(x - half, ground_y, y + half),
+            Vec3::new(x + half, ground_y, y + half),
+            Vec3::new(x + half, ground_y, y - half),
             Vec3::Y,
             color,
         );

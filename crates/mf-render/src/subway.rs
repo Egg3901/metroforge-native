@@ -108,6 +108,14 @@ fn fade_road_and_stripe_alpha_system(
     if steady {
         return;
     }
+    // Roads and the normal-width route stripe stay `AlphaMode::Blend`
+    // unconditionally (set at creation in roads.rs/transit.rs) — only their
+    // `base_color` alpha moves here. See the long comment on the road-class
+    // materials in `roads.rs` for why this doesn't also flip `alpha_mode` to
+    // `Opaque` when steady at alpha 1.0: that optimization was attempted and
+    // broke rendering (verified via headless screenshot A/B diffing), so
+    // this crate still pays the transparent-pass cost for these two
+    // material families specifically, unlike the rest of issue #5's fix.
     let alpha = 1.0 - subway.t * (1.0 - FADED_ALPHA);
     for handle in &roads {
         if let Some(mat) = materials.get_mut(&handle.0) {
@@ -115,7 +123,9 @@ fn fade_road_and_stripe_alpha_system(
         }
     }
     // Dim the ground so the faded grid and the vivid metro network pop
-    // against it (base_color multiplies the terrain's vertex colors).
+    // against it (base_color multiplies the terrain's vertex colors). Only
+    // the RGB channels move here, never alpha, so the terrain material's
+    // `AlphaMode` is untouched (it's created, and stays, `Opaque`).
     let dim = 1.0 - subway.t * GROUND_DIM;
     for handle in &terrain {
         if let Some(mat) = materials.get_mut(&handle.0) {
