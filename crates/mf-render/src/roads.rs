@@ -66,6 +66,7 @@ pub struct RoadSurface;
 #[derive(Component)]
 struct RoadClassSurface;
 
+#[allow(clippy::too_many_arguments)]
 fn build_roads_system(
     mut commands: Commands,
     city: Res<CurrentCity>,
