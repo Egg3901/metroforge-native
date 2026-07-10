@@ -127,6 +127,7 @@ enum Stage {
     /// the network built in `NetworkBuild` spins up vehicles, then freezes
     /// again and takes `transit.png`.
     NetworkSettle,
+    NetworkShot,
     Elevated,
     Street,
     Subway,
@@ -199,8 +200,8 @@ fn frame_street(rig: &mut CameraRig, center: Vec2) {
 /// the freshly built stripes/chevrons/vehicles read clearly in one shot.
 fn frame_transit(rig: &mut CameraRig, center: Vec2) {
     rig.target = center;
-    rig.distance = 700.0;
-    rig.pitch = 0.55;
+    rig.distance = 650.0;
+    rig.pitch = 0.78;
     rig.yaw = 0.5;
 }
 
@@ -228,6 +229,11 @@ struct PlannedLine {
     mode: TransitMode,
     positions: Vec<Vec2>,
     vehicle_count: u32,
+    /// `Some((source_line, from_idx, to_idx))`: build no stations or tracks,
+    /// create the route over that slice of an earlier line's station ids.
+    /// Several routes over the same station pairs is what triggers
+    /// `transit.rs`'s parallel-offset bundling (the rainbow corridor).
+    reuse: Option<(usize, usize, usize)>,
 }
 
 /// Station spacing shared by every line below.
@@ -243,15 +249,17 @@ const NETWORK_SHORT_HALF_SPAN: f32 = 900.0;
 /// station. `buildStation` always creates a new station rather than
 /// reusing one at a coincident position, so two stations stacked on the
 /// same point is a degenerate case worth just avoiding here.
-const NETWORK_CROSS_OFFSET: f32 = 60.0;
+const NETWORK_CROSS_OFFSET: f32 = 250.0;
+/// Perpendicular shift of the diagonal line so none of its stations land on
+/// the west-east or north-south lines' stations (the sim rejects stations
+/// too close to an existing one of the same mode).
+const NETWORK_DIAGONAL_SHIFT: f32 = 300.0;
 /// How far the tram line sits off `center.y`, parallel to the west-east bus
 /// line, so their stripes bundle side by side instead of exactly overlapping.
-const NETWORK_TRAM_Y_OFFSET: f32 = 40.0;
 
 /// Bus/tram vehicle counts handed to `editRoute` once each line's route is
 /// created, so vehicles actually deploy onto it.
 const NETWORK_BUS_VEHICLES: u32 = 5;
-const NETWORK_TRAM_VEHICLES: u32 = 3;
 
 /// Positions `start..=end` stepping by `step`, both ends included by
 /// construction (every call site below picks `end - start` as an exact
@@ -290,6 +298,7 @@ fn build_plan(center: Vec2, world_half: f32) -> Vec<PlannedLine> {
         .map(|x| clamp(Vec2::new(x, center.y)))
         .collect(),
         vehicle_count: NETWORK_BUS_VEHICLES,
+        reuse: None,
     };
 
     let line_north_south = PlannedLine {
@@ -303,6 +312,7 @@ fn build_plan(center: Vec2, world_half: f32) -> Vec<PlannedLine> {
         .map(|y| clamp(Vec2::new(center.x + NETWORK_CROSS_OFFSET, y)))
         .collect(),
         vehicle_count: NETWORK_BUS_VEHICLES,
+        reuse: None,
     };
 
     let line_diagonal = PlannedLine {
@@ -313,25 +323,45 @@ fn build_plan(center: Vec2, world_half: f32) -> Vec<PlannedLine> {
             NETWORK_LINE_STEP,
         )
         .into_iter()
-        .map(|d| clamp(Vec2::new(center.x + d, center.y + d)))
+        // X-only shift: on the 600m station grid a symmetric +-shift lands a
+        // diagonal station exactly on a crossing line's station; +300 in X
+        // alone keeps every diagonal station >=300m from both other lines.
+        .map(|d| {
+            clamp(Vec2::new(
+                center.x + d + NETWORK_DIAGONAL_SHIFT,
+                center.y + d,
+            ))
+        })
         .collect(),
         vehicle_count: NETWORK_BUS_VEHICLES,
+        reuse: None,
     };
 
-    let line_tram = PlannedLine {
-        mode: TransitMode::Tram,
-        positions: axis_positions(
-            center.x - NETWORK_SHORT_HALF_SPAN,
-            center.x + NETWORK_SHORT_HALF_SPAN,
-            NETWORK_LINE_STEP,
-        )
-        .into_iter()
-        .map(|x| clamp(Vec2::new(x, center.y + NETWORK_TRAM_Y_OFFSET)))
-        .collect(),
-        vehicle_count: NETWORK_TRAM_VEHICLES,
+    // Two extra routes over the west-east line's existing stations: three
+    // routes sharing those pairs bundle side by side (transit.rs pair_users
+    // offsetting), which is the rainbow-corridor read the art direction
+    // promises. Trams are progression-locked at game start, so every demo
+    // line is a bus.
+    let route_express = PlannedLine {
+        mode: TransitMode::Bus,
+        positions: Vec::new(),
+        vehicle_count: NETWORK_BUS_VEHICLES,
+        reuse: Some((0, 0, 4)),
+    };
+    let route_short_turn = PlannedLine {
+        mode: TransitMode::Bus,
+        positions: Vec::new(),
+        vehicle_count: NETWORK_BUS_VEHICLES,
+        reuse: Some((0, 1, 3)),
     };
 
-    vec![line_west_east, line_north_south, line_diagonal, line_tram]
+    vec![
+        line_west_east,
+        line_north_south,
+        line_diagonal,
+        route_express,
+        route_short_turn,
+    ]
 }
 
 /// Which wire command a [`NetworkBuildState`] is currently waiting on a
@@ -427,6 +457,10 @@ impl NetworkBuildState {
             let line = &self.lines[line_idx];
             match self.phase {
                 LinePhase::Station(i) => {
+                    if line.reuse.is_some() {
+                        self.phase = LinePhase::Route;
+                        continue;
+                    }
                     if i >= line.positions.len() {
                         self.phase = LinePhase::Track(0);
                         continue;
@@ -480,10 +514,17 @@ impl NetworkBuildState {
                     ));
                 }
                 LinePhase::Route => {
-                    let ids: Vec<i64> = self.station_ids[line_idx]
-                        .iter()
-                        .filter_map(|s| *s)
-                        .collect();
+                    let ids: Vec<i64> = match line.reuse {
+                        Some((src, from, to)) => self.station_ids[src]
+                            [from..=to.min(self.station_ids[src].len() - 1)]
+                            .iter()
+                            .filter_map(|s| *s)
+                            .collect(),
+                        None => self.station_ids[line_idx]
+                            .iter()
+                            .filter_map(|s| *s)
+                            .collect(),
+                    };
                     self.phase = LinePhase::EditRoute;
                     if ids.len() < 2 {
                         tracing::warn!(
@@ -703,7 +744,12 @@ fn verify_sequence_system(
                     }));
                 }
             }
-            if elapsed_in_stage == NETWORK_SPIN_UP_FRAMES + 1 {
+            // The build + spin-up ran the sim clock well past dusk on slow
+            // software rasterizers, which shot the first demo at 20:45 and
+            // dimmed the whole city to its night palette. Keep the sim
+            // running until the clock is back in the daytime window, THEN
+            // freeze and shoot: the demo's whole point is daytime color.
+            if elapsed_in_stage > NETWORK_SPIN_UP_FRAMES && is_daytime(&ui) {
                 // Re-freeze: `LatestFrame` retains the last snapshot it saw
                 // (see `mf-state`'s `frame.rs`), so vehicles stay put at
                 // their spun-up positions in every screenshot from here on,
@@ -716,8 +762,14 @@ fn verify_sequence_system(
                 if let Ok(mut rig) = rigs.single_mut() {
                     frame_transit(&mut rig, dense_center.0);
                 }
+                advance_to = Some(Stage::NetworkShot);
             }
-            if elapsed_in_stage == NETWORK_SPIN_UP_FRAMES + 1 + SETTLE_FRAMES {
+            if elapsed_in_stage > NETWORK_BUILD_MAX_FRAMES {
+                advance_to = Some(Stage::NetworkShot); // shoot whatever we have
+            }
+        }
+        Stage::NetworkShot => {
+            if elapsed_in_stage == SETTLE_FRAMES {
                 take_screenshot(&mut commands, format!("{dir}/transit.png"));
                 advance_to = Some(Stage::Elevated);
             }
@@ -825,23 +877,36 @@ mod build_plan_tests {
     const CENTER: Vec2 = Vec2::new(1000.0, -500.0);
 
     #[test]
-    fn four_lines_with_expected_station_counts_and_modes() {
+    fn five_lines_with_expected_station_counts_and_reuse() {
         let plan = build_plan(CENTER, f32::MAX);
         assert_eq!(
             plan.len(),
-            4,
-            "expected 4 lines (west-east/north-south/diagonal/tram)"
+            5,
+            "expected 5 lines (west-east/north-south/diagonal/express/short-turn)"
         );
         assert_eq!(plan[0].positions.len(), 5, "west-east bus line");
         assert_eq!(plan[1].positions.len(), 5, "north-south bus line");
         assert_eq!(plan[2].positions.len(), 4, "diagonal bus line");
-        assert_eq!(plan[3].positions.len(), 4, "tram line");
-        for bus_line in &plan[0..3] {
-            assert_eq!(bus_line.mode, TransitMode::Bus);
-            assert_eq!(bus_line.vehicle_count, NETWORK_BUS_VEHICLES);
+        for line in &plan {
+            assert_eq!(line.mode, TransitMode::Bus);
+            assert_eq!(line.vehicle_count, NETWORK_BUS_VEHICLES);
         }
-        assert_eq!(plan[3].mode, TransitMode::Tram);
-        assert_eq!(plan[3].vehicle_count, NETWORK_TRAM_VEHICLES);
+        for built in &plan[0..3] {
+            assert!(built.reuse.is_none());
+        }
+        assert_eq!(
+            plan[3].reuse,
+            Some((0, 0, 4)),
+            "express reuses line 0 fully"
+        );
+        assert_eq!(
+            plan[4].reuse,
+            Some((0, 1, 3)),
+            "short turn reuses line 0's middle"
+        );
+        for reused in &plan[3..5] {
+            assert!(reused.positions.is_empty(), "reuse lines build nothing");
+        }
     }
 
     #[test]
@@ -915,10 +980,18 @@ mod build_plan_tests {
     }
 
     #[test]
-    fn tram_line_parallels_west_east_line_offset_in_y() {
-        let plan = build_plan(CENTER, f32::MAX);
-        for (we, tram) in plan[0].positions.iter().zip(plan[3].positions.iter()) {
-            assert_eq!(tram.y, we.y + NETWORK_TRAM_Y_OFFSET);
+    fn diagonal_line_is_shifted_off_the_crossing_lines_stations() {
+        let plan = build_plan(Vec2::ZERO, f32::MAX);
+        // Every diagonal station must stay clear of both crossing lines'
+        // station positions (the sim rejects same-mode stations that are
+        // too close together, which killed the first demo run).
+        for d in &plan[2].positions {
+            for other in plan[0].positions.iter().chain(plan[1].positions.iter()) {
+                assert!(
+                    d.distance(*other) > 200.0,
+                    "diagonal station {d:?} within 200m of {other:?}"
+                );
+            }
         }
     }
 
@@ -944,6 +1017,7 @@ mod network_build_state_tests {
                 Vec2::new(1200.0, 0.0),
             ],
             vehicle_count: 5,
+            reuse: None,
         }]
     }
 

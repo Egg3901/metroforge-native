@@ -27,11 +27,16 @@ const STATION_RING_OUTER: f32 = 20.0;
 
 const TRACK_Y_OFFSET: f32 = 2.0;
 const STRIPE_Y_OFFSET: f32 = 0.6;
-const STRIPE_WIDTH: f32 = 3.5;
-const BUNDLE_GAP: f32 = 14.0;
+/// Wide enough to read as a painted transit band from overview zoom, not a
+/// thread (owner feedback on the first network demo).
+const STRIPE_WIDTH: f32 = 8.0;
+/// Bundled parallel routes butt edge to edge like a striped ribbon: the
+/// offset step equals the stripe width exactly, so adjacent bands touch
+/// with zero gap (owner: routes should read inline with each other).
+const BUNDLE_GAP: f32 = STRIPE_WIDTH;
 const CHEVRON_SPACING: f32 = 120.0;
-const CHEVRON_LENGTH: f32 = 8.0;
-const CHEVRON_WIDTH: f32 = 3.0;
+const CHEVRON_LENGTH: f32 = 14.0;
+const CHEVRON_WIDTH: f32 = 6.0;
 
 pub struct MfTransitPlugin;
 
@@ -458,7 +463,9 @@ fn rebuild_routes(
             double_sided: true,
             cull_mode: None,
             base_color: color,
-            emissive: palette::emissive(color, 0.1),
+            // Strong enough that the band stays saturated under full daylight
+            // (pure diffuse tonemapped to pastel in the first day demo).
+            emissive: palette::emissive(color, 0.45),
             alpha_mode: AlphaMode::Blend,
             perceptual_roughness: 1.0,
             reflectance: 0.0,
