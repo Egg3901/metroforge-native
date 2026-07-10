@@ -58,18 +58,24 @@ pub const TEXT_XL: f32 = 34.0;
 
 /// Smallest/muted copy: tooltip hints, field captions.
 pub fn label_small(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text.into()).size(TEXT_XS).color(MUTED)
+    egui::RichText::new(text.into())
+        .size(TEXT_XS)
+        .color(muted())
 }
 
 /// Secondary/de-emphasized body text (art-direction reserves full
 /// rich-black for primary copy).
 pub fn label_muted(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text.into()).size(TEXT_SM).color(MUTED)
+    egui::RichText::new(text.into())
+        .size(TEXT_SM)
+        .color(muted())
 }
 
 /// Primary body text at the HUD's standard size.
 pub fn label_body(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text.into()).size(TEXT_SM).color(TEXT)
+    egui::RichText::new(text.into())
+        .size(TEXT_SM)
+        .color(current_colors().text)
 }
 
 /// A value that should draw the eye slightly more than plain body text
@@ -121,59 +127,122 @@ pub const HOVER_BG: egui::Color32 = egui::Color32::from_rgb(0xdc, 0xde, 0xd8);
 // ---------------------------------------------------------------------
 // Theme-indexed chrome colors (issue #32)
 // ---------------------------------------------------------------------
-// The handful of egui-chrome roles that actually vary by theme: panel/
-// window fill, primary text, the one accent, and the two idle-widget
-// background shades. `PANEL_BG`/`TEXT`/`ACCENT`/`INACTIVE_BG`/`HOVER_BG`
-// above stay fixed as the `Theme::Light` values (nothing currently reads
-// them, per this module's doc comment, so there's no call site to migrate);
-// `theme_colors` is the theme-aware source `hud.rs`'s
-// `setup_egui_style_system` pulls from instead of hand-rolling its own copy
-// per theme.
+// The egui-chrome roles that actually vary by theme: panel/window fill,
+// primary/muted text, the one accent, the idle-widget background shades,
+// and the card hairline border. The `PANEL_BG`/`TEXT`/`ACCENT`/`MUTED`/
+// `INACTIVE_BG`/`HOVER_BG` consts above stay fixed as the `Theme::Light`
+// values (they feed `theme_colors`' Light arm); every UI call site should
+// go through the theme-aware accessor functions below (`panel_bg()`,
+// `text()`, ...) instead. `GOOD`/`WARN`/`BAD` are deliberately NOT
+// theme-indexed: they carry semantic meaning (positive/warning/negative)
+// and the same vivid values read fine on all three themes' panels.
+//
+// The active theme is mirrored into a process-global atomic
+// (`set_current_theme`), same pattern as `mf-render`'s `palette.rs`:
+// painting helpers deep inside widget code have no ECS access, and a theme
+// change is a rare menu click. `hud.rs`'s `setup_egui_style_system` (which
+// already watches `Res<Theme>` every egui pass) keeps it in sync. The
+// atomic's initial value 0 == `Theme::Light` == `Theme::default()`, so
+// pre-sync reads are already correct.
 
-/// Theme-indexed mirror of [`PANEL_BG`]/[`TEXT`]/[`ACCENT`]/[`INACTIVE_BG`]/
-/// [`HOVER_BG`] — see [`theme_colors`].
+/// Theme-indexed mirror of the chrome consts above — see [`theme_colors`].
 pub struct ThemeColors {
     pub panel_bg: egui::Color32,
     pub text: egui::Color32,
     pub accent: egui::Color32,
+    pub muted: egui::Color32,
     pub extreme_bg: egui::Color32,
     pub inactive_bg: egui::Color32,
     pub hover_bg: egui::Color32,
+    /// Hairline border for card-style hoverable rows (`hud.rs`'s
+    /// `CARD_BORDER` role).
+    pub border: egui::Color32,
 }
 
-/// The egui chrome palette for `theme`. `Theme::Light` reproduces
-/// [`PANEL_BG`]/[`TEXT`]/[`ACCENT`]/[`INACTIVE_BG`]/[`HOVER_BG`] exactly
-/// (zero visual change when Light is selected, per issue #32's
-/// requirement); `Dark`/`Purple` mirror `mf-render::palette`'s Dark/Purple
-/// render tables so the 3D scene and the UI chrome read as one coherent
-/// theme rather than two independently-tuned palettes.
+/// The egui chrome palette for `theme`. `Theme::Light` reproduces the
+/// original consts exactly (zero visual change when Light is selected, per
+/// issue #32's requirement); `Dark`/`Purple` mirror `mf-render::palette`'s
+/// Dark/Purple render tables so the 3D scene and the UI chrome read as one
+/// coherent theme rather than two independently-tuned palettes.
 pub fn theme_colors(theme: Theme) -> ThemeColors {
     match theme {
         Theme::Light => ThemeColors {
             panel_bg: PANEL_BG,
             text: TEXT,
             accent: ACCENT,
+            muted: MUTED,
             extreme_bg: INACTIVE_BG,
             inactive_bg: INACTIVE_BG,
             hover_bg: HOVER_BG,
+            border: egui::Color32::from_rgb(0xd8, 0xd9, 0xd4),
         },
         Theme::Dark => ThemeColors {
             panel_bg: egui::Color32::from_rgb(0x1c, 0x1e, 0x22),
             text: egui::Color32::from_rgb(0xf0, 0xf1, 0xf3),
             accent: egui::Color32::from_rgb(0x6b, 0xbb, 0xff),
+            muted: egui::Color32::from_rgb(0xa8, 0xab, 0xb2),
             extreme_bg: egui::Color32::from_rgb(0x0e, 0x0f, 0x12),
             inactive_bg: egui::Color32::from_rgb(0x27, 0x29, 0x2e),
             hover_bg: egui::Color32::from_rgb(0x34, 0x37, 0x3d),
+            border: egui::Color32::from_rgb(0x3a, 0x3d, 0x42),
         },
         Theme::Purple => ThemeColors {
             panel_bg: egui::Color32::from_rgb(0x2b, 0x1b, 0x4e),
             text: egui::Color32::from_rgb(0xf1, 0xe9, 0xff),
             accent: egui::Color32::from_rgb(0xff, 0x2e, 0xc4),
+            muted: egui::Color32::from_rgb(0xb9, 0xa8, 0xd6),
             extreme_bg: egui::Color32::from_rgb(0x1a, 0x10, 0x30),
             inactive_bg: egui::Color32::from_rgb(0x38, 0x25, 0x63),
             hover_bg: egui::Color32::from_rgb(0x47, 0x30, 0x78),
+            border: egui::Color32::from_rgb(0x47, 0x30, 0x78),
         },
     }
+}
+
+/// Process-global active theme, `0 == Theme::Light` (see the section
+/// comment above for why this isn't a `Res<Theme>` parameter everywhere).
+static CURRENT_THEME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Publishes the active theme for every accessor below. Called by
+/// `hud.rs`'s `setup_egui_style_system` whenever `Res<Theme>` changes.
+pub fn set_current_theme(theme: Theme) {
+    CURRENT_THEME.store(theme as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn current_theme() -> Theme {
+    match CURRENT_THEME.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => Theme::Dark,
+        2 => Theme::Purple,
+        _ => Theme::Light,
+    }
+}
+
+/// [`ThemeColors`] for the currently active theme — the preferred source
+/// for every UI color below.
+pub fn current_colors() -> ThemeColors {
+    theme_colors(current_theme())
+}
+
+pub fn panel_bg() -> egui::Color32 {
+    current_colors().panel_bg
+}
+pub fn text() -> egui::Color32 {
+    current_colors().text
+}
+pub fn accent() -> egui::Color32 {
+    current_colors().accent
+}
+pub fn muted() -> egui::Color32 {
+    current_colors().muted
+}
+pub fn inactive_bg() -> egui::Color32 {
+    current_colors().inactive_bg
+}
+pub fn hover_bg() -> egui::Color32 {
+    current_colors().hover_bg
+}
+pub fn border() -> egui::Color32 {
+    current_colors().border
 }
 
 // ---------------------------------------------------------------------
@@ -531,7 +600,7 @@ pub fn route_line_diagram(
                     egui::Align2::CENTER_BOTTOM,
                     label,
                     egui::FontId::proportional(TEXT_XS),
-                    TEXT,
+                    text(),
                 );
             }
         }
@@ -543,7 +612,7 @@ pub fn route_line_diagram(
             egui::Align2::LEFT_BOTTOM,
             format!("{station_count} stops"),
             egui::FontId::proportional(TEXT_XS),
-            MUTED,
+            muted(),
         );
     }
 }
@@ -608,7 +677,7 @@ pub fn sparkline_points(values: &[f64], rect: egui::Rect) -> Vec<egui::Pos2> {
 pub fn sparkline(ui: &mut egui::Ui, values: &[f64], size: egui::Vec2) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, CORNER_RADIUS, INACTIVE_BG);
+    painter.rect_filled(rect, CORNER_RADIUS, inactive_bg());
     let last_is_good = values.last().is_none_or(|v| *v >= 0.0);
     let color = if last_is_good { GOOD } else { BAD };
     // A little inset so the trace doesn't touch the background's own edge.

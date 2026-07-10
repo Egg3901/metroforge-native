@@ -189,27 +189,27 @@ fn icon_button(
     }
 
     let bg = if !enabled {
-        ds::INACTIVE_BG
+        ds::inactive_bg()
     } else if active {
-        ds::ACCENT
+        ds::accent()
     } else if resp.hovered() {
-        ds::HOVER_BG
+        ds::hover_bg()
     } else {
-        ds::INACTIVE_BG
+        ds::inactive_bg()
     };
     let fg = if active {
         egui::Color32::WHITE
     } else if !enabled {
-        ds::MUTED
+        ds::muted()
     } else {
-        ds::TEXT
+        ds::text()
     };
 
     let painter = ui.painter();
     painter.rect_filled(rect, ds::CORNER_RADIUS, bg);
     ds::icon(painter, rect.shrink(8.0), kind, fg, 1.6);
     if locked {
-        paint_lock_badge(painter, rect, ds::MUTED);
+        paint_lock_badge(painter, rect, ds::muted());
     }
 
     enabled && resp.clicked()
@@ -271,7 +271,7 @@ fn build_toolbar_system(
     egui::TopBottomPanel::bottom("build_ui_toolbar")
         .frame(
             egui::Frame::default()
-                .fill(ds::PANEL_BG)
+                .fill(ds::panel_bg())
                 .inner_margin(egui::Margin::symmetric(
                     ds::SPACE_SM as i8,
                     ds::SPACE_XS as i8,
@@ -382,12 +382,12 @@ fn build_toolbar_system(
                     egui::Button::new(egui::RichText::new("Routes").color(if panel.open {
                         egui::Color32::WHITE
                     } else {
-                        ds::TEXT
+                        ds::text()
                     }))
                     .fill(if panel.open {
-                        ds::ACCENT
+                        ds::accent()
                     } else {
-                        ds::INACTIVE_BG
+                        ds::inactive_bg()
                     })
                     .corner_radius(ds::CORNER_RADIUS),
                 );
@@ -405,14 +405,9 @@ fn build_toolbar_system(
 
     if let Some((text, color)) = contextual_strip_text(&tools, &ui_state) {
         egui::TopBottomPanel::bottom("build_ui_context_strip")
-            .frame(
-                egui::Frame::default()
-                    .fill(ds::PANEL_BG)
-                    .inner_margin(egui::Margin::symmetric(
-                        ds::SPACE_MD as i8,
-                        ds::SPACE_XXS as i8,
-                    )),
-            )
+            .frame(egui::Frame::default().fill(ds::panel_bg()).inner_margin(
+                egui::Margin::symmetric(ds::SPACE_MD as i8, ds::SPACE_XXS as i8),
+            ))
             .show_separator_line(false)
             .min_height(0.0)
             .show(ctx, |ui| {
@@ -439,7 +434,7 @@ fn contextual_strip_text(
                     mode_word(mode),
                     format_cash(cash)
                 ),
-                ds::TEXT,
+                ds::text(),
             ))
         }
         ActiveTool::Route => {
@@ -452,7 +447,7 @@ fn contextual_strip_text(
                 format!(
                     "Click stations to add. Enter confirms, Esc cancels. {count} station(s) selected. Estimated cost: {quote}."
                 ),
-                ds::TEXT,
+                ds::text(),
             ))
         }
         ActiveTool::Bulldoze => Some((
@@ -489,7 +484,7 @@ fn route_panel_system(
     egui::SidePanel::right("build_ui_route_panel")
         .frame(
             egui::Frame::default()
-                .fill(ds::PANEL_BG)
+                .fill(ds::panel_bg())
                 .inner_margin(egui::Margin::symmetric(
                     ds::SPACE_SM as i8,
                     ds::SPACE_SM as i8,
@@ -711,10 +706,10 @@ fn route_editor(
             egui::RichText::new(if armed { "Confirm delete" } else { "Delete" }).color(if armed {
                 egui::Color32::WHITE
             } else {
-                ds::TEXT
+                ds::text()
             }),
         )
-        .fill(if armed { ds::BAD } else { ds::INACTIVE_BG })
+        .fill(if armed { ds::BAD } else { ds::inactive_bg() })
         .corner_radius(ds::CORNER_RADIUS),
     );
     hover_tick(&delete_resp, hovered, sfx);
