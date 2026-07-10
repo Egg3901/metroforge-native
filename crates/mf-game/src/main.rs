@@ -4,12 +4,14 @@
 
 mod audio;
 mod camera;
+mod command_bus;
 mod config;
 mod hud;
 mod input;
 mod quality_boot;
 mod reveal_input;
 mod state;
+mod tools;
 mod verify;
 
 use bevy::prelude::*;
@@ -48,6 +50,16 @@ fn main() {
             verify::MfVerifyPlugin,
             MfQualityBootPlugin,
             audio::MfAudioPlugin,
+        ))
+        .add_plugins((
+            // INTEGRATION STUB: `tools::MfToolsStubPlugin` and
+            // `command_bus::MfCommandBusStubPlugin` stand in for two
+            // parallel agents' real crates (see the `// INTEGRATION STUB`
+            // header comment in each file) so this worktree builds and
+            // gates standing alone; expected to be replaced wholesale at
+            // integration, not merged with the real implementations.
+            tools::MfToolsStubPlugin,
+            command_bus::MfCommandBusStubPlugin,
         ));
     // MF_PERF_LOG=1: log frame-time diagnostics (avg/FPS) once per second.
     // Costs nothing when unset; gives players and CI a zero-setup way to
