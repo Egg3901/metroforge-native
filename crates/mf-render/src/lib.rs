@@ -69,7 +69,9 @@ impl Plugin for MfRenderPlugin {
         .add_systems(
             Update,
             (
-                sync_theme_system.before(MfRenderSet::Terrain),
+                sync_theme_system
+                    .after(mf_state::ThemeBootSet)
+                    .before(MfRenderSet::Terrain),
                 apply_quality_render_settings_system.in_set(MfRenderSet::Dynamic),
             ),
         );
@@ -77,12 +79,15 @@ impl Plugin for MfRenderPlugin {
 }
 
 /// Publishes `Res<Theme>` into `palette.rs`'s process-global (see that
-/// module's doc comment for why) — runs before `MfRenderSet::Terrain` so any
-/// theme change is visible to every material-build system in this same
-/// frame, not the next one. Cheap even every frame (a single atomic store,
-/// gated on `is_changed`), and covers the one-time "just inserted" tick at
-/// startup the same way every other `Res<T>::is_changed()` check in this
-/// crate does.
+/// module's doc comment for why) — runs after `mf_state::ThemeBootSet`
+/// (`mf-game`'s one-shot `config.toml`/`MF_THEME`/default boot resolution,
+/// see that set's doc comment for why this cross-crate ordering constraint
+/// exists) and before `MfRenderSet::Terrain`, so any theme change — boot
+/// resolution or a later HUD pick — is visible to every material-build
+/// system in this same frame, not the next one. Cheap even every frame (a
+/// single atomic store, gated on `is_changed`), and covers the one-time
+/// "just inserted" tick at startup the same way every other
+/// `Res<T>::is_changed()` check in this crate does.
 fn sync_theme_system(theme: Res<Theme>) {
     if !theme.is_changed() {
         return;

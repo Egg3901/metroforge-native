@@ -15,7 +15,7 @@ pub struct MfThemeBootPlugin;
 
 impl Plugin for MfThemeBootPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, resolve_theme_system);
+        app.add_systems(Update, resolve_theme_system.in_set(mf_state::ThemeBootSet));
     }
 }
 

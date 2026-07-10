@@ -281,33 +281,51 @@ fn quality_selector(
 
 /// The theme rows shared by every theme combo box (pause overlay, main
 /// menu) — same split-out shape as [`quality_options`] above, issue #32.
+///
+/// Takes/returns a plain `Theme` (not `&mut ResMut<Theme>`) so a
+/// render-with-nothing-clicked pass — the overwhelming majority of calls,
+/// since this runs every frame the panel is visible — never touches the
+/// `Res<Theme>` change tick at all: coercing a `ResMut` through `DerefMut`
+/// (which `&mut Theme` would require) marks it changed unconditionally,
+/// even when no candidate was actually clicked, defeating every
+/// `is_changed()`-gated consumer downstream (`mf-render`'s
+/// `sync_theme_system`, `hud.rs`'s own `setup_egui_style_system`) and
+/// forcing needless rebuild-key churn once in-game. The caller applies the
+/// returned pick, if any, via `ResMut::set_if_neq` instead (see
+/// [`theme_selector`] and its inline call sites).
 fn theme_options(
     ui: &mut egui::Ui,
-    theme: &mut Theme,
+    current: Theme,
     config: &mut MfConfig,
     sfx: &mut EventWriter<PlaySfx>,
-) {
+) -> Option<Theme> {
+    let mut picked = None;
     for candidate in Theme::ALL {
         if ui
-            .selectable_label(*theme == candidate, candidate.label())
+            .selectable_label(current == candidate, candidate.label())
             .clicked()
         {
-            *theme = candidate;
+            picked = Some(candidate);
             config.set_theme_override(Some(candidate));
             sfx.write(PlaySfx(Sfx::Confirm));
         }
     }
+    picked
 }
 
 fn theme_selector(
     ui: &mut egui::Ui,
-    theme: &mut Theme,
+    theme: &mut ResMut<Theme>,
     config: &mut MfConfig,
     sfx: &mut EventWriter<PlaySfx>,
 ) {
+    let mut picked = None;
     egui::ComboBox::from_label("Theme")
         .selected_text(theme.label())
-        .show_ui(ui, |ui| theme_options(ui, theme, config, sfx));
+        .show_ui(ui, |ui| picked = theme_options(ui, **theme, config, sfx));
+    if let Some(p) = picked {
+        theme.set_if_neq(p);
+    }
 }
 
 /// ConnectingSim previously registered NO ui system at all, so a player whose
@@ -791,12 +809,16 @@ fn main_menu_hud_system(
 
                         ui.add_space(12.0);
                         field_label(ui, "Theme");
+                        let mut theme_picked = None;
                         egui::ComboBox::from_id_salt("theme_picker")
                             .selected_text(theme.label())
                             .width(300.0)
                             .show_ui(ui, |ui| {
-                                theme_options(ui, &mut theme, &mut config, &mut sfx)
+                                theme_picked = theme_options(ui, *theme, &mut config, &mut sfx)
                             });
+                        if let Some(p) = theme_picked {
+                            theme.set_if_neq(p);
+                        }
 
                         ui.add_space(28.0);
                         let start = ui.add_sized(
@@ -1113,12 +1135,16 @@ fn pause_overlay_system(
 
                         ui.add_space(14.0);
                         field_label(ui, "Theme");
+                        let mut theme_picked = None;
                         egui::ComboBox::from_id_salt("pause_theme")
                             .selected_text(theme.label())
                             .width(220.0)
                             .show_ui(ui, |ui| {
-                                theme_options(ui, &mut theme, &mut config, &mut sfx)
+                                theme_picked = theme_options(ui, *theme, &mut config, &mut sfx)
                             });
+                        if let Some(p) = theme_picked {
+                            theme.set_if_neq(p);
+                        }
 
                         ui.add_space(14.0);
                         field_label(ui, "Save game");

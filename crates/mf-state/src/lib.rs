@@ -31,5 +31,5 @@ pub use plugin::MfStatePlugin;
 pub use quality::{detect as detect_quality_tier, GpuDeviceKind, QualityKnobs, QualityTier};
 pub use reveal::RevealState;
 pub use subway::{SubwayView, SUBWAY_TRANSITION_SECS};
-pub use theme::Theme;
+pub use theme::{Theme, ThemeBootSet};
 pub use ui::LatestUi;
