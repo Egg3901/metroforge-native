@@ -16,7 +16,7 @@ pub enum QualityTier {
     High,
 }
 
-/// Coarse GPU classification `mf-game`'s `config.rs` extracts from
+/// Coarse GPU classification `mf-game`'s `quality_boot.rs` extracts from
 /// `RenderAdapterInfo` and feeds into [`detect`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuDeviceKind {
@@ -26,21 +26,18 @@ pub enum GpuDeviceKind {
     Other,
 }
 
-/// Vehicle mesh complexity per tier (spec §4 table).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VehicleMesh {
-    QuadBillboard,
-    LowPolyBox,
-    Box,
-    ChamferedBox,
-}
-
 /// One row of the spec §4 knob table, as plain data.
+///
+/// `render_scale` and `vehicle_mesh` (plus the `VehicleMesh` enum) were
+/// removed here: nothing ever read either knob (no low-res render target
+/// exists, and `vehicles.rs` always builds its fixed box/tram meshes
+/// regardless of tier), so they were dead data rather than a knob anyone
+/// could turn. Re-add a knob only alongside the code that actually
+/// implements it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QualityKnobs {
     /// `true` = `AutoVsync`, `false` = `AutoNoVsync` (only Potato disables vsync).
     pub vsync: bool,
-    pub render_scale: f32,
     /// MSAA sample count; `1` means "off".
     pub msaa_samples: u8,
     /// Shadow cascade map resolution; `None` means shadows off.
@@ -50,7 +47,6 @@ pub struct QualityKnobs {
     /// Building draw distance in meters; `None` means unlimited ("full").
     pub building_draw_distance_m: Option<f32>,
     pub agent_cap: u32,
-    pub vehicle_mesh: VehicleMesh,
     /// Terrain mesh subdivision divisor (higher = coarser mesh).
     pub terrain_subdiv_divisor: u32,
     pub day_night_enabled: bool,
@@ -62,49 +58,41 @@ impl QualityTier {
         match self {
             QualityTier::Potato => QualityKnobs {
                 vsync: false,
-                render_scale: 0.75,
                 msaa_samples: 1,
                 shadow_map_size: None,
                 unlit_material: true,
                 building_draw_distance_m: Some(3_000.0),
                 agent_cap: 0,
-                vehicle_mesh: VehicleMesh::QuadBillboard,
                 terrain_subdiv_divisor: 3,
                 day_night_enabled: false,
             },
             QualityTier::Low => QualityKnobs {
                 vsync: true,
-                render_scale: 1.0,
                 msaa_samples: 1,
                 shadow_map_size: None,
                 unlit_material: true,
                 building_draw_distance_m: Some(6_000.0),
                 agent_cap: 100,
-                vehicle_mesh: VehicleMesh::LowPolyBox,
                 terrain_subdiv_divisor: 2,
                 day_night_enabled: true,
             },
             QualityTier::Medium => QualityKnobs {
                 vsync: true,
-                render_scale: 1.0,
                 msaa_samples: 4,
                 shadow_map_size: Some(2048),
                 unlit_material: false,
                 building_draw_distance_m: Some(12_000.0),
                 agent_cap: 250,
-                vehicle_mesh: VehicleMesh::Box,
                 terrain_subdiv_divisor: 1,
                 day_night_enabled: true,
             },
             QualityTier::High => QualityKnobs {
                 vsync: true,
-                render_scale: 1.0,
                 msaa_samples: 4,
                 shadow_map_size: Some(4096),
                 unlit_material: false,
                 building_draw_distance_m: None,
                 agent_cap: 400,
-                vehicle_mesh: VehicleMesh::ChamferedBox,
                 terrain_subdiv_divisor: 1,
                 day_night_enabled: true,
             },

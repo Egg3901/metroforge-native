@@ -2,6 +2,16 @@
 //! single background thread owns a blocking `tungstenite` WebSocket, reading
 //! with a short timeout so it can interleave draining the outbound queue.
 //! Two crossbeam channels bridge it to the Bevy ECS (spec §3.2).
+//!
+//! Outbound latency: a queued send can only be picked up once `socket.read()`
+//! returns (either a real inbound frame arrived, or the read timed out), so
+//! `POLL_INTERVAL` is also the worst-case delay before a player command (e.g.
+//! click-to-build) reaches the wire. We chose "shrink the poll interval"
+//! (simplest fix) over restructuring to a non-blocking writer path: sync
+//! tungstenite has no socket split, so a separate writer would need a second
+//! `WebSocket` over a cloned `TcpStream`, which is fragile with WS framing
+//! and not worth it when 4ms already meets the latency bar. See
+//! `POLL_INTERVAL` below for the idle-cost accounting.
 
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -19,10 +29,28 @@ use crate::transport::SimTransport;
 
 /// How long with zero inbound traffic before the transport calls itself dead
 /// (spec §1.4: "No inbound traffic for 10 s -> client declares sim dead").
+/// This is measured against `last_inbound_millis` (wall-clock, set only on
+/// actual inbound frames/pings/pongs — see `mark_alive`), so it's independent
+/// of `POLL_INTERVAL`: tightening the poll below doesn't change this math.
+/// `plugin.rs` pings every 5s, i.e. at half this window, so one dropped pong
+/// still leaves a full ping-interval of slack before `is_alive()` would flap.
 const LIVENESS_WINDOW: Duration = Duration::from_secs(10);
-/// Read-timeout granularity for the worker loop; also the max latency before
-/// a freshly queued outbound message gets flushed.
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// Read-timeout granularity for the worker loop: on every timeout (no inbound
+/// frame arrived within the window) the loop falls through to drain the
+/// outbound queue, so this both bounds worst-case outbound-send latency and
+/// sets the idle wake-up rate.
+///
+/// Kept at 4ms (down from an earlier 50ms) so a queued outbound command —
+/// e.g. a click-to-build — never waits more than ~4ms behind a blocking read
+/// timeout before being written to the socket, comfortably under the ~5ms
+/// target. Cost on a fully idle connection (nothing queued, nothing
+/// incoming): the worker wakes ~250x/s, and each wake is one `read()` syscall
+/// that immediately returns `WouldBlock`/`TimedOut` plus one empty
+/// `try_recv()` — no allocation, no wire traffic. That's negligible CPU for a
+/// desktop game client: a single OS thread parked in a short blocking read
+/// (not a busy-spin), waking at a rate far below what the render/sim threads
+/// already cost per frame at 60fps.
+const POLL_INTERVAL: Duration = Duration::from_millis(4);
 
 pub struct WsTransport {
     outbound_tx: Sender<ToSim>,
@@ -156,7 +184,9 @@ fn run_worker(
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
-                // No message within POLL_INTERVAL; fall through to flush outbound.
+                // No inbound message within POLL_INTERVAL; fall through to
+                // drain+send outbound (this is the common case at 4ms — it's
+                // what bounds outbound latency, not an error path).
             }
             Err(e) => {
                 tracing::warn!("mf-net: read error, closing: {e}");
@@ -164,7 +194,11 @@ fn run_worker(
             }
         }
 
-        // Drain everything currently queued for send.
+        // Drain everything currently queued for send. `WebSocket::send`
+        // (tungstenite 0.24) is `write` + `flush` in one call, so each
+        // message reaches the socket immediately rather than sitting in an
+        // internal write buffer for the next batch — no explicit `flush()`
+        // needed here.
         loop {
             match outbound_rx.try_recv() {
                 Ok(msg) => {

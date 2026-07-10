@@ -1,9 +1,18 @@
 //! Pedestrian/passenger agents (spec §3.3 `agents.rs`): one mesh of small
-//! flat quads, rebuilt every frame from `LatestFrame`'s stride-3 agent
-//! array, capped per tier (`QualityTier::knobs().agent_cap`; potato = 0,
+//! flat quads, rebuilt from `LatestFrame`'s stride-3 agent array whenever it
+//! changes, capped per tier (`QualityTier::knobs().agent_cap`; potato = 0,
 //! i.e. agents are entirely disabled on the weakest tier).
+//!
+//! One `Mesh` asset lives for the app's whole life (created once); a rebuild
+//! overwrites its attributes/indices in place via `Assets<Mesh>::get_mut`
+//! rather than `meshes.add`-ing a fresh asset every pass — the latter would
+//! be a brand-new GPU buffer allocation + upload plus an old-asset teardown
+//! every single frame, when `LatestFrame` (and thus the agent positions)
+//! only actually changes at the sim's tick rate.
 
 use bevy::prelude::*;
+use bevy::render::mesh::PrimitiveTopology;
+use bevy::render::render_asset::RenderAssetUsages;
 
 use mf_state::{HeightAt, LatestFrame, QualityTier};
 
@@ -42,6 +51,10 @@ impl Plugin for MfAgentsPlugin {
 struct AgentsState {
     entity: Option<Entity>,
     material: Option<Handle<StandardMaterial>>,
+    /// Created lazily the first time there's at least one agent to draw, then
+    /// reused for the rest of the app's life — its attributes are overwritten
+    /// in place on each rebuild instead of allocating a new `Mesh` asset.
+    mesh: Option<Handle<Mesh>>,
 }
 
 /// Flip the shared agents material's `unlit` flag when the quality tier
@@ -104,6 +117,14 @@ fn update_agents_system(
         }
         return;
     }
+
+    // `LatestFrame` arrives at the sim's tick rate, well under render frame
+    // rate; a `QualityTier` change can move `cap` (and thus `draw_count`)
+    // without any new frame data. Neither changing means the agent mesh
+    // can't possibly need to look any different from what's already built.
+    if !frame.is_changed() && !quality.is_changed() {
+        return;
+    }
     let Some(f) = &frame.0 else {
         return;
     };
@@ -138,8 +159,38 @@ fn update_agents_system(
         );
     }
 
-    let mesh_handle = meshes.add(buf.build());
-    commands.entity(entity).insert(Mesh3d(mesh_handle));
+    // Build the new attributes as a throwaway CPU-side `Mesh` (no asset
+    // registration, no GPU cost), then transplant them into the one
+    // long-lived asset via `get_mut` so this rebuild re-uploads the existing
+    // GPU buffers instead of allocating fresh ones and tearing down the old.
+    let is_new_mesh = state.mesh.is_none();
+    let mesh_handle = state
+        .mesh
+        .get_or_insert_with(|| {
+            meshes.add(Mesh::new(
+                PrimitiveTopology::TriangleList,
+                RenderAssetUsages::default(),
+            ))
+        })
+        .clone();
+    if is_new_mesh {
+        commands.entity(entity).insert(Mesh3d(mesh_handle.clone()));
+    }
+    let mut built = buf.build();
+    if let Some(mesh) = meshes.get_mut(&mesh_handle) {
+        if let Some(v) = built.remove_attribute(Mesh::ATTRIBUTE_POSITION) {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, v);
+        }
+        if let Some(v) = built.remove_attribute(Mesh::ATTRIBUTE_NORMAL) {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, v);
+        }
+        if let Some(v) = built.remove_attribute(Mesh::ATTRIBUTE_COLOR) {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, v);
+        }
+        if let Some(idx) = built.remove_indices() {
+            mesh.insert_indices(idx);
+        }
+    }
     if let Ok(mut vis) = visibility.get_mut(entity) {
         *vis = Visibility::Visible;
     }

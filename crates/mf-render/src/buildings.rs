@@ -68,6 +68,12 @@ struct BuildingsState {
     version: Option<u32>,
     chunks: Vec<Entity>,
     material: Option<Handle<StandardMaterial>>,
+    /// Night-dim factor (quantized, see `quantize_night_factor`) already
+    /// baked into `material`'s `base_color`. Reset whenever `material` is
+    /// (re)created so a rebuild is guaranteed one fresh dim application even
+    /// if the ambient `night_factor` hasn't itself moved since the last
+    /// rebuild — the new material always starts back at flat white.
+    applied_night_factor_bucket: Option<i32>,
 }
 
 /// World-space (X, Z) center of the densest building chunk (most lots
@@ -97,6 +103,7 @@ fn build_buildings_system(
     fields: Res<LatestFields>,
     height_at: Res<HeightAt>,
     quality: Res<QualityTier>,
+    day_night: Res<crate::daynight::DayNightState>,
     mut state: ResMut<BuildingsState>,
     mut dense_center: ResMut<BuildingsDenseCenter>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -363,14 +370,28 @@ fn build_buildings_system(
     }
 
     let unlit = quality.knobs().unlit_material;
+    // Night-dim only applies on unlit tiers (see `apply_night_dim_system`);
+    // bake the *current* dim in at creation time so a mid-night rebuild
+    // doesn't flash back to flat white until the next dim pass happens to
+    // run — the material starts already correct.
+    let base_color = if unlit {
+        Color::WHITE.mix(&palette::building_night(), day_night.night_factor)
+    } else {
+        Color::WHITE
+    };
     let material = materials.add(StandardMaterial {
         double_sided: true,
         cull_mode: None,
-        base_color: Color::WHITE,
+        base_color,
         unlit,
         ..default()
     });
     state.material = Some(material.clone());
+    state.applied_night_factor_bucket = if unlit {
+        Some(quantize_night_factor(day_night.night_factor))
+    } else {
+        None
+    };
 
     let non_empty_chunks = chunk_bufs.iter().filter(|b| !b.is_empty()).count();
     info!(
@@ -452,6 +473,15 @@ fn apply_quality_to_buildings_material_system(
     }
 }
 
+/// Quantize `night_factor` to 1/256 steps: continuous drift during dusk/dawn
+/// shouldn't defeat the steady-state cache below over a shade of dimming
+/// finer than anyone could see, and tiers where day/night is disabled
+/// (`night_factor` pinned at one value forever) need this to bucket to a
+/// single, stable value.
+fn quantize_night_factor(v: f32) -> i32 {
+    (v * 256.0).round() as i32
+}
+
 /// Night-dims the shared buildings material toward `palette::building_night`
 /// (art-direction §6: "night = ... buildings dim to #b9bec4"). Only needed
 /// on unlit tiers — lit tiers already darken naturally as the directional
@@ -460,16 +490,25 @@ fn apply_quality_to_buildings_material_system(
 fn apply_night_dim_system(
     quality: Res<QualityTier>,
     day_night: Res<crate::daynight::DayNightState>,
-    state: Res<BuildingsState>,
+    mut state: ResMut<BuildingsState>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     if !quality.knobs().unlit_material {
         return;
     }
-    let Some(handle) = &state.material else {
+    let Some(handle) = state.material.clone() else {
         return;
     };
-    if let Some(mat) = materials.get_mut(handle) {
+    // `materials.get_mut` unconditionally marks the shared building material
+    // dirty for GPU re-upload; on potato/low, day/night is disabled entirely
+    // so `night_factor` never moves and this would otherwise repaint the
+    // whole city's material every frame forever for no visual change.
+    let bucket = quantize_night_factor(day_night.night_factor);
+    if state.applied_night_factor_bucket == Some(bucket) {
+        return;
+    }
+    if let Some(mat) = materials.get_mut(&handle) {
         mat.base_color = Color::WHITE.mix(&palette::building_night(), day_night.night_factor);
     }
+    state.applied_night_factor_bucket = Some(bucket);
 }

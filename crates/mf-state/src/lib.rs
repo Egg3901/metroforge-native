@@ -21,8 +21,6 @@ pub use fields::LatestFields;
 pub use frame::LatestFrame;
 pub use height::HeightAt;
 pub use plugin::MfStatePlugin;
-pub use quality::{
-    detect as detect_quality_tier, GpuDeviceKind, QualityKnobs, QualityTier, VehicleMesh,
-};
+pub use quality::{detect as detect_quality_tier, GpuDeviceKind, QualityKnobs, QualityTier};
 pub use subway::{SubwayView, SUBWAY_TRANSITION_SECS};
 pub use ui::LatestUi;
