@@ -254,8 +254,6 @@ const NETWORK_CROSS_OFFSET: f32 = 250.0;
 /// the west-east or north-south lines' stations (the sim rejects stations
 /// too close to an existing one of the same mode).
 const NETWORK_DIAGONAL_SHIFT: f32 = 300.0;
-/// How far the tram line sits off `center.y`, parallel to the west-east bus
-/// line, so their stripes bundle side by side instead of exactly overlapping.
 
 /// Bus/tram vehicle counts handed to `editRoute` once each line's route is
 /// created, so vehicles actually deploy onto it.
