@@ -85,6 +85,7 @@ fn update_vehicles_system(
     ui: Res<LatestUi>,
     height_at: Res<HeightAt>,
     quality: Res<QualityTier>,
+    overlay: Res<mf_state::OverlayState>,
     mut pool: ResMut<VehiclePool>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -105,7 +106,7 @@ fn update_vehicles_system(
     // position, mesh choice or paint could possibly be different from what's
     // already applied, so skip the whole pass.
     let frame_changed = frame.is_changed();
-    if !frame_changed && !quality.is_changed() {
+    if !frame_changed && !quality.is_changed() && !overlay.is_changed() {
         return;
     }
     let Some(f) = &frame.0 else {
@@ -207,7 +208,11 @@ fn update_vehicles_system(
             }
         }
 
-        let color = palette::vivid_route_color(color_idx);
+        let mut color = palette::vivid_route_color(color_idx);
+        if overlay.mode != mf_state::OverlayMode::Off {
+            // Owner rule: active overlays reduce the network's color strength.
+            color = color.mix(&Color::WHITE, 0.6);
+        }
         let brightness = 0.6 + occupancy.clamp(0.0, 1.0) * 0.4;
         // Quantize to 1/64 steps: `occupancy` (and thus `brightness`) drifts
         // continuously tick to tick, and comparing raw floats would defeat

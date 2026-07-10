@@ -365,7 +365,8 @@ fn segment_thicknesses(segment_loads: &[f64]) -> Vec<f32> {
         .iter()
         .map(|&load| {
             let t = (load / max_load).clamp(0.0, 1.0) as f32;
-            ROUTE_DIAGRAM_MIN_THICKNESS + t * (ROUTE_DIAGRAM_MAX_THICKNESS - ROUTE_DIAGRAM_MIN_THICKNESS)
+            ROUTE_DIAGRAM_MIN_THICKNESS
+                + t * (ROUTE_DIAGRAM_MAX_THICKNESS - ROUTE_DIAGRAM_MIN_THICKNESS)
         })
         .collect()
 }
@@ -684,7 +685,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod sparkline_tests {
     use super::*;
 
     /// Every `IconKind` should paint without panicking against a plain

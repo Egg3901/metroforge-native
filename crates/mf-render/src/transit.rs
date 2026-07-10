@@ -44,7 +44,10 @@ impl Plugin for MfTransitPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TransitState>().add_systems(
             Update,
-            transit_update_system.in_set(crate::MfRenderSet::Statics),
+            (
+                transit_update_system.in_set(crate::MfRenderSet::Statics),
+                apply_overlay_dim_system.in_set(crate::MfRenderSet::Dynamic),
+            ),
         );
     }
 }
@@ -69,12 +72,19 @@ pub struct StationRing {
 #[derive(Component)]
 pub struct RouteStripe {
     pub mode: TransitMode,
+    /// The route's vivid color as painted at rebuild, kept so overlay
+    /// dimming can restore it exactly (owner rule: an active overlay
+    /// reduces the network's color strength so the overlay owns the stage).
+    pub color: Color,
 }
 
 /// The bold, 2x-width, emissive metro tube shown only in subway view
 /// (art-direction §7). One per metro route, initially hidden.
 #[derive(Component)]
-pub struct MetroBoldTube;
+pub struct MetroBoldTube {
+    /// See [`RouteStripe::color`].
+    pub color: Color,
+}
 
 #[derive(Resource, Default)]
 struct TransitState {
@@ -476,9 +486,14 @@ fn rebuild_routes(
         let widths = segment_widths(expected_pairs, &r.segment_loads);
         for (pi, seg) in &pair_segs {
             let width = widths.get(*pi).copied().unwrap_or(STRIPE_WIDTH);
-            append_ribbon(&mut normal_buf, seg, STRIPE_Y_OFFSET, width, color, |x, z| {
-                height_at.sample(x, z)
-            });
+            append_ribbon(
+                &mut normal_buf,
+                seg,
+                STRIPE_Y_OFFSET,
+                width,
+                color,
+                |x, z| height_at.sample(x, z),
+            );
         }
         append_chevrons(&mut normal_buf, &path, height_at, color);
         let mesh = meshes.add(normal_buf.build());
@@ -528,7 +543,10 @@ fn rebuild_routes(
                 MeshMaterial3d(material),
                 Transform::IDENTITY,
                 Visibility::default(),
-                RouteStripe { mode: r.mode },
+                RouteStripe {
+                    mode: r.mode,
+                    color,
+                },
                 Name::new(format!("route-stripe-{}", r.id)),
             ))
             .id();
@@ -567,7 +585,7 @@ fn rebuild_routes(
                     MeshMaterial3d(bold_material),
                     Transform::IDENTITY,
                     Visibility::Hidden,
-                    MetroBoldTube,
+                    MetroBoldTube { color },
                     Name::new(format!("route-metro-bold-{}", r.id)),
                 ))
                 .id();
@@ -578,6 +596,46 @@ fn rebuild_routes(
 
 /// Chevron arrows every ~120m along `path`, pointing along direction of
 /// travel (station order), same color 20% brighter (art-direction §3).
+/// Owner rule (issue #27): while any overlay mode is active, the transit
+/// network steps back so the overlay owns the stage. Stripes and bold tubes
+/// mix their painted color 60% toward white and drop emissive to 15%;
+/// restored exactly from the color stored on the component when the overlay
+/// turns off. Writes are gated on overlay-mode changes and fresh spawns
+/// (statics rebuild mid-overlay must inherit the dim) per the no-churn
+/// discipline.
+#[allow(clippy::type_complexity)]
+fn apply_overlay_dim_system(
+    overlay: Res<mf_state::OverlayState>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    stripes: Query<(&RouteStripe, &MeshMaterial3d<StandardMaterial>)>,
+    tubes: Query<(&MetroBoldTube, &MeshMaterial3d<StandardMaterial>)>,
+    fresh: Query<Entity, Or<(Added<RouteStripe>, Added<MetroBoldTube>)>>,
+) {
+    if !overlay.is_changed() && fresh.is_empty() {
+        return;
+    }
+    let dimmed = overlay.mode != mf_state::OverlayMode::Off;
+    let paint = |mat: &mut StandardMaterial, color: Color, emissive_strength: f32| {
+        if dimmed {
+            mat.base_color = color.mix(&Color::WHITE, 0.6);
+            mat.emissive = palette::emissive(color, emissive_strength * 0.15);
+        } else {
+            mat.base_color = color;
+            mat.emissive = palette::emissive(color, emissive_strength);
+        }
+    };
+    for (stripe, handle) in &stripes {
+        if let Some(mat) = materials.get_mut(&handle.0) {
+            paint(mat, stripe.color, 0.45);
+        }
+    }
+    for (tube, handle) in &tubes {
+        if let Some(mat) = materials.get_mut(&handle.0) {
+            paint(mat, tube.color, 0.8);
+        }
+    }
+}
+
 fn append_chevrons(buf: &mut MeshBuffers, path: &[Vec2], height_at: &HeightAt, color: Color) {
     let (cum, total) = arc_length_table(path);
     if total < CHEVRON_SPACING {
