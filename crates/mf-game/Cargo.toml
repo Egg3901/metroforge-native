@@ -21,6 +21,7 @@ directories = { workspace = true }
 toml = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+winit = { workspace = true }
 
 [dependencies.bevy]
 workspace = true

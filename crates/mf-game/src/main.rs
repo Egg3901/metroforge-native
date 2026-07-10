@@ -2,6 +2,7 @@
 // Windows: GUI subsystem in release so no console window opens behind the game.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod attract;
 mod audio;
 mod build_ui;
 mod camera;
