@@ -161,8 +161,63 @@ fn chunk_index(pos: Vec2, world_size: f32) -> (usize, usize) {
     (cx, cz)
 }
 
-/// Emit one real building's prism (walls + roof cap) into `buf`, given the
-/// already-resolved `ground_y`/`height`/colors. Factored out of
+/// Why `resolve_part_extent` skipped a building:part instead of resolving a
+/// height to draw. Kept as a distinct value (rather than a plain `None`) so
+/// `build_buildings_system` can count the two cases separately for its
+/// debug log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PartSkipReason {
+    /// `height_dm == 0` (unknown) AND `min_height_dm > 0`: there is no
+    /// density formula for "how tall is the segment that starts partway up
+    /// a building," unlike the ground-based (`min == 0`) fallback case
+    /// below, so there is nothing sane to guess.
+    UnknownHeightWithMin,
+    /// The resolved `min` is at or above the resolved `height`: no
+    /// positive-thickness prism to draw (degenerate or corrupt wire data).
+    MinAtOrAboveHeight,
+}
+
+/// Resolve one building:part's `(base_offset, height)` in meters from its
+/// wire `height_dm`/`min_height_dm`. `land_use_at` is only invoked when the
+/// ground-based density-formula fallback actually applies (`height_dm == 0`
+/// and `min_height_dm == 0`), so callers can pass a closure that samples the
+/// jobs/population fields lazily. Factored out of `build_buildings_system`'s
+/// per-part loop for the same reason as `emit_building_prism`: it is
+/// unit-testable without a Bevy `App`.
+fn resolve_part_extent(
+    bd: &BuildingFootprint,
+    jitter_key: (i32, i32),
+    land_use_at: impl FnOnce() -> (f32, f32),
+) -> Result<(f32, f32), PartSkipReason> {
+    let min_m = bd.min_height_dm as f32 / 10.0;
+    let height = if bd.height_dm > 0 {
+        bd.height_dm as f32 / 10.0
+    } else if min_m == 0.0 {
+        // Unknown real height on a ground-based part: fall back to the same
+        // density formula (and hvar jitter) the mask path uses, so
+        // buildings the sidecar didn't have height data for still read as
+        // varied masses instead of a flat plateau.
+        let (jobs, pop) = land_use_at();
+        let hvar = 0.8
+            + hash01(
+                jitter_key.0.wrapping_mul(7) + 3,
+                jitter_key.1.wrapping_mul(13) + 1,
+            ) * 0.5;
+        (BASE_HEIGHT + jobs * JOBS_WEIGHT + pop * POP_WEIGHT) * hvar
+    } else {
+        return Err(PartSkipReason::UnknownHeightWithMin);
+    }
+    .clamp(FOOTPRINT_MIN_HEIGHT, FOOTPRINT_MAX_HEIGHT);
+
+    if min_m >= height {
+        return Err(PartSkipReason::MinAtOrAboveHeight);
+    }
+    Ok((min_m, height))
+}
+
+/// Emit one real building:part's prism (walls + roof cap, plus a bottom cap
+/// when `base_offset > 0`) into `buf`, given the already-resolved
+/// `ground_y`/`base_offset`/`height`/colors. Factored out of
 /// `build_buildings_system`'s per-building loop so it's unit-testable
 /// without a Bevy `App`: it takes the wire type directly and touches nothing
 /// but `mesh_utils`. Returns `(vertices_added, indices_added)` straight from
@@ -174,6 +229,7 @@ fn emit_building_prism(
     buf: &mut MeshBuffers,
     building: &BuildingFootprint,
     ground_y: f32,
+    base_offset: f32,
     height: f32,
     top: Color,
     side_plain: Color,
@@ -193,6 +249,7 @@ fn emit_building_prism(
         buf,
         &ring,
         ground_y,
+        base_offset,
         height,
         top,
         side_plain,
@@ -301,7 +358,16 @@ fn build_buildings_system(
         // per-building polygon instead of any rectangle approximation. Takes
         // priority over both fallbacks below whenever the sidecar has sent
         // vector data for this city.
+        //
+        // One real-world OSM building can arrive as several stacked
+        // `building:part` footprints (a ground podium, a tower set back on
+        // top of it, a spire on top of that): each part's own
+        // `min_height_dm` says where ITS prism starts, so this loop treats
+        // every entry in `buildings.buildings` as one independent part to
+        // extrude, not one whole building.
         let mut prism_vertex_total = 0usize;
+        let mut skipped_unknown_height_with_min = 0usize;
+        let mut skipped_min_at_or_above_height = 0usize;
         for bd in &buildings.buildings {
             if bd.verts.len() < 3 {
                 continue; // decode already enforces 3..=64; never trust twice
@@ -310,22 +376,18 @@ fn build_buildings_system(
             let centroid = ring.iter().fold(Vec2::ZERO, |acc, p| acc + *p) / ring.len() as f32;
             let jitter_key = (centroid.x as i32, centroid.y as i32);
 
-            let height = if bd.height_dm > 0 {
-                bd.height_dm as f32 / 10.0
-            } else {
-                // Unknown real height: fall back to the same density formula
-                // (and hvar jitter) the mask path uses, so buildings the
-                // sidecar didn't have height data for still read as varied
-                // masses instead of a flat plateau.
-                let (jobs, pop) = land_use_at(centroid.x, centroid.y);
-                let hvar = 0.8
-                    + hash01(
-                        jitter_key.0.wrapping_mul(7) + 3,
-                        jitter_key.1.wrapping_mul(13) + 1,
-                    ) * 0.5;
-                (BASE_HEIGHT + jobs * JOBS_WEIGHT + pop * POP_WEIGHT) * hvar
-            }
-            .clamp(FOOTPRINT_MIN_HEIGHT, FOOTPRINT_MAX_HEIGHT);
+            let (min_m, height) =
+                match resolve_part_extent(bd, jitter_key, || land_use_at(centroid.x, centroid.y)) {
+                    Ok(extent) => extent,
+                    Err(PartSkipReason::UnknownHeightWithMin) => {
+                        skipped_unknown_height_with_min += 1;
+                        continue;
+                    }
+                    Err(PartSkipReason::MinAtOrAboveHeight) => {
+                        skipped_min_at_or_above_height += 1;
+                        continue;
+                    }
+                };
 
             let jitter = 1.0 + (hash01(jitter_key.0, jitter_key.1) - 0.5) * 0.06;
             let tint = |c: Color| -> Color {
@@ -341,14 +403,19 @@ fn build_buildings_system(
             let ground_y = height_at.sample(centroid.x, centroid.y);
             let (cx, cz) = chunk_index(centroid, world_size);
             // Same volume-argmax semantics as the mask path above (footprint
-            // AREA x height, not lot count) — real polygon area this time
-            // instead of a rectangle's half-extent product.
-            chunk_lot_counts[cz * CHUNKS_PER_SIDE + cx] += polygon_area(&ring).max(1.0) * height;
+            // AREA x height, not lot count), real polygon area this time
+            // instead of a rectangle's half-extent product. Uses the part's
+            // own built slab (height - min), not its absolute top height, so
+            // a tall building's upper stacked parts don't get double-counted
+            // as if each also included the podium below it.
+            chunk_lot_counts[cz * CHUNKS_PER_SIDE + cx] +=
+                polygon_area(&ring).max(1.0) * (height - min_m);
 
             let (v, _i) = emit_building_prism(
                 &mut chunk_bufs[cz * CHUNKS_PER_SIDE + cx],
                 bd,
                 ground_y,
+                min_m,
                 height,
                 tint(top),
                 tint(side),
@@ -357,6 +424,12 @@ fn build_buildings_system(
                 tint(base),
             );
             prism_vertex_total += v;
+        }
+        if skipped_unknown_height_with_min > 0 || skipped_min_at_or_above_height > 0 {
+            debug!(
+                "buildings: real-footprint path skipped {} parts (unknown height + nonzero min) and {} parts (min >= height)",
+                skipped_unknown_height_with_min, skipped_min_at_or_above_height
+            );
         }
         let chunks_used = chunk_bufs.iter().filter(|b| !b.is_empty()).count();
         info!(
@@ -795,11 +868,12 @@ mod tests {
     use super::*;
 
     /// Concave hexagon: 2x2 square with a 1x1 corner notch removed
-    /// (area = 3) — same shape as `mesh_utils`'s ear-clip `l_shape` test,
+    /// (area = 3), same shape as `mesh_utils`'s ear-clip `l_shape` test,
     /// reused here to check the per-building wire-type path end to end.
-    fn l_shape_footprint(height_dm: u16) -> BuildingFootprint {
+    fn l_shape_footprint(height_dm: u16, min_height_dm: u16) -> BuildingFootprint {
         BuildingFootprint {
             height_dm,
+            min_height_dm,
             verts: vec![
                 [0.0, 0.0],
                 [2.0, 0.0],
@@ -813,16 +887,17 @@ mod tests {
 
     #[test]
     fn emit_building_prism_l_shape_wall_and_cap_counts() {
-        let building = l_shape_footprint(300);
+        let building = l_shape_footprint(300, 0);
         let mut buf = MeshBuffers::new();
         let white = Color::WHITE;
         let (v, i) = emit_building_prism(
-            &mut buf, &building, 0.0, 30.0, white, white, white, white, white,
+            &mut buf, &building, 0.0, 0.0, 30.0, white, white, white, white, white,
         );
         let n = building.verts.len();
         // One wall quad per ring edge (4 verts / 6 indices each) plus one
-        // cap triangle per `n - 2` (3 verts / 3 indices each) — the same
-        // invariant `ear_clip_indices` guarantees in mesh_utils.rs.
+        // roof-cap triangle per `n - 2` (3 verts / 3 indices each), the same
+        // invariant `ear_clip_indices` guarantees in mesh_utils.rs. No
+        // bottom cap since base_offset=0.
         assert_eq!(n, 6, "fixture should be the 6-vertex L-shape");
         assert_eq!(v, n * 4 + (n - 2) * 3);
         assert_eq!(i, n * 6 + (n - 2) * 3);
@@ -831,15 +906,95 @@ mod tests {
     }
 
     #[test]
+    fn emit_building_prism_with_base_offset_emits_bottom_cap() {
+        // Same L-shape, but as a stacked part with a nonzero base_offset (a
+        // tower part set back on top of a podium): must gain a bottom cap
+        // on top of the walls + roof cap the base_offset=0 case above has.
+        let building = l_shape_footprint(300, 80);
+        let base_offset = building.min_height_dm as f32 / 10.0;
+        let mut buf = MeshBuffers::new();
+        let white = Color::WHITE;
+        let (v, i) = emit_building_prism(
+            &mut buf,
+            &building,
+            0.0,
+            base_offset,
+            30.0,
+            white,
+            white,
+            white,
+            white,
+            white,
+        );
+        let n = building.verts.len();
+        assert_eq!(v, n * 4 + (n - 2) * 3 + (n - 2) * 3);
+        assert_eq!(i, n * 6 + (n - 2) * 3 + (n - 2) * 3);
+        assert_eq!(buf.vertex_count(), v);
+        assert_eq!(buf.index_count(), i);
+    }
+
+    #[test]
+    fn resolve_part_extent_skips_unknown_height_with_nonzero_min() {
+        // height_dm=0 (unknown) with min_height_dm>0: no density formula
+        // exists for an elevated segment's height, so this must be skipped
+        // rather than guessed.
+        let bd = l_shape_footprint(0, 80);
+        let result = resolve_part_extent(&bd, (0, 0), || (0.0, 0.0));
+        assert_eq!(result, Err(PartSkipReason::UnknownHeightWithMin));
+    }
+
+    #[test]
+    fn resolve_part_extent_skips_min_at_or_above_height() {
+        // min_height_dm (30.0m) >= height_dm (25.0m): degenerate/corrupt
+        // wire data, no positive-thickness prism to draw.
+        let bd = l_shape_footprint(250, 300);
+        let result = resolve_part_extent(&bd, (0, 0), || (0.0, 0.0));
+        assert_eq!(result, Err(PartSkipReason::MinAtOrAboveHeight));
+    }
+
+    #[test]
+    fn resolve_part_extent_min_exactly_at_height_is_also_skipped() {
+        // Boundary case: min == height exactly (not just >) must still be
+        // treated as degenerate, since a zero-thickness prism is as
+        // meaningless as a negative one.
+        let bd = l_shape_footprint(250, 250);
+        let result = resolve_part_extent(&bd, (0, 0), || (0.0, 0.0));
+        assert_eq!(result, Err(PartSkipReason::MinAtOrAboveHeight));
+    }
+
+    #[test]
+    fn resolve_part_extent_uses_explicit_height_and_min_verbatim() {
+        let bd = l_shape_footprint(300, 80);
+        let (min_m, height) = resolve_part_extent(&bd, (0, 0), || {
+            panic!("land_use_at must not be called when height_dm > 0")
+        })
+        .expect("should resolve");
+        assert_eq!(min_m, 8.0);
+        assert_eq!(height, 30.0);
+    }
+
+    #[test]
+    fn resolve_part_extent_falls_back_to_density_formula_only_when_min_is_zero() {
+        // height_dm=0 AND min_height_dm=0: the ground-based fallback case,
+        // the only one allowed to invoke the density formula.
+        let bd = l_shape_footprint(0, 0);
+        let (min_m, height) =
+            resolve_part_extent(&bd, (1, 2), || (10.0, 20.0)).expect("should resolve");
+        assert_eq!(min_m, 0.0);
+        assert!((FOOTPRINT_MIN_HEIGHT..=FOOTPRINT_MAX_HEIGHT).contains(&height));
+    }
+
+    #[test]
     fn emit_building_prism_degenerate_ring_is_a_noop() {
         let building = BuildingFootprint {
             height_dm: 100,
+            min_height_dm: 0,
             verts: vec![[0.0, 0.0], [1.0, 0.0]],
         };
         let mut buf = MeshBuffers::new();
         let white = Color::WHITE;
         let (v, i) = emit_building_prism(
-            &mut buf, &building, 0.0, 10.0, white, white, white, white, white,
+            &mut buf, &building, 0.0, 0.0, 10.0, white, white, white, white, white,
         );
         assert_eq!((v, i), (0, 0));
         assert!(buf.is_empty());
@@ -855,7 +1010,7 @@ mod tests {
         assert_eq!(key_before, (5, None));
 
         city.apply_buildings(mf_protocol::StaticBuildings {
-            buildings: vec![l_shape_footprint(0)],
+            buildings: vec![l_shape_footprint(0, 0)],
         });
         let key_after = BuildingsState::rebuild_key(&city, 5);
         assert_ne!(
