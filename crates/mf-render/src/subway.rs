@@ -32,18 +32,20 @@ pub struct MfSubwayPlugin;
 
 impl Plugin for MfSubwayPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<VignetteState>().add_systems(
-            Update,
-            (
-                step_subway_system,
-                squash_buildings_system,
-                fade_road_and_stripe_alpha_system,
-                metro_bold_tube_visibility_system,
-                update_vignette_system,
-            )
-                .chain()
-                .in_set(crate::MfRenderSet::Dynamic),
-        );
+        app.init_resource::<VignetteState>()
+            .init_resource::<SubwayLastApplied>()
+            .add_systems(
+                Update,
+                (
+                    step_subway_system,
+                    squash_buildings_system,
+                    fade_road_and_stripe_alpha_system,
+                    metro_bold_tube_visibility_system,
+                    update_vignette_system,
+                )
+                    .chain()
+                    .in_set(crate::MfRenderSet::Dynamic),
+            );
     }
 }
 
@@ -51,23 +53,61 @@ fn step_subway_system(time: Res<Time>, mut subway: ResMut<SubwayView>) {
     subway.step(time.delta_secs());
 }
 
+/// Last `SubwayView::t` these systems actually applied to their entities —
+/// once the transition settles (`step()` clamps `t` to exactly 0.0 or 1.0),
+/// the transform/material/visibility writes below would otherwise repeat
+/// forever for a view that never moves again. `update_vignette_system`, last
+/// in the chain, is the sole writer: it updates this once per frame, after
+/// the three systems above it have already read this frame's (i.e. the
+/// previous frame's) value — each of those has its own `Added<_>` escape
+/// hatch for entities rebuilt elsewhere while `t` sat steady.
+#[derive(Resource, Default)]
+struct SubwayLastApplied {
+    t: Option<f32>,
+}
+
 fn squash_buildings_system(
     subway: Res<SubwayView>,
+    last_applied: Res<SubwayLastApplied>,
     mut chunks: Query<&mut Transform, With<BuildingChunk>>,
+    fresh_chunks: Query<Entity, Added<BuildingChunk>>,
 ) {
+    // `buildings.rs` periodically despawns+respawns chunks on a data rebuild
+    // (new entities at the default unsquashed scale); a chunk born while `t`
+    // is steady still needs one squash pass, hence the `Added` check
+    // alongside the steady-t skip.
+    if last_applied.t == Some(subway.t) && fresh_chunks.is_empty() {
+        return;
+    }
     let scale_y = 1.0 - subway.t * (1.0 - SQUASH_SCALE_Y);
     for mut transform in &mut chunks {
         transform.scale.y = scale_y;
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fade_road_and_stripe_alpha_system(
     subway: Res<SubwayView>,
+    last_applied: Res<SubwayLastApplied>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     roads: Query<&MeshMaterial3d<StandardMaterial>, With<RoadSurface>>,
     stripes: Query<(&RouteStripe, &MeshMaterial3d<StandardMaterial>)>,
     terrain: Query<&MeshMaterial3d<StandardMaterial>, With<crate::terrain::TerrainSurface>>,
+    fresh_roads: Query<Entity, Added<RoadSurface>>,
+    fresh_stripes: Query<Entity, Added<RouteStripe>>,
+    fresh_terrain: Query<Entity, Added<crate::terrain::TerrainSurface>>,
 ) {
+    // Roads, terrain and route stripes are each independently rebuilt
+    // (despawn+respawn with brand-new materials) by their own modules; a
+    // surface born while `t` is steady still needs one fade pass, hence the
+    // three `Added` checks alongside the steady-t skip.
+    let steady = last_applied.t == Some(subway.t)
+        && fresh_roads.is_empty()
+        && fresh_stripes.is_empty()
+        && fresh_terrain.is_empty();
+    if steady {
+        return;
+    }
     let alpha = 1.0 - subway.t * (1.0 - FADED_ALPHA);
     for handle in &roads {
         if let Some(mat) = materials.get_mut(&handle.0) {
@@ -103,8 +143,17 @@ fn fade_road_and_stripe_alpha_system(
 /// bricks moving along them").
 fn metro_bold_tube_visibility_system(
     subway: Res<SubwayView>,
+    last_applied: Res<SubwayLastApplied>,
     mut bold_tubes: Query<&mut Visibility, With<MetroBoldTube>>,
+    fresh_tubes: Query<Entity, Added<MetroBoldTube>>,
 ) {
+    // `transit.rs` (re)spawns tubes hidden whenever routes rebuild; one born
+    // while `t` is already past the reveal threshold still needs this pass
+    // to flip it visible, hence the `Added` check alongside the steady-t
+    // skip.
+    if last_applied.t == Some(subway.t) && fresh_tubes.is_empty() {
+        return;
+    }
     let visible = subway.t > 0.5;
     for mut vis in &mut bold_tubes {
         *vis = if visible {
@@ -159,6 +208,7 @@ fn build_vignette_image() -> Image {
 
 fn update_vignette_system(
     subway: Res<SubwayView>,
+    mut last_applied: ResMut<SubwayLastApplied>,
     mut state: ResMut<VignetteState>,
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
@@ -190,7 +240,13 @@ fn update_vignette_system(
         state.image = Some(handle);
         e
     };
+    // This system is last in the chain and is the sole writer of
+    // `SubwayLastApplied` — see its doc comment.
+    if last_applied.t == Some(subway.t) {
+        return;
+    }
     if let Ok(mut node) = image_nodes.get_mut(entity) {
         node.color = Color::WHITE.with_alpha(subway.t);
     }
+    last_applied.t = Some(subway.t);
 }
