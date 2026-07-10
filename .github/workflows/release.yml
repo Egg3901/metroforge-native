@@ -34,7 +34,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Egg3901/metroforge
-          ref: 6ce1bbafe71be7694bacd59073fbe5087d27ba8c
+          ref: 58f5679f50e1b546cb2084891b09d2aa7a6a8c36
           path: metroforge
 
       - name: Derive version from tag
@@ -180,7 +180,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Egg3901/metroforge
-          ref: 6ce1bbafe71be7694bacd59073fbe5087d27ba8c
+          ref: 58f5679f50e1b546cb2084891b09d2aa7a6a8c36
           path: metroforge
 
       - name: Derive version from tag
