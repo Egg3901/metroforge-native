@@ -12,8 +12,13 @@ use mf_state::{CurrentCity, HeightAt, QualityTier};
 use crate::mesh_utils::{append_ribbon, MeshBuffers};
 use crate::palette;
 
-/// Road surface sits just above bare ground (spec: "heightAt + 0.5").
-const ROAD_Y_OFFSET: f32 = 0.5;
+/// Road surface lift above ground. The spec said 0.5, but at overview zoom
+/// on near-flat terrain a 0.5m offset loses the depth fight against the
+/// terrain mesh at grazing angles (roads visibly vanish from skyline
+/// framings; found on the flattened real-city relief). 2m is still
+/// imperceptible as elevation at street zoom and keeps the ribbons winning
+/// depth at distance.
+const ROAD_Y_OFFSET: f32 = 2.0;
 /// Water-crossing segments ride a fixed deck height instead of hugging
 /// `WATER_LEVEL_Y` — a road at water level renders as a barely-visible black
 /// sliver mid-river (owner-flagged on the East River bridges). A flat
