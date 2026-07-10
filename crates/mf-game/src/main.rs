@@ -4,6 +4,7 @@
 
 mod audio;
 mod camera;
+mod command_bus;
 mod config;
 mod hud;
 mod input;
@@ -48,6 +49,7 @@ fn main() {
             verify::MfVerifyPlugin,
             MfQualityBootPlugin,
             audio::MfAudioPlugin,
+            command_bus::MfCommandBusPlugin,
         ));
     // MF_PERF_LOG=1: log frame-time diagnostics (avg/FPS) once per second.
     // Costs nothing when unset; gives players and CI a zero-setup way to
