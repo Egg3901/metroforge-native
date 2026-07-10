@@ -9,3 +9,4 @@ metroforge-sidecar.exe
 # editor/OS cruft
 .DS_Store
 *.swp
+release-artifacts/
