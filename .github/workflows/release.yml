@@ -87,8 +87,8 @@ jobs:
           restore-keys: |
             ubuntu-cargo-xwin-v1-
 
-      - name: Install cross-compile toolchain (clang/llvm/lld)
-        run: sudo apt-get update && sudo apt-get install -y clang llvm lld
+      - name: Install cross-compile toolchain and Bevy Linux system deps
+        run: sudo apt-get update && sudo apt-get install -y clang llvm lld libasound2-dev libudev-dev pkg-config
 
       - name: Add Windows rustup target
         run: rustup target add x86_64-pc-windows-msvc
