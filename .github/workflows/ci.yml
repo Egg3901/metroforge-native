@@ -52,17 +52,14 @@ jobs:
       # Rust client involved), so it doesn't need to check out
       # metroforge-native at all.
       #
-      # TODO(sidecar-merge): the sidecar currently lives on the
-      # `feat/sim-sidecar` branch of Egg3901/metroforge, not yet merged to
-      # master. FLIP `ref` BELOW TO `master` ONCE THAT BRANCH MERGES, and
-      # ideally pin it to a specific commit SHA/tag at that point rather
-      # than floating on a branch name, so upstream metroforge changes can't
-      # silently break this CI job.
+      # NOTE(sidecar-merged 2026-07-10): sidecar merged to metroforge master
+      # (PR #17/#18); pinned to the merge SHA so upstream changes can't
+      # silently break CI. Bump deliberately.
       - name: Checkout metroforge (sidecar source)
         uses: actions/checkout@v4
         with:
           repository: Egg3901/metroforge
-          ref: feat/sim-sidecar
+          ref: 9809afb
           path: metroforge
 
       - name: Install Bun

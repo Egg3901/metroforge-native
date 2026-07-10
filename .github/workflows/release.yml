@@ -26,17 +26,15 @@ jobs:
 
       # The TypeScript sidecar (spec §2) lives in a sibling repo.
       #
-      # TODO(sidecar-merge): the sidecar currently lives on the
-      # `feat/sim-sidecar` branch of Egg3901/metroforge, not yet merged to
-      # master. FLIP `ref` BELOW TO `master` ONCE THAT BRANCH MERGES, and
-      # ideally pin it to a specific commit SHA/tag at that point rather
-      # than floating on a branch name, so an unrelated upstream metroforge
-      # change can't silently break a release build.
+      # NOTE(sidecar-merged 2026-07-10): the sidecar merged to metroforge
+      # master via PR #17/#18. Pinned to that merge SHA (not the branch name)
+      # so an unrelated upstream metroforge change can't silently break a
+      # release build; bump the SHA deliberately when pulling sidecar changes.
       - name: Checkout metroforge (sidecar source)
         uses: actions/checkout@v4
         with:
           repository: Egg3901/metroforge
-          ref: feat/sim-sidecar
+          ref: 9809afb
           path: metroforge
 
       - name: Derive version from tag
@@ -176,13 +174,13 @@ jobs:
         with:
           path: metroforge-native
 
-      # TODO(sidecar-merge): see the identical checkout step in the
-      # linux-and-windows job above — same branch, same caveat, same TODO.
+      # NOTE(sidecar-merged 2026-07-10): see the identical checkout step in
+      # the linux-and-windows job above — same pinned SHA, same rationale.
       - name: Checkout metroforge (sidecar source)
         uses: actions/checkout@v4
         with:
           repository: Egg3901/metroforge
-          ref: feat/sim-sidecar
+          ref: 9809afb
           path: metroforge
 
       - name: Derive version from tag
