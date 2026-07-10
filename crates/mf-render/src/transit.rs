@@ -438,12 +438,30 @@ fn rebuild_routes(
         // subway+low-quality combination (see that comment); not
         // independently re-verified for this material, reverted out of
         // caution.
+        // Color at the MATERIAL level (`base_color`), not vertex colors:
+        // same root cause and fix as roads.rs's road-class materials. Vertex
+        // colors do not reach the shader for `AlphaMode::Blend`
+        // `StandardMaterial`s in this Bevy 0.16 setup, so leaving the vivid
+        // color only in the ribbon's per-vertex colors (as this used to)
+        // rendered every stripe plain white, not the rainbow the vertex data
+        // encoded. The per-vertex chevron brightness accent (`append_chevrons`
+        // paints its triangles 20% brighter than the ribbon) is lost by the
+        // same mechanism: chevrons share this mesh/material, so they render
+        // the same flat `color` as the stripe rather than standing out.
+        // Accepted: chevrons are still visible via geometry (they're a
+        // separate arrow shape sitting on the stripe), just not extra-bright.
+        // `perceptual_roughness`/`reflectance` added to match roads.rs's
+        // matte discipline: this surface now receives direct sun the same as
+        // roads once its base_color actually carries the route color, so it
+        // needs the same anti-specular-sheen treatment.
         let material = materials.add(StandardMaterial {
             double_sided: true,
             cull_mode: None,
-            base_color: Color::WHITE,
+            base_color: color,
             emissive: palette::emissive(color, 0.1),
             alpha_mode: AlphaMode::Blend,
+            perceptual_roughness: 1.0,
+            reflectance: 0.0,
             ..default()
         });
         let e = commands
@@ -472,9 +490,16 @@ fn rebuild_routes(
             // Solid whenever visible (subway.rs only ever toggles this
             // entity's Visibility, never its alpha) — `..default()` already
             // gives `AlphaMode::Opaque`, kept implicit here since nothing
-            // ever changes it.
+            // ever changes it. Unlike the normal stripe above, `Opaque`
+            // materials in this Bevy 0.16 setup DO honor per-vertex color
+            // (same reason terrain.rs's vertex colors already work, see the
+            // comment on roads.rs's road-class materials), so this was never
+            // rendering white. `base_color` is set to the route color anyway
+            // (rather than left `WHITE`) to match the normal stripe's fix and
+            // to not depend on the vertex-color path holding up under a
+            // future material change.
             let bold_material = materials.add(StandardMaterial {
-                base_color: Color::WHITE,
+                base_color: color,
                 emissive: palette::emissive(color, 0.8),
                 ..default()
             });
