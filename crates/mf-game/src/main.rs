@@ -2,9 +2,11 @@
 // Windows: GUI subsystem in release so no console window opens behind the game.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod attract;
 mod audio;
 mod build_ui;
 mod camera;
+mod campaign;
 mod command_bus;
 mod config;
 mod design_system;
@@ -13,8 +15,11 @@ mod input;
 mod map_mode;
 mod overlays;
 mod panels;
+mod promo;
 mod quality_boot;
+mod report_ui;
 mod reveal_input;
+mod saves;
 mod state;
 mod tools;
 mod verify;
@@ -36,15 +41,25 @@ const SKY_DAY: Color = Color::srgb(
 fn main() {
     let mut app = App::new();
     app.insert_resource(ClearColor(SKY_DAY))
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "MetroForge".to_string(),
-                resolution: (1440.0_f32, 900.0_f32).into(),
-                present_mode: PresentMode::AutoVsync,
+        .add_plugins(
+            DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "MetroForge".to_string(),
+                    // MF_RESOLUTION=WxH overrides for promo/screenshot runs.
+                    resolution: std::env::var("MF_RESOLUTION")
+                        .ok()
+                        .and_then(|v| {
+                            let (w, h) = v.split_once('x')?;
+                            Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))
+                        })
+                        .unwrap_or((1440.0, 900.0))
+                        .into(),
+                    present_mode: PresentMode::AutoVsync,
+                    ..default()
+                }),
                 ..default()
             }),
-            ..default()
-        }))
+        )
         .add_plugins((MfNetPlugin, MfStatePlugin, MfRenderPlugin))
         .add_plugins((
             state::MfGameStatePlugin,
@@ -52,15 +67,23 @@ fn main() {
             input::MfInputPlugin,
             reveal_input::MfRevealInputPlugin,
             hud::MfHudPlugin,
+            saves::MfSavesPlugin,
             verify::MfVerifyPlugin,
             MfQualityBootPlugin,
             audio::MfAudioPlugin,
             command_bus::MfCommandBusPlugin,
             tools::MfToolsPlugin,
             build_ui::MfBuildUiPlugin,
+        ))
+        // Bevy's Plugins tuple impl caps at 15 elements; second batch.
+        .add_plugins((
             overlays::MfOverlaysPlugin,
             map_mode::MfMapModePlugin,
             panels::MfPanelsPlugin,
+            campaign::MfCampaignPlugin,
+            report_ui::MfReportUiPlugin,
+            attract::MfAttractPlugin,
+            promo::MfPromoPlugin,
         ));
     // MF_PERF_LOG=1: log frame-time diagnostics (avg/FPS) once per second.
     // Costs nothing when unset; gives players and CI a zero-setup way to

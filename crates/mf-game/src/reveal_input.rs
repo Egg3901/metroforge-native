@@ -72,7 +72,8 @@ fn reveal_input_system(
     // runs. Verify runs therefore ignore the real cursor entirely; setting
     // MF_FORCE_REVEAL pins the hole to the camera target instead so the
     // shader path still gets screenshot coverage.
-    let in_verify = std::env::var_os("MF_VERIFY_DIR").is_some();
+    let in_verify =
+        std::env::var_os("MF_VERIFY_DIR").is_some() || std::env::var_os("MF_PROMO_DIR").is_some();
     let forced = std::env::var_os("MF_FORCE_REVEAL").map(|_| rig.target);
     let cursor_ground = if in_verify {
         forced

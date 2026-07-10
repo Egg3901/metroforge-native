@@ -59,7 +59,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Egg3901/metroforge
-          ref: 9d4940c2c3927ea1e4a711c051e95afd5598de17
+          ref: 6ce1bbafe71be7694bacd59073fbe5087d27ba8c
           path: metroforge
 
       - name: Install Bun

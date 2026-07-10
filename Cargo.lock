@@ -3218,7 +3218,7 @@ dependencies = [
 
 [[package]]
 name = "mf-game"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "bevy",
@@ -3232,11 +3232,12 @@ dependencies = [
  "serde_json",
  "toml",
  "tracing",
+ "winit",
 ]
 
 [[package]]
 name = "mf-net"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "bevy_app",
@@ -3252,7 +3253,7 @@ dependencies = [
 
 [[package]]
 name = "mf-protocol"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3261,7 +3262,7 @@ dependencies = [
 
 [[package]]
 name = "mf-render"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bevy",
  "mf-protocol",
@@ -3270,7 +3271,7 @@ dependencies = [
 
 [[package]]
 name = "mf-state"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bevy_app",
  "bevy_ecs",
