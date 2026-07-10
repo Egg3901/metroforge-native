@@ -121,6 +121,12 @@ fn connecting_sim_system(
     mut hello: ResMut<SimHello>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
+    // A reconnect replaces the SimLink resource wholesale; the fresh sidecar
+    // has never seen our hello, so the send-once latch must reset with it or
+    // the handshake never completes and we sit here forever.
+    if link.as_ref().map(|l| l.is_added()).unwrap_or(false) {
+        *sent = false;
+    }
     if !*sent {
         if let Some(link) = &link {
             let _ = link
@@ -185,8 +191,17 @@ fn autostart_system(
     mut pending: ResMut<PendingInit>,
     mut next_state: ResMut<NextState<AppState>>,
     mut done: Local<bool>,
+    mut frames_in_menu: Local<u32>,
 ) {
     if *done {
+        return;
+    }
+    // When the verify harness is active, hold at MainMenu for a few frames
+    // first so verify.rs can screenshot the menu itself — v0.1.0-alpha
+    // shipped with the menu never having been rendered by ANY test (autostart
+    // skipped it in every verify run, and it was in fact invisible).
+    *frames_in_menu += 1;
+    if std::env::var_os("MF_VERIFY_DIR").is_some() && *frames_in_menu < 30 {
         return;
     }
     *done = true;

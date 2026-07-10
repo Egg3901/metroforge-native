@@ -82,8 +82,15 @@ fn compute_day_night_system(
         state.night_factor = 0.0;
         return;
     }
-    let tick = ui.0.as_ref().map(|u| u.tick).unwrap_or(0);
-    let hour = ((tick % TICKS_PER_DAY) as f32 / TICKS_PER_DAY as f32) * 24.0;
+    // Until the first UiState arrives (ConnectingSim/MainMenu/Loading), hold
+    // noon rather than treating tick 0 as midnight — otherwise every pre-game
+    // screen sits on the near-black night sky.
+    let Some(u) = &ui.0 else {
+        state.hour = 12.0;
+        state.night_factor = 0.0;
+        return;
+    };
+    let hour = ((u.tick % TICKS_PER_DAY) as f32 / TICKS_PER_DAY as f32) * 24.0;
     let elevation = (((hour - 6.0) / 12.0) * PI).sin();
     state.hour = hour;
     state.night_factor = (-elevation * 1.2).clamp(0.0, 1.0);

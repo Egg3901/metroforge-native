@@ -41,6 +41,7 @@ impl Plugin for MfHudPlugin {
                 EguiPrimaryContextPass,
                 (
                     setup_egui_style_system,
+                    connecting_hud_system.run_if(in_state(AppState::ConnectingSim)),
                     main_menu_hud_system.run_if(in_state(AppState::MainMenu)),
                     loading_hud_system.run_if(in_state(AppState::Loading)),
                     in_game_hud_system.run_if(in_state(AppState::InGame)),
@@ -148,6 +149,32 @@ fn quality_selector(ui: &mut egui::Ui, quality: &mut QualityTier, config: &mut M
                 }
             }
         });
+}
+
+/// ConnectingSim previously registered NO ui system at all, so a player whose
+/// sidecar was slow (or repeatedly failing) stared at a bare ClearColor with
+/// zero feedback until the fatal banner eventually appeared. Every app state
+/// must draw *something*.
+fn connecting_hud_system(mut contexts: EguiContexts, reconnect: Res<ReconnectState>) -> Result {
+    let ctx = contexts.ctx_mut()?;
+    egui::CentralPanel::default().show(ctx, |ui| {
+        ui.heading("MetroForge");
+        ui.add_space(12.0);
+        match &reconnect.status {
+            NetStatus::Fatal(msg) => {
+                ui.colored_label(BAD, format!("Could not start the simulation: {msg}"));
+            }
+            NetStatus::Reconnecting { attempt } => {
+                ui.label(format!(
+                    "Starting the simulation (attempt {attempt} of 5)..."
+                ));
+            }
+            NetStatus::Connected => {
+                ui.label("Starting the simulation...");
+            }
+        }
+    });
+    Ok(())
 }
 
 fn main_menu_hud_system(

@@ -63,10 +63,15 @@ impl Plugin for MfVerifyPlugin {
         if std::env::var_os("MF_VERIFY_DIR").is_none() {
             return; // inert in every normal build/run
         }
-        app.init_resource::<VerifyState>().add_systems(
-            Update,
-            verify_sequence_system.run_if(in_state(AppState::InGame)),
-        );
+        app.init_resource::<VerifyState>()
+            .add_systems(
+                Update,
+                verify_sequence_system.run_if(in_state(AppState::InGame)),
+            )
+            .add_systems(
+                Update,
+                menu_screenshot_system.run_if(in_state(AppState::MainMenu)),
+            );
     }
 }
 
@@ -214,6 +219,21 @@ fn verify_sequence_system(
     if let Some(next) = advance_to {
         state.stage = next;
         state.stage_start = state.frame;
+    }
+}
+
+/// Screenshot the main menu itself (`menu.png`). `state.rs`'s autostart holds
+/// at MainMenu for ~30 frames when `MF_VERIFY_DIR` is set precisely so this
+/// can run — the menu being invisible (no camera = no egui context) shipped
+/// in v0.1.0-alpha because no verify path ever rendered it.
+fn menu_screenshot_system(mut state: Local<u64>, mut commands: Commands) {
+    let Some(dir) = std::env::var_os("MF_VERIFY_DIR").map(|s| s.to_string_lossy().into_owned())
+    else {
+        return;
+    };
+    *state += 1;
+    if *state == 15 {
+        take_screenshot(&mut commands, format!("{dir}/menu.png"));
     }
 }
 
