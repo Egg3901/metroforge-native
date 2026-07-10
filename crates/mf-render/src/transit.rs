@@ -8,10 +8,11 @@
 //! (crowding) updates every UI tick (2 Hz) without a full rebuild.
 
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use bevy::prelude::*;
 
-use mf_protocol::{TransitMode, UiState};
+use mf_protocol::{TransitMode, UiState, UiStation};
 use mf_state::{HeightAt, LatestUi, QualityTier};
 
 use crate::mesh_utils::{
@@ -48,6 +49,13 @@ impl Plugin for MfTransitPlugin {
 #[derive(Component)]
 pub struct StationRing {
     pub mode: TransitMode,
+    /// Joins this ring back to its `UiStation` for crowding updates — rings
+    /// and `ui.stations` are never assumed to iterate in the same order.
+    station_id: i64,
+    /// Crowding `t` (ridership/max) last written to the material, quantized
+    /// to 1/64 buckets so equal-looking ticks skip the `materials.get_mut`
+    /// write (2 Hz churn otherwise touches every ring's material every tick).
+    crowding_bucket: Option<u8>,
 }
 
 /// Marker on the normal-width route stripe entity (always visible; faded to
@@ -65,29 +73,29 @@ pub struct MetroBoldTube;
 
 #[derive(Resource, Default)]
 struct TransitState {
-    signature: Option<Signature>,
+    signature: Option<u64>,
     station_entities: Vec<Entity>,
     track_entities: Vec<Entity>,
     route_entities: Vec<Entity>,
 }
 
-#[derive(PartialEq, Clone)]
-struct Signature {
-    station_count: usize,
-    track_count: usize,
-    routes: Vec<(i64, String, Vec<i64>)>,
-}
-
-fn signature_of(ui: &UiState) -> Signature {
-    Signature {
-        station_count: ui.stations.len(),
-        track_count: ui.tracks.len(),
-        routes: ui
-            .routes
-            .iter()
-            .map(|r| (r.id, r.color.clone(), r.station_ids.clone()))
-            .collect(),
+/// Structural fingerprint of `ui` (station/track/route identity), used to
+/// gate the full rebuild. A `u64` hash instead of a cloned `Signature`
+/// struct: this runs on every `LatestUi` change (2 Hz) and the prior
+/// per-field clone (route colors + station-id vecs) allocated on every tick
+/// just to be thrown away after one `==`. A 64-bit hash collision would miss
+/// a rebuild, but is astronomically unlikely for this data and cheap to
+/// accept given the alternative is allocation on the hot compare path.
+fn signature_of(ui: &UiState) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    ui.stations.len().hash(&mut hasher);
+    ui.tracks.len().hash(&mut hasher);
+    for r in &ui.routes {
+        r.id.hash(&mut hasher);
+        r.color.as_bytes().hash(&mut hasher);
+        r.station_ids.hash(&mut hasher);
     }
+    hasher.finish()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -99,7 +107,7 @@ fn transit_update_system(
     mut state: ResMut<TransitState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut ring_query: Query<(&StationRing, &MeshMaterial3d<StandardMaterial>)>,
+    mut ring_query: Query<(&mut StationRing, &MeshMaterial3d<StandardMaterial>)>,
 ) {
     if !ui.is_changed() {
         return;
@@ -109,7 +117,7 @@ fn transit_update_system(
     };
 
     let sig = signature_of(u);
-    if state.signature.as_ref() != Some(&sig) {
+    if state.signature != Some(sig) {
         state.signature = Some(sig);
         rebuild_stations(
             &mut commands,
@@ -190,7 +198,11 @@ fn rebuild_stations(
                 Transform::from_xyz(st.x as f32, ground_y + STATION_HEIGHT + 0.1, st.y as f32)
                     .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
                 Visibility::default(),
-                StationRing { mode: st.mode },
+                StationRing {
+                    mode: st.mode,
+                    station_id: st.id,
+                    crowding_bucket: None,
+                },
             ))
             .id();
         state.station_entities.push(body);
@@ -198,21 +210,38 @@ fn rebuild_stations(
     }
 }
 
+/// Crowding buckets: quantize `t` (ridership fraction) to 1/64 so a tick
+/// whose ridership barely moved doesn't re-touch the material.
+const CROWDING_BUCKETS: f32 = 64.0;
+
+fn quantize_crowding(t: f32) -> u8 {
+    (t * CROWDING_BUCKETS).round() as u8
+}
+
 fn update_station_crowding(
     ui: &UiState,
     materials: &mut Assets<StandardMaterial>,
-    ring_query: &mut Query<(&StationRing, &MeshMaterial3d<StandardMaterial>)>,
+    ring_query: &mut Query<(&mut StationRing, &MeshMaterial3d<StandardMaterial>)>,
 ) {
     let max_ridership = ui
         .stations
         .iter()
         .map(|s| s.ridership)
         .fold(1.0_f64, f64::max);
-    // Rings were (re)spawned in station order in `rebuild_stations`; zip
-    // positionally since we don't carry a station-id component today (v1
-    // scope — see known-gaps in the final report).
-    for ((ring, mat_handle), st) in ring_query.iter_mut().zip(ui.stations.iter()) {
+    // Join rings to stations by id, not by query iteration order (ECS query
+    // order isn't guaranteed to track spawn order). Rings for stations no
+    // longer present keep their current color rather than guessing.
+    let station_by_id: HashMap<i64, &UiStation> = ui.stations.iter().map(|s| (s.id, s)).collect();
+    for (mut ring, mat_handle) in ring_query.iter_mut() {
+        let Some(st) = station_by_id.get(&ring.station_id) else {
+            continue;
+        };
         let t = (st.ridership / max_ridership).clamp(0.0, 1.0) as f32;
+        let bucket = quantize_crowding(t);
+        if ring.crowding_bucket == Some(bucket) {
+            continue;
+        }
+        ring.crowding_bucket = Some(bucket);
         let base = palette::mode_accent(ring.mode);
         let hot = palette::brighten(palette::vivid_route_color(0), 0.2); // hot red accent
         let color = base.mix(&hot, t * 0.6);
