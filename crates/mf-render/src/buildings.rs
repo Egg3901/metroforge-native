@@ -203,7 +203,24 @@ fn resolve_part_extent(
                 jitter_key.0.wrapping_mul(7) + 3,
                 jitter_key.1.wrapping_mul(13) + 1,
             ) * 0.5;
-        (BASE_HEIGHT + jobs * JOBS_WEIGHT + pop * POP_WEIGHT) * hvar
+        // Mega-footprints with unknown height are stations, terminals, and
+        // convention halls, not towers: untamed, the Midtown density
+        // formula extruded Penn Station's 148k m2 outline into a block-wide
+        // monolith (owner: "what is the giant box building"). Cap the
+        // FALLBACK (never real tag data) so allowed height shrinks as
+        // footprint area grows past a city-block 5k m2.
+        let area = polygon_area(
+            &bd.verts
+                .iter()
+                .map(|v| Vec2::new(v[0], v[1]))
+                .collect::<Vec<_>>(),
+        );
+        let area_cap = if area > 5_000.0 {
+            (BASE_HEIGHT + 120_000_000.0 / (area * area.sqrt())).max(12.0)
+        } else {
+            f32::MAX
+        };
+        ((BASE_HEIGHT + jobs * JOBS_WEIGHT + pop * POP_WEIGHT) * hvar).min(area_cap)
     } else {
         return Err(PartSkipReason::UnknownHeightWithMin);
     }

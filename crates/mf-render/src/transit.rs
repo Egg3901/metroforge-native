@@ -304,6 +304,7 @@ fn rebuild_tracks(
         }
         let width = if t.mode == TransitMode::Bus { 5.0 } else { 8.0 };
         let buf = groups.entry((t.mode, t.grade.clone())).or_default();
+        let pts = crate::mesh_utils::smooth_polyline(&pts, 2);
         let pts = crate::mesh_utils::densify_polyline(&pts, 24.0);
         append_ribbon(
             buf,
@@ -487,7 +488,8 @@ fn rebuild_routes(
         let widths = segment_widths(expected_pairs, &r.segment_loads);
         for (pi, seg) in &pair_segs {
             let width = widths.get(*pi).copied().unwrap_or(STRIPE_WIDTH);
-            let seg = crate::mesh_utils::densify_polyline(seg, 24.0);
+            let seg = crate::mesh_utils::smooth_polyline(seg, 2);
+            let seg = crate::mesh_utils::densify_polyline(&seg, 24.0);
             append_ribbon(
                 &mut normal_buf,
                 &seg,
@@ -556,7 +558,8 @@ fn rebuild_routes(
 
         if r.mode == TransitMode::Metro {
             let mut bold_buf = MeshBuffers::new();
-            let dense_path = crate::mesh_utils::densify_polyline(&path, 24.0);
+            let dense_path = crate::mesh_utils::smooth_polyline(&path, 2);
+            let dense_path = crate::mesh_utils::densify_polyline(&dense_path, 24.0);
             append_ribbon(
                 &mut bold_buf,
                 &dense_path,

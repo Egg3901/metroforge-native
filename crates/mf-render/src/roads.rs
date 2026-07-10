@@ -69,6 +69,7 @@ struct RoadClassSurface;
 fn build_roads_system(
     mut commands: Commands,
     city: Res<CurrentCity>,
+    fields: Res<mf_state::LatestFields>,
     height_at: Res<HeightAt>,
     mut state: ResMut<RoadsState>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -78,6 +79,14 @@ fn build_roads_system(
     let Some(city_json) = &city.static_city else {
         return;
     };
+    // RACE FIX: `ready` (roads) arrives before `fields` (terrain), and this
+    // system builds exactly once per signature - building against the
+    // placeholder flat HeightAt buried every road under the real relief
+    // (intermittently, per frame timing: the recurring "why are the roads
+    // never showing"). Wait for real terrain before baking.
+    if fields.0.is_none() {
+        return;
+    }
     let total_points: usize = city_json.roads.iter().map(|r| r.points.len()).sum();
     let signature = (city_json.roads.len(), total_points);
     if state.signature == Some(signature) {
