@@ -436,10 +436,10 @@ fn camera_transform_system(
 /// since `mf-render`'s real terrain sampler isn't wired in yet). Returns
 /// world-space `(x, y)` (i.e. Bevy `(x, z)`) per the coordinate convention.
 ///
-/// Not called yet — v1 has no click-to-build interaction (spec §5 stretch
-/// goal); exposed for `input.rs` to use once ground clicks drive a build
-/// command (buildStation on click, etc.).
-#[allow(dead_code)]
+/// First real caller: `reveal_input.rs`'s cursor-reveal driver (issue #18),
+/// which needs the world point under the mouse every frame. Still exposed
+/// for `input.rs` to reuse once ground clicks also drive a build command
+/// (buildStation on click, etc. — spec §5 stretch goal).
 pub fn screen_to_ground(
     camera: &Camera,
     camera_transform: &GlobalTransform,

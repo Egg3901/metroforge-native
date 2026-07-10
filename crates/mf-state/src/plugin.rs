@@ -11,6 +11,7 @@ use crate::fields::LatestFields;
 use crate::frame::LatestFrame;
 use crate::height::HeightAt;
 use crate::quality::QualityTier;
+use crate::reveal::RevealState;
 use crate::subway::SubwayView;
 use crate::ui::LatestUi;
 
@@ -25,6 +26,7 @@ impl Plugin for MfStatePlugin {
             .init_resource::<QualityTier>()
             .init_resource::<SubwayView>()
             .init_resource::<HeightAt>()
+            .init_resource::<RevealState>()
             // `add_event` is idempotent (it's an `init_resource` under the
             // hood), so it's safe whether or not `MfNetPlugin` was added
             // first; declared explicitly here since `mf-state` reads it.

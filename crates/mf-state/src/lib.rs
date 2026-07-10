@@ -5,7 +5,8 @@
 //! directly.
 //!
 //! Resources: [`CurrentCity`], [`LatestFields`], [`LatestUi`],
-//! [`LatestFrame`], [`QualityTier`], [`SubwayView`], [`HeightAt`].
+//! [`LatestFrame`], [`QualityTier`], [`SubwayView`], [`HeightAt`],
+//! [`RevealState`].
 
 pub mod city;
 pub mod fields;
@@ -13,6 +14,7 @@ pub mod frame;
 pub mod height;
 pub mod plugin;
 pub mod quality;
+pub mod reveal;
 pub mod subway;
 pub mod ui;
 
@@ -22,5 +24,6 @@ pub use frame::LatestFrame;
 pub use height::HeightAt;
 pub use plugin::MfStatePlugin;
 pub use quality::{detect as detect_quality_tier, GpuDeviceKind, QualityKnobs, QualityTier};
+pub use reveal::RevealState;
 pub use subway::{SubwayView, SUBWAY_TRANSITION_SECS};
 pub use ui::LatestUi;
