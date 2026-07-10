@@ -66,15 +66,24 @@ fn reveal_input_system(
     };
     let dt = time.delta_secs();
 
-    let cursor_ground = windows
-        .single()
-        .ok()
-        .and_then(Window::cursor_position)
-        .and_then(|pos| screen_to_ground(camera, camera_transform, &height_at, pos))
-        // Headless verify hook: Xvfb has no cursor, so a cursor-driven
-        // effect is otherwise invisible to the screenshot harness. Forcing
-        // the hole to the camera target exercises the full shader path.
-        .or_else(|| std::env::var_os("MF_FORCE_REVEAL").map(|_| rig.target));
+    // Harness determinism: under MF_VERIFY_DIR the X server still reports a
+    // default pointer position, which would put a reveal hole wherever that
+    // stray pointer's ray lands and make screenshots non-comparable between
+    // runs. Verify runs therefore ignore the real cursor entirely; setting
+    // MF_FORCE_REVEAL pins the hole to the camera target instead so the
+    // shader path still gets screenshot coverage.
+    let in_verify = std::env::var_os("MF_VERIFY_DIR").is_some();
+    let forced = std::env::var_os("MF_FORCE_REVEAL").map(|_| rig.target);
+    let cursor_ground = if in_verify {
+        forced
+    } else {
+        windows
+            .single()
+            .ok()
+            .and_then(Window::cursor_position)
+            .and_then(|pos| screen_to_ground(camera, camera_transform, &height_at, pos))
+            .or(forced)
+    };
 
     // (b) Cursor reveal is always the hole's center; when the camera has
     // also dollied in close, widen ITS radii by the camera-distance factor

@@ -53,8 +53,11 @@ const MAX_WAIT_FRAMES: u64 = 900;
 const TICKS_PER_DAY: u64 = 1200;
 /// Daytime window (hours) we're willing to screenshot in — wide enough to
 /// hit reliably within a couple of seconds at 120x, centered on noon.
-const DAY_HOUR_MIN: f64 = 9.0;
-const DAY_HOUR_MAX: f64 = 15.0;
+// Narrowed from 9-15: at ~09:30 the low sun renders distant unshaded
+// faces white-on-white (issue #16 readability item), making screenshots
+// unreadable AND non-comparable between runs. Nearer midday is stable.
+const DAY_HOUR_MIN: f64 = 10.5;
+const DAY_HOUR_MAX: f64 = 14.5;
 
 pub struct MfVerifyPlugin;
 
@@ -111,6 +114,31 @@ fn frame_elevated(rig: &mut CameraRig, center: Vec2) {
     rig.yaw = 0.5;
 }
 
+/// Nearest arterial/collector polyline vertex to `center`: with real
+/// footprints, the dense-center point itself is usually inside a tower, so
+/// the street shot must anchor on an actual street.
+fn nearest_road_point(city: &mf_state::CurrentCity, center: Vec2) -> Vec2 {
+    let Some(cj) = &city.static_city else {
+        return center;
+    };
+    let mut best = center;
+    let mut best_d2 = f32::MAX;
+    for road in &cj.roads {
+        if road.cls != "arterial" && road.cls != "collector" {
+            continue;
+        }
+        for c in road.points.chunks_exact(2) {
+            let p = Vec2::new(c[0] as f32, c[1] as f32);
+            let d2 = p.distance_squared(center);
+            if d2 < best_d2 {
+                best_d2 = d2;
+                best = p;
+            }
+        }
+    }
+    best
+}
+
 fn frame_street(rig: &mut CameraRig, center: Vec2) {
     rig.target = center;
     rig.distance = 220.0;
@@ -130,6 +158,7 @@ fn verify_sequence_system(
     ui: Res<LatestUi>,
     dense_center: Res<BuildingsDenseCenter>,
     mut pause: ResMut<crate::state::PauseState>,
+    city: Res<mf_state::CurrentCity>,
 ) {
     let Some(dir) = std::env::var_os("MF_VERIFY_DIR").map(|s| s.to_string_lossy().into_owned())
     else {
@@ -180,7 +209,7 @@ fn verify_sequence_system(
         Stage::Street => {
             if elapsed_in_stage == 5 {
                 if let Ok(mut rig) = rigs.single_mut() {
-                    frame_street(&mut rig, dense_center.0);
+                    frame_street(&mut rig, nearest_road_point(&city, dense_center.0));
                 }
             }
             if elapsed_in_stage == SETTLE_FRAMES {
