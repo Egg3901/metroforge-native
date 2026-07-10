@@ -43,6 +43,16 @@ impl SidecarProcess {
             .stderr(Stdio::inherit())
             .stdin(Stdio::null());
 
+        // The Bun-compiled sidecar is a console-subsystem exe; without this
+        // flag, launching the game on Windows pops a second empty console
+        // window next to the game window.
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
         let mut child = cmd
             .spawn()
             .map_err(|e| anyhow::anyhow!("failed to spawn sidecar ({launch_desc}): {e}"))?;

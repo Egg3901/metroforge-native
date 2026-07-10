@@ -127,8 +127,10 @@ config file (see game documentation for details).
   permissions.
 EOF
 
-    # Remove em-dashes from the readme (per player-facing copy guidelines)
-    sed -i 's/[–—]/-/g' "$readme_path"
+    # Remove em-dashes from the readme (per player-facing copy guidelines).
+    # Portable across GNU and BSD sed: BSD (macOS) sed -i requires a suffix
+    # argument, which broke the v0.1.0-alpha macos release job.
+    sed 's/[–—]/-/g' "$readme_path" > "$readme_path.tmp" && mv "$readme_path.tmp" "$readme_path"
 }
 
 # Package based on OS

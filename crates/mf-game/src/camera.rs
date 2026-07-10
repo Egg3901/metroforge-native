@@ -42,16 +42,24 @@ pub struct MfCameraPlugin;
 
 impl Plugin for MfCameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            OnEnter(crate::state::AppState::InGame),
-            (spawn_camera, zoom_to_fit_on_enter).chain(),
-        )
-        .add_systems(
-            Update,
-            (camera_input_system, camera_transform_system)
-                .chain()
-                .run_if(in_state(crate::state::AppState::InGame)),
-        );
+        // The camera must exist from the very first frame, NOT OnEnter(InGame):
+        // bevy_egui 0.36 attaches its primary context to the first spawned
+        // `Camera`, so with no camera there is no egui context and every
+        // pre-game screen (ConnectingSim/MainMenu/Loading) silently renders
+        // nothing — shipped v0.1.0-alpha as a bare ClearColor void ("blue
+        // screen") for every player. The verify harness never caught it
+        // because MF_AUTOSTART skips straight past those states.
+        app.add_systems(Startup, spawn_camera)
+            .add_systems(
+                OnEnter(crate::state::AppState::InGame),
+                zoom_to_fit_on_enter,
+            )
+            .add_systems(
+                Update,
+                (camera_input_system, camera_transform_system)
+                    .chain()
+                    .run_if(in_state(crate::state::AppState::InGame)),
+            );
     }
 }
 
