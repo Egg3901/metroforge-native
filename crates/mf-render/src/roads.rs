@@ -19,9 +19,13 @@ const ROAD_Y_OFFSET: f32 = 0.5;
 // widths are a few pixels and vanish into the bright ground (the oldest
 // render-backlog item, owner-flagged twice). Slight exaggeration is the
 // standard map-style tradeoff.
-const ARTERIAL_WIDTH: f64 = 60.0;
-const COLLECTOR_WIDTH: f64 = 36.0;
-const LOCAL_WIDTH: f64 = 20.0;
+// `pub(crate)`: `terrain.rs` reuses these as the terrain-grading corridor
+// half-width source (see `terrain::grade_terrain`) so the graded corridor
+// stays in lockstep with the ribbon width instead of drifting via a
+// duplicated constant.
+pub(crate) const ARTERIAL_WIDTH: f64 = 60.0;
+pub(crate) const COLLECTOR_WIDTH: f64 = 36.0;
+pub(crate) const LOCAL_WIDTH: f64 = 20.0;
 /// Camera height above which local-road detail is hidden (LOD).
 const LOCAL_ROAD_LOD_HEIGHT: f32 = 4_000.0;
 
