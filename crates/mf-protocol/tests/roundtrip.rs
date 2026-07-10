@@ -3,7 +3,8 @@
 //! `protocol.ts`/`types.ts`) decode -> encode -> value equality.
 
 use mf_protocol::binary::{
-    decode_binary, BinaryMsg, Fields, FrameSnapshot, MaskWhich, StaticMask, Traffic,
+    decode_binary, BinaryError, BinaryMsg, Fields, FrameSnapshot, MaskWhich, StaticBuildings,
+    StaticMask, Traffic,
 };
 use mf_protocol::envelope::{Envelope, FromSimJson, ToSim};
 use mf_protocol::types::{Command, Difficulty, TransitMode, UiState};
@@ -21,6 +22,20 @@ fn push_u16(v: &mut Vec<u8>, x: u16) {
 }
 fn push_f32(v: &mut Vec<u8>, x: f32) {
     v.extend_from_slice(&x.to_le_bytes());
+}
+fn push_i16(v: &mut Vec<u8>, x: i16) {
+    v.extend_from_slice(&x.to_le_bytes());
+}
+/// Push one `StaticBuildings` per-building record: vertexCount, flags=0,
+/// heightDm, then `(xHalfM, yHalfM)` per vertex.
+fn push_building(v: &mut Vec<u8>, height_dm: u16, verts_half: &[(i16, i16)]) {
+    v.push(verts_half.len() as u8);
+    v.push(0); // flags
+    push_u16(v, height_dm);
+    for &(x, y) in verts_half {
+        push_i16(v, x);
+        push_i16(v, y);
+    }
 }
 
 #[test]
@@ -150,6 +165,126 @@ fn static_mask_roundtrip() {
     match decode_binary(&b).unwrap() {
         BinaryMsg::Mask(m) => assert_eq!(m, decoded),
         other => panic!("expected Mask, got {other:?}"),
+    }
+}
+
+#[test]
+fn static_buildings_empty_roundtrip() {
+    // header only: 0 buildings, vertexTotal 0.
+    let mut b = vec![5u8, 1u8];
+    push_u16(&mut b, 0); // reserved
+    push_u32(&mut b, 0); // buildingCount
+    push_u32(&mut b, 0); // vertexTotal
+
+    let decoded = StaticBuildings::decode(&b).expect("decode");
+    assert_eq!(decoded.buildings.len(), 0);
+
+    assert_eq!(decoded.encode(), b);
+    match decode_binary(&b).unwrap() {
+        BinaryMsg::Buildings(sb) => assert_eq!(sb, decoded),
+        other => panic!("expected Buildings, got {other:?}"),
+    }
+}
+
+#[test]
+fn static_buildings_two_buildings_roundtrip() {
+    // Building 0: a triangle, heightDm=250 (25.0m), includes negative coords.
+    // Building 1: a quad, heightDm=0 ("unknown", renderer falls back).
+    let b0_verts = [(-20i16, -20i16), (20, -20), (0, 40)];
+    let b1_verts = [(-10i16, -10i16), (10, -10), (10, 10), (-10, 10)];
+    let vertex_total = (b0_verts.len() + b1_verts.len()) as u32;
+
+    let mut b = vec![5u8, 1u8];
+    push_u16(&mut b, 0); // reserved
+    push_u32(&mut b, 2); // buildingCount
+    push_u32(&mut b, vertex_total);
+    push_building(&mut b, 250, &b0_verts);
+    push_building(&mut b, 0, &b1_verts);
+
+    let decoded = StaticBuildings::decode(&b).expect("decode");
+    assert_eq!(decoded.buildings.len(), 2);
+    assert_eq!(decoded.buildings[0].height_dm, 250);
+    assert_eq!(
+        decoded.buildings[0].verts,
+        vec![[-10.0, -10.0], [10.0, -10.0], [0.0, 20.0]]
+    );
+    assert_eq!(decoded.buildings[1].height_dm, 0);
+    assert_eq!(
+        decoded.buildings[1].verts,
+        vec![[-5.0, -5.0], [5.0, -5.0], [5.0, 5.0], [-5.0, 5.0]]
+    );
+
+    // Byte-level roundtrip: decode(encode(x)) is exact because every value
+    // here started life as a half-meter integer.
+    assert_eq!(decoded.encode(), b);
+    match decode_binary(&b).unwrap() {
+        BinaryMsg::Buildings(sb) => assert_eq!(sb, decoded),
+        other => panic!("expected Buildings, got {other:?}"),
+    }
+}
+
+#[test]
+fn static_buildings_truncated_buffer_errors() {
+    let b0_verts = [(-20i16, -20i16), (20, -20), (0, 40)];
+    let mut b = vec![5u8, 1u8];
+    push_u16(&mut b, 0);
+    push_u32(&mut b, 1); // buildingCount = 1
+    push_u32(&mut b, 3); // vertexTotal = 3
+    push_building(&mut b, 100, &b0_verts);
+
+    // Chop off the last vertex's y half.
+    b.truncate(b.len() - 2);
+
+    match StaticBuildings::decode(&b) {
+        Err(BinaryError::TooShort { .. }) => {}
+        other => panic!("expected TooShort, got {other:?}"),
+    }
+}
+
+#[test]
+fn static_buildings_vertex_count_out_of_range_errors() {
+    // vertexCount = 2 (below the 3..=64 minimum).
+    let mut too_few = vec![5u8, 1u8];
+    push_u16(&mut too_few, 0);
+    push_u32(&mut too_few, 1);
+    push_u32(&mut too_few, 2);
+    push_building(&mut too_few, 100, &[(0, 0), (1, 1)]);
+    match StaticBuildings::decode(&too_few) {
+        Err(BinaryError::InvalidVertexCount { got: 2 }) => {}
+        other => panic!("expected InvalidVertexCount{{got:2}}, got {other:?}"),
+    }
+
+    // vertexCount = 65 (above the 3..=64 maximum). Only the 4-byte building
+    // header needs to exist on the wire for decode to reject it before
+    // trying to read 65 vertices.
+    let mut too_many = vec![5u8, 1u8];
+    push_u16(&mut too_many, 0);
+    push_u32(&mut too_many, 1);
+    push_u32(&mut too_many, 65);
+    too_many.push(65); // vertexCount
+    too_many.push(0); // flags
+    push_u16(&mut too_many, 100); // heightDm
+    match StaticBuildings::decode(&too_many) {
+        Err(BinaryError::InvalidVertexCount { got: 65 }) => {}
+        other => panic!("expected InvalidVertexCount{{got:65}}, got {other:?}"),
+    }
+}
+
+#[test]
+fn static_buildings_vertex_total_mismatch_errors() {
+    let b0_verts = [(-20i16, -20i16), (20, -20), (0, 40)];
+    let mut b = vec![5u8, 1u8];
+    push_u16(&mut b, 0);
+    push_u32(&mut b, 1); // buildingCount = 1
+    push_u32(&mut b, 4); // vertexTotal = 4, but the one building has 3
+    push_building(&mut b, 100, &b0_verts);
+
+    match StaticBuildings::decode(&b) {
+        Err(BinaryError::VertexTotalMismatch {
+            declared: 4,
+            actual: 3,
+        }) => {}
+        other => panic!("expected VertexTotalMismatch{{4,3}}, got {other:?}"),
     }
 }
 

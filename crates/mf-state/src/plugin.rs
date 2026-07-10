@@ -51,6 +51,9 @@ fn apply_sim_events_system(
             FromSimMsg::Mask(mask) => {
                 city.apply_mask(mask.clone());
             }
+            FromSimMsg::Buildings(buildings) => {
+                city.apply_buildings(buildings.clone());
+            }
             FromSimMsg::Fields(f) => {
                 fields.0 = Some(f.clone());
             }
