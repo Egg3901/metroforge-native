@@ -366,52 +366,6 @@ fn segment_thicknesses(segment_loads: &[f64]) -> Vec<f32> {
         .map(|&load| {
             let t = (load / max_load).clamp(0.0, 1.0) as f32;
             ROUTE_DIAGRAM_MIN_THICKNESS + t * (ROUTE_DIAGRAM_MAX_THICKNESS - ROUTE_DIAGRAM_MIN_THICKNESS)
-// Sparkline (ship-plan #25, v0.3 finance panel)
-// ---------------------------------------------------------------------
-// A small inline line chart for a rolling numeric series - the finance
-// panel's 7-day net history is the first caller, but the point-mapping
-// math has nothing panel-specific in it, so it lives here rather than in
-// `panels.rs` per this module's "reusable helper" bar.
-
-/// Pure point-mapping for [`sparkline`]: places `values` left-to-right
-/// across `rect` (oldest first) and top-to-bottom scaled to the series'
-/// own min/max, so a single trace always uses the full height available
-/// regardless of its absolute magnitude. Split out from `sparkline` itself
-/// so the mapping math is unit-testable directly against plain `Rect`/
-/// `Pos2` values, with no `egui::Ui`/`Context` (i.e. no painted frame)
-/// required.
-pub fn sparkline_points(values: &[f64], rect: egui::Rect) -> Vec<egui::Pos2> {
-    if values.is_empty() {
-        return Vec::new();
-    }
-    if values.len() == 1 {
-        // Nothing to draw a line between; a single point in the middle
-        // reads better than an arbitrary corner.
-        return vec![rect.center()];
-    }
-    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let span = max - min;
-    // A perfectly flat series (min == max, span == 0) has no range to scale
-    // against; every point maps to the vertical center rather than dividing
-    // by zero (or, worse, silently flooring to a near-zero span and
-    // collapsing the whole trace onto the BOTTOM edge instead of drawing
-    // the flat line the data actually represents).
-    let flat = span.abs() < 1e-9;
-    let last_idx = (values.len() - 1) as f32;
-    values
-        .iter()
-        .enumerate()
-        .map(|(i, &v)| {
-            let t = i as f32 / last_idx;
-            let x = rect.min.x + t * rect.width();
-            let y = if flat {
-                rect.center().y
-            } else {
-                let norm = ((v - min) / span) as f32; // 0.0 at min, 1.0 at max
-                rect.max.y - norm * rect.height() // egui y grows downward
-            };
-            egui::pos2(x, y)
         })
         .collect()
 }
@@ -498,6 +452,58 @@ pub fn route_line_diagram(
             MUTED,
         );
     }
+}
+
+// Sparkline (ship-plan #25, v0.3 finance panel)
+// ---------------------------------------------------------------------
+// A small inline line chart for a rolling numeric series - the finance
+// panel's 7-day net history is the first caller, but the point-mapping
+// math has nothing panel-specific in it, so it lives here rather than in
+// `panels.rs` per this module's "reusable helper" bar.
+
+/// Pure point-mapping for [`sparkline`]: places `values` left-to-right
+/// across `rect` (oldest first) and top-to-bottom scaled to the series'
+/// own min/max, so a single trace always uses the full height available
+/// regardless of its absolute magnitude. Split out from `sparkline` itself
+/// so the mapping math is unit-testable directly against plain `Rect`/
+/// `Pos2` values, with no `egui::Ui`/`Context` (i.e. no painted frame)
+/// required.
+pub fn sparkline_points(values: &[f64], rect: egui::Rect) -> Vec<egui::Pos2> {
+    if values.is_empty() {
+        return Vec::new();
+    }
+    if values.len() == 1 {
+        // Nothing to draw a line between; a single point in the middle
+        // reads better than an arbitrary corner.
+        return vec![rect.center()];
+    }
+    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let span = max - min;
+    // A perfectly flat series (min == max, span == 0) has no range to scale
+    // against; every point maps to the vertical center rather than dividing
+    // by zero (or, worse, silently flooring to a near-zero span and
+    // collapsing the whole trace onto the BOTTOM edge instead of drawing
+    // the flat line the data actually represents).
+    let flat = span.abs() < 1e-9;
+    let last_idx = (values.len() - 1) as f32;
+    values
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            let t = i as f32 / last_idx;
+            let x = rect.min.x + t * rect.width();
+            let y = if flat {
+                rect.center().y
+            } else {
+                let norm = ((v - min) / span) as f32; // 0.0 at min, 1.0 at max
+                rect.max.y - norm * rect.height() // egui y grows downward
+            };
+            egui::pos2(x, y)
+        })
+        .collect()
+}
+
 /// Paints `values` as a small polyline inside a `size`d rect the function
 /// allocates itself (`Sense::hover()`: nothing here is interactive). Colored
 /// by the sign of the MOST RECENT value (`values.last()`) rather than
@@ -589,56 +595,6 @@ mod tests {
         let step = offsets[1] - offsets[0];
         for pair in offsets.windows(2) {
             assert!((pair[1] - pair[0] - step).abs() < 0.001);
-    // --- sparkline_points --------------------------------------------------
-
-    #[test]
-    fn sparkline_points_empty_is_empty() {
-        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 40.0));
-        assert!(sparkline_points(&[], rect).is_empty());
-    }
-
-    #[test]
-    fn sparkline_points_single_value_is_the_center() {
-        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 40.0));
-        let pts = sparkline_points(&[42.0], rect);
-        assert_eq!(pts, vec![rect.center()]);
-    }
-
-    #[test]
-    fn sparkline_points_spans_the_full_width_oldest_to_newest() {
-        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 0.0), egui::vec2(100.0, 40.0));
-        let pts = sparkline_points(&[0.0, 1.0, 2.0], rect);
-        assert_eq!(pts.len(), 3);
-        assert!(
-            (pts[0].x - rect.min.x).abs() < 0.001,
-            "first point at left edge"
-        );
-        assert!(
-            (pts[2].x - rect.max.x).abs() < 0.001,
-            "last point at right edge"
-        );
-        assert!(
-            (pts[1].x - rect.center().x).abs() < 0.001,
-            "middle point centered"
-        );
-    }
-
-    #[test]
-    fn sparkline_points_min_value_touches_the_bottom_max_touches_the_top() {
-        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 40.0));
-        let pts = sparkline_points(&[-5.0, 5.0], rect);
-        // y grows downward in egui: the min value (index 0, -5.0) should sit
-        // at the bottom (max.y), the max value (index 1, 5.0) at the top.
-        assert!((pts[0].y - rect.max.y).abs() < 0.001, "min value at bottom");
-        assert!((pts[1].y - rect.min.y).abs() < 0.001, "max value at top");
-    }
-
-    #[test]
-    fn sparkline_points_flat_series_draws_a_flat_line_down_the_middle() {
-        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 40.0));
-        let pts = sparkline_points(&[3.0, 3.0, 3.0], rect);
-        for p in pts {
-            assert!((p.y - rect.center().y).abs() < 0.001, "got {p:?}");
         }
     }
 
@@ -721,6 +677,103 @@ mod tests {
             egui::CentralPanel::default().show(ctx, |ui| {
                 for (labels, loads) in &cases {
                     route_line_diagram(ui, ACCENT, labels, loads);
+                }
+            });
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every `IconKind` should paint without panicking against a plain
+    /// headless `egui::Context` - no window/render backend needed, this
+    /// exercises the same `Painter` calls a real frame would make. Not a
+    /// visual assertion (nothing here can screenshot-compare), just a
+    /// smoke test that the path math holds for degenerate-ish rects too.
+    #[test]
+    fn every_icon_kind_paints_without_panicking() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            let painter = ctx.debug_painter();
+            let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(28.0, 28.0));
+            for kind in [
+                IconKind::Cursor,
+                IconKind::StationPin,
+                IconKind::RouteLine,
+                IconKind::Bulldozer,
+                IconKind::Undo,
+                IconKind::Bus,
+                IconKind::Tram,
+                IconKind::Coin,
+            ] {
+                icon(&painter, rect, kind, TEXT, 1.5);
+            }
+        });
+    }
+
+    #[test]
+    fn spacing_scale_is_strictly_increasing() {
+        for pair in SPACING.windows(2) {
+            assert!(pair[0] < pair[1]);
+        }
+    }
+
+    // --- sparkline_points --------------------------------------------------
+
+    #[test]
+    fn sparkline_points_empty_is_empty() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 40.0));
+        assert!(sparkline_points(&[], rect).is_empty());
+    }
+
+    #[test]
+    fn sparkline_points_single_value_is_the_center() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 40.0));
+        let pts = sparkline_points(&[42.0], rect);
+        assert_eq!(pts, vec![rect.center()]);
+    }
+
+    #[test]
+    fn sparkline_points_spans_the_full_width_oldest_to_newest() {
+        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 0.0), egui::vec2(100.0, 40.0));
+        let pts = sparkline_points(&[0.0, 1.0, 2.0], rect);
+        assert_eq!(pts.len(), 3);
+        assert!(
+            (pts[0].x - rect.min.x).abs() < 0.001,
+            "first point at left edge"
+        );
+        assert!(
+            (pts[2].x - rect.max.x).abs() < 0.001,
+            "last point at right edge"
+        );
+        assert!(
+            (pts[1].x - rect.center().x).abs() < 0.001,
+            "middle point centered"
+        );
+    }
+
+    #[test]
+    fn sparkline_points_min_value_touches_the_bottom_max_touches_the_top() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 40.0));
+        let pts = sparkline_points(&[-5.0, 5.0], rect);
+        // y grows downward in egui: the min value (index 0, -5.0) should sit
+        // at the bottom (max.y), the max value (index 1, 5.0) at the top.
+        assert!((pts[0].y - rect.max.y).abs() < 0.001, "min value at bottom");
+        assert!((pts[1].y - rect.min.y).abs() < 0.001, "max value at top");
+    }
+
+    #[test]
+    fn sparkline_points_flat_series_draws_a_flat_line_down_the_middle() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 40.0));
+        let pts = sparkline_points(&[3.0, 3.0, 3.0], rect);
+        for p in pts {
+            assert!((p.y - rect.center().y).abs() < 0.001, "got {p:?}");
+        }
+    }
+
+    #[test]
     fn sparkline_paints_without_panicking_for_various_series() {
         let ctx = egui::Context::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
