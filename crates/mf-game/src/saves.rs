@@ -551,6 +551,45 @@ pub fn list() -> Vec<SlotEntry> {
     out
 }
 
+/// Newest occupied save whose [`SaveMeta::city_label`] matches `city_key`
+/// (case-sensitive preset key). "Newest" is by `saved_at_epoch_secs`, then
+/// by sim `day` as a tiebreak. Returns `None` when no slot matches.
+#[allow(dead_code)] // exercised by unit tests + available to menu callers
+pub fn newest_save_for_city<'a>(slots: &'a [SlotEntry], city_key: &str) -> Option<&'a SlotEntry> {
+    slots
+        .iter()
+        .filter(|e| e.meta.as_ref().and_then(|m| m.city_label.as_deref()) == Some(city_key))
+        .max_by_key(|e| {
+            let m = e.meta.as_ref().expect("filtered to occupied");
+            (m.saved_at_epoch_secs, m.day)
+        })
+}
+
+/// Map of city preset key → newest occupied slot for that city.
+pub fn newest_saves_by_city(slots: &[SlotEntry]) -> std::collections::HashMap<String, &SlotEntry> {
+    let mut best: std::collections::HashMap<String, &SlotEntry> = std::collections::HashMap::new();
+    for entry in slots {
+        let Some(meta) = entry.meta.as_ref() else {
+            continue;
+        };
+        let Some(key) = meta.city_label.as_ref() else {
+            continue;
+        };
+        match best.get(key) {
+            Some(existing) => {
+                let em = existing.meta.as_ref().expect("occupied");
+                if (meta.saved_at_epoch_secs, meta.day) > (em.saved_at_epoch_secs, em.day) {
+                    best.insert(key.clone(), entry);
+                }
+            }
+            None => {
+                best.insert(key.clone(), entry);
+            }
+        }
+    }
+    best
+}
+
 fn read_meta(slot: SaveSlot) -> Option<SaveMeta> {
     let path = slot_path(slot)?;
     try_load_at(&path).ok().map(|(meta, _)| meta)
@@ -1019,5 +1058,53 @@ mod tests {
         assert_eq!(manager.next_autosave_slot(), SaveSlot::Autosave(1));
         assert_eq!(manager.next_autosave_slot(), SaveSlot::Autosave(2));
         assert_eq!(manager.next_autosave_slot(), SaveSlot::Autosave(0));
+    }
+
+    #[test]
+    fn newest_save_for_city_picks_latest_by_timestamp() {
+        let slots = vec![
+            SlotEntry {
+                slot: SaveSlot::Slot(1),
+                meta: Some(SaveMeta {
+                    city_label: Some("nyc".into()),
+                    day: 10,
+                    cash: 1.0,
+                    saved_at_epoch_secs: 100,
+                    network_size: 1,
+                    playtime_secs: 60,
+                    thumbnail_png_base64: None,
+                }),
+            },
+            SlotEntry {
+                slot: SaveSlot::Autosave(0),
+                meta: Some(SaveMeta {
+                    city_label: Some("nyc".into()),
+                    day: 20,
+                    cash: 2.0,
+                    saved_at_epoch_secs: 200,
+                    network_size: 2,
+                    playtime_secs: 120,
+                    thumbnail_png_base64: None,
+                }),
+            },
+            SlotEntry {
+                slot: SaveSlot::Slot(2),
+                meta: Some(SaveMeta {
+                    city_label: Some("cleveland".into()),
+                    day: 5,
+                    cash: 3.0,
+                    saved_at_epoch_secs: 300,
+                    network_size: 3,
+                    playtime_secs: 30,
+                    thumbnail_png_base64: None,
+                }),
+            },
+        ];
+        let nyc = newest_save_for_city(&slots, "nyc").expect("nyc save");
+        assert_eq!(nyc.slot, SaveSlot::Autosave(0));
+        assert_eq!(nyc.meta.as_ref().unwrap().day, 20);
+        let cle = newest_save_for_city(&slots, "cleveland").expect("cleveland save");
+        assert_eq!(cle.slot, SaveSlot::Slot(2));
+        assert!(newest_save_for_city(&slots, "boston").is_none());
     }
 }

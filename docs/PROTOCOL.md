@@ -91,6 +91,23 @@ Serde: `#[serde(default, skip_serializing_if = "Option::is_none")]` on `seq` and
 
 | `t` | `seq` | `p` | Notes |
 |---|---|---|---|
+| `hello` | no | `{ protocolVersion: 1, gameVersion: string, cityList: CityListEntry[], defaultWorldSize: number }` | sent immediately on connect, before any client message |
+
+`CityListEntry` is `{ key, label }` plus optional additive fields the city-select
+screen consumes when present: `country?`, `population?`, `buildingCount?`,
+`sizeKm?`, and `mapPreview?` (`{ worldSize, res, water: number[], arterials:
+number[][] }`). Older sidecars that only send `{key,label}` remain valid; the
+native client fills gaps from its local catalog.
+| `ready` | no | `{ staticCity: StaticCityJson }` | static city geometry, **minus** the three mask byte arrays (see `StaticMask` binary frame) |
+| `demand` | no | `{ lines: {x1,y1,x2,y2,weight,share}[], maxWeight: number }` | droppable under backpressure |
+| `ui` | no | the `UiState` struct directly as `p` | sent at 2 Hz; budget, approval, stations/tracks/routes, active events, etc. |
+| `commandResult` | yes | `{ result: { ok: bool, error?: string, createdId?: i64 } }` | echoes the `command`'s `seq` |
+| `trackCost` | yes | `{ cost: number }` | echoes the `queryTrackCost`'s `seq` |
+| `saved` | no | `{ json: string }` | reply to `requestSave` |
+| `replay` | no | the `ReplayPayload` struct directly as `p` | reply to `requestReplay`; always includes `stateHash` |
+| `toast` | no | `{ message: string, tone: "info"\|"warn"\|"good" }` | |
+| `pong` | no | *(none)* | reply to `ping` |
+| `bye` | no | *(none)* | final message before the sidecar closes the socket, in response to `shutdown` |
 | `hello` | no | `HelloInfo` | Sent immediately on connect, before any client message |
 | `ready` | no | `{ staticCity: StaticCityJson }` | Static geometry; masks arrive as binary |
 | `demand` | no | `DemandPayload` | Desire lines + `maxWeight` |
