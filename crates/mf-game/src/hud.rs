@@ -1620,14 +1620,21 @@ fn in_game_hud_system(
                     // routes. Clicking it opens the route panel focused on the
                     // first flagged route so the player can act on it. Only
                     // shown when the sidecar reports any (old ones send none).
-                    let first_overcrowded = state
-                        .overcrowded_routes
+                    // The sidecar reports a scalar count; which route is
+                    // busiest comes from per-route live_crowding.
+                    let count = state.overcrowded_routes.unwrap_or(0) as usize;
+                    let busiest = state
+                        .routes
                         .iter()
-                        .find(|id| state.routes.iter().any(|r| r.id == **id))
-                        .copied();
-                    if let Some(route_id) = first_overcrowded {
+                        .filter(|r| r.live_crowding.unwrap_or(0.0) > 1.0)
+                        .max_by(|a, b| {
+                            a.live_crowding
+                                .unwrap_or(0.0)
+                                .total_cmp(&b.live_crowding.unwrap_or(0.0))
+                        })
+                        .map(|r| r.id);
+                    if let (true, Some(route_id)) = (count > 0, busiest) {
                         thin_separator(ui);
-                        let count = state.overcrowded_routes.len();
                         let plural = if count == 1 { "" } else { "s" };
                         let chip = egui::Button::new(
                             egui::RichText::new(format!("{count} crowded route{plural}"))
