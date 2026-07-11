@@ -6,7 +6,7 @@
 
 use std::f32::consts::PI;
 
-use bevy::pbr::CascadeShadowConfigBuilder;
+use bevy::pbr::{CascadeShadowConfigBuilder, DistanceFog};
 use bevy::prelude::*;
 
 use mf_state::{LatestUi, QualityTier, Theme};
@@ -46,7 +46,7 @@ impl Plugin for MfDayNightPlugin {
 }
 
 #[derive(Component)]
-struct Sun;
+pub(crate) struct Sun;
 
 fn spawn_sun_system(mut commands: Commands) {
     commands.spawn((
@@ -116,13 +116,14 @@ fn compute_day_night_system(
     state.night_factor = (-elevation * 1.2).clamp(0.0, 1.0);
 }
 
-fn apply_day_night_system(
+pub(crate) fn apply_day_night_system(
     mut state: ResMut<DayNightState>,
     mut clear_color: ResMut<ClearColor>,
     mut ambient: ResMut<AmbientLight>,
     quality: Res<QualityTier>,
     theme: Res<Theme>,
     mut suns: Query<(&mut DirectionalLight, &mut Transform), With<Sun>>,
+    mut fogs: Query<&mut DistanceFog, With<Camera3d>>,
 ) {
     let bucket = (state.night_factor * 255.0).round() as u8;
     if state.applied_night_bucket == Some(bucket) && !quality.is_changed() && !theme.is_changed() {
@@ -133,7 +134,19 @@ fn apply_day_night_system(
     let n = state.night_factor;
     let day_color = palette::sky_day();
     let night_color = palette::sky_night();
-    clear_color.0 = day_color.mix(&night_color, n);
+    let sky_color = day_color.mix(&night_color, n);
+    clear_color.0 = sky_color;
+    // Fog color must track the sky color exactly (including this same
+    // day/night lerp and the active theme, since `palette::sky_day`/
+    // `sky_night` are already theme-indexed) — otherwise the fog bank and
+    // the sky behind it are two different colors and the horizon shows a
+    // hard seam where fogged geometry meets open sky. Also correct with
+    // `day_night_enabled: false` (Potato): that path still reaches here via
+    // the `compute_day_night_system` fixed-noon branch (hour=12, n=0), so
+    // `sky_color` still resolves to the tier's one fixed sky color.
+    for mut fog in &mut fogs {
+        fog.color = sky_color;
+    }
 
     ambient.color = Color::WHITE;
     // 950/116k lux were tuned while broken normals ate most direct light

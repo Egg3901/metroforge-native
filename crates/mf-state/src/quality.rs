@@ -63,6 +63,14 @@ pub struct QualityKnobs {
     pub tree_enabled: bool,
     /// Tree-chunk draw distance in meters; `None` means unlimited.
     pub tree_draw_distance_m: Option<f32>,
+    /// Distance fog `(start_m, end_m)` to mask draw-distance pop-in on weak
+    /// tiers; `None` means fog disabled. `end_m` sits just inside
+    /// `building_draw_distance_m` so buildings/trees fade into fog before
+    /// they hard-cull, rather than popping at the culling edge. Denser on
+    /// Potato (shortest draw distance, most pop-in to hide), lighter on Low,
+    /// off on Medium/High where draw distance is unlimited or generous
+    /// enough that fog would just look like a boring haze over open sky.
+    pub fog: Option<(f32, f32)>,
 }
 
 impl QualityTier {
@@ -81,6 +89,10 @@ impl QualityTier {
                 ribbon_densify_step_m: 48.0,
                 tree_enabled: false,
                 tree_draw_distance_m: Some(3_000.0),
+                // Dense-ish: shortest draw distance (3km) means the most
+                // pop-in to hide, so fog closes in early and finishes well
+                // inside the 3km cull.
+                fog: Some((1_200.0, 2_600.0)),
             },
             QualityTier::Low => QualityKnobs {
                 vsync: true,
@@ -94,6 +106,9 @@ impl QualityTier {
                 ribbon_densify_step_m: 36.0,
                 tree_enabled: true,
                 tree_draw_distance_m: Some(6_000.0),
+                // Lighter than Potato: draw distance doubled to 6km, so fog
+                // can start further out and still finish inside the cull.
+                fog: Some((3_000.0, 5_500.0)),
             },
             QualityTier::Medium => QualityKnobs {
                 vsync: true,
@@ -107,6 +122,9 @@ impl QualityTier {
                 ribbon_densify_step_m: 24.0,
                 tree_enabled: true,
                 tree_draw_distance_m: Some(12_000.0),
+                // Draw distance generous enough (12km) that fog would just
+                // haze open sky rather than mask any real pop-in.
+                fog: None,
             },
             QualityTier::High => QualityKnobs {
                 vsync: true,
@@ -120,6 +138,7 @@ impl QualityTier {
                 ribbon_densify_step_m: 24.0,
                 tree_enabled: true,
                 tree_draw_distance_m: None,
+                fog: None,
             },
         }
     }
@@ -203,5 +222,36 @@ mod tests {
             QualityTier::Potato.knobs().ribbon_densify_step_m
                 > QualityTier::High.knobs().ribbon_densify_step_m
         );
+    }
+
+    /// Fog `end_m` must sit strictly inside `building_draw_distance_m`
+    /// wherever both are set, so buildings/trees fade into fog before they
+    /// hard-pop out of existence at the draw-distance cull — otherwise fog
+    /// would do nothing to mask pop-in. Also: `start_m < end_m` for every
+    /// tier that has fog at all, and Medium/High (generous or unlimited
+    /// draw distance) carry no fog.
+    #[test]
+    fn fog_end_sits_inside_building_draw_distance() {
+        for tier in [
+            QualityTier::Potato,
+            QualityTier::Low,
+            QualityTier::Medium,
+            QualityTier::High,
+        ] {
+            let knobs = tier.knobs();
+            if let Some((start, end)) = knobs.fog {
+                assert!(start < end, "{tier:?}: fog start must be < end");
+                if let Some(building_draw) = knobs.building_draw_distance_m {
+                    assert!(
+                        end < building_draw,
+                        "{tier:?}: fog end ({end}) must sit inside building draw distance ({building_draw})"
+                    );
+                }
+            }
+        }
+        assert!(QualityTier::Medium.knobs().fog.is_none());
+        assert!(QualityTier::High.knobs().fog.is_none());
+        assert!(QualityTier::Potato.knobs().fog.is_some());
+        assert!(QualityTier::Low.knobs().fog.is_some());
     }
 }
