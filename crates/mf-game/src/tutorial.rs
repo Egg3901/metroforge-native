@@ -243,6 +243,7 @@ impl Plugin for MfTutorialPlugin {
                 EguiPrimaryContextPass,
                 tutorial_overlay_system
                     .run_if(in_state(AppState::InGame))
+                    .run_if(crate::egui_idle::egui_content_active)
                     .run_if(|| !crate::design_system::hud_hidden()),
             );
     }
@@ -345,48 +346,35 @@ fn tutorial_overlay_system(
     };
 
     let mut skip_clicked = false;
+    let fade = crate::design_system::animate(ctx, egui::Id::new("tutorial_fade"), 1.0);
     egui::Area::new(egui::Id::new("tutorial_hint"))
-        .order(egui::Order::Foreground)
+        .order(crate::design_system::ORDER_HINT)
         .anchor(anchor, offset)
         .show(ctx, |ui| {
-            egui::Frame::default()
-                .fill(tutorial_panel_bg())
-                .stroke(egui::Stroke::new(1.5, tutorial_accent()))
-                .corner_radius(egui::CornerRadius::same(3))
-                .inner_margin(egui::Margin::symmetric(18, 14))
-                .show(ui, |ui| {
-                    ui.set_max_width(360.0);
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Step {} of {}",
-                            step.number(),
-                            TutorialStep::ALL.len()
-                        ))
-                        .size(11.0)
-                        .color(tutorial_accent())
-                        .strong(),
-                    );
-                    ui.add_space(2.0);
-                    ui.label(
-                        egui::RichText::new(step.title())
-                            .size(17.0)
-                            .strong()
-                            .color(tutorial_text()),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(step.body())
-                            .size(13.0)
-                            .color(tutorial_text()),
-                    );
-                    ui.add_space(10.0);
-                    if ui
-                        .add(egui::Button::new(egui::RichText::new("Skip").size(12.0)))
-                        .clicked()
-                    {
-                        skip_clicked = true;
-                    }
-                });
+            ui.set_opacity(fade);
+            crate::design_system::panel_frame(tutorial_accent()).show(ui, |ui| {
+                ui.set_max_width(360.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Step {} of {}",
+                        step.number(),
+                        TutorialStep::ALL.len()
+                    ))
+                    .size(11.0)
+                    .color(tutorial_accent())
+                    .strong(),
+                );
+                ui.add_space(2.0);
+                ui.label(crate::design_system::heading(step.title()));
+                ui.add_space(4.0);
+                ui.label(crate::design_system::label_body(step.body()));
+                ui.add_space(10.0);
+                if crate::design_system::button(ui, "Skip", crate::design_system::ButtonKind::Ghost)
+                    .clicked()
+                {
+                    skip_clicked = true;
+                }
+            });
         });
 
     if skip_clicked && tutorial.skip() {
@@ -403,14 +391,6 @@ fn persist_completed(config: &mut MfConfig) {
     config.set_tutorial_completed(true);
 }
 
-// Theme-aware colors, delegated to the shared design system (same source
-// `hud.rs` reads) so the card matches the active theme.
-fn tutorial_panel_bg() -> egui::Color32 {
-    crate::design_system::current_colors().panel_bg
-}
-fn tutorial_text() -> egui::Color32 {
-    crate::design_system::current_colors().text
-}
 fn tutorial_accent() -> egui::Color32 {
     crate::design_system::current_colors().accent
 }

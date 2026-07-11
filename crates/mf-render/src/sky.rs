@@ -178,8 +178,22 @@ fn update_sky_colors_system(
     if !theme.is_changed() && !day_night.is_changed() {
         return;
     }
-    let zenith = palette::sky_day().mix(&palette::sky_night(), day_night.night_factor);
-    let horizon = zenith.mix(&Color::WHITE, 0.35);
+    let n = day_night.night_factor;
+    let elev = day_night.sun_elevation;
+    let golden = {
+        let low_sun = (1.0 - (elev / 0.35).clamp(0.0, 1.0)).clamp(0.0, 1.0);
+        let not_deep_night = (1.0 - ((n - 0.55).max(0.0) / 0.45)).clamp(0.0, 1.0);
+        low_sun * not_deep_night
+    };
+    let dusk = Color::srgb(1.0, 0.72, 0.48);
+    let zenith = palette::sky_day()
+        .mix(&dusk, golden * 0.50)
+        .mix(&palette::sky_night(), n);
+    // Horizon stays slightly paler, but picks up golden warmth at low sun
+    // instead of washing toward plain white (which read as gray soup).
+    let horizon = zenith
+        .mix(&Color::WHITE, 0.22 * (1.0 - golden * 0.7))
+        .mix(&dusk, golden * 0.40);
     // Soft sodium/amber city glow — real light-pollution dome. Strength
     // tracks night_factor; color stays warm regardless of theme so the
     // night money-shot reads the same across Light/Dark/Purple.

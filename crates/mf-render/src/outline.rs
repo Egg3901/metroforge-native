@@ -28,9 +28,14 @@
 //! of city size.
 //!
 //! ## Quality gate
-//! Only active when [`EffectiveKnobs::outlines_enabled`] is set (High
-//! preset / Advanced override). Otherwise despawns any existing outline
-//! entity so the cost is exactly zero when off, not just visually hidden.
+//! Driven by the `outline_enabled` knob via [`EffectiveKnobs`] (preset
+//! merged with Advanced overrides). Originally High-only per spec, it is
+//! now on for every tier: the tier-truth pass found this one-chunk draw is
+//! the single biggest readability win for the unlit Potato/Low tiers (flat
+//! white massing with no lighting reads as edgeless mush without it), and
+//! the per-chunk scoping keeps it affordable even on Potato. Turning the
+//! knob off despawns the outline entity so the cost is exactly zero when
+//! off, not just visually hidden.
 
 use bevy::pbr::{
     Material, MaterialPipeline, MaterialPipelineKey, NotShadowCaster, NotShadowReceiver,
@@ -131,7 +136,7 @@ fn maintain_outline_system(
     mut commands: Commands,
     mut materials: ResMut<Assets<OutlineMaterial>>,
 ) {
-    if !effective.0.outlines_enabled {
+    if !effective.0.outline_enabled {
         if let Some(e) = state.entity.take() {
             commands.entity(e).try_despawn();
         }

@@ -14,10 +14,14 @@ use bevy_ecs::prelude::*;
 /// `config.toml` override always winning (spec §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Resource, Default)]
 pub enum QualityTier {
+    /// Weakest tier (software raster / UHD-class): unlit, no day/night, fogged.
     Potato,
+    /// Integrated-GPU baseline: unlit, day/night on, limited draw distance.
     Low,
+    /// Default: lit materials, MSAA, atmosphere, bloom.
     #[default]
     Medium,
+    /// Discrete-GPU high: larger shadows, unlimited draw distance, denser fog steps.
     High,
 }
 
@@ -25,9 +29,13 @@ pub enum QualityTier {
 /// `RenderAdapterInfo` and feeds into [`detect`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuDeviceKind {
+    /// Discrete GPU adapter.
     Discrete,
+    /// Integrated GPU adapter.
     Integrated,
+    /// CPU / software device kind from the adapter info.
     Cpu,
+    /// Anything else (unknown / other).
     Other,
 }
 
@@ -91,9 +99,11 @@ pub struct QualityKnobs {
     pub unlit_material: bool,
     /// Building draw distance in meters; `None` means unlimited ("full").
     pub building_draw_distance_m: Option<f32>,
+    /// Max agents drawn from the latest frame (0 = none on Potato).
     pub agent_cap: u32,
     /// Terrain mesh subdivision divisor (higher = coarser mesh).
     pub terrain_subdiv_divisor: u32,
+    /// When `false`, day/night is pinned to noon (Potato).
     pub day_night_enabled: bool,
     /// Max spacing (meters) between densified ribbon samples for roads /
     /// transit tracks / route stripes. Higher = fewer vertices on rebuild
@@ -111,14 +121,12 @@ pub struct QualityKnobs {
     /// off on Medium/High where draw distance is unlimited or generous
     /// enough that fog would just look like a boring haze over open sky.
     pub fog: Option<(f32, f32)>,
-    /// When `true`, scrolling volumetric fog/cloud + distance haze are
-    /// eligible (Medium/High). Potato/Low keep this off — volumetric fog
-    /// needs shadow maps, which those tiers disable. The player can still
-    /// turn the effect off via [`crate::WeatherEffects`] even when this is
-    /// `true`.
+    /// When `true`, soft cloud cards + scrolling ground shadows are eligible
+    /// (Medium/High). Potato/Low keep this off. The player can still turn the
+    /// effect off via [`crate::WeatherEffects`] even when this is `true`.
     pub atmosphere_enabled: bool,
-    /// Raymarch step count for [`bevy::pbr::VolumetricFog`] when atmosphere
-    /// is active. Higher = less banding, more GPU.
+    /// Reserved after the billboard rewrite (was volumetric raymarch steps).
+    /// Kept so quality tables stay stable; unused by the renderer.
     pub atmosphere_fog_steps: u32,
     /// Stylized water shader tier (mf-render `water.rs`):
     /// - `0` = flat vertex-color water baked into the terrain mesh (Potato;
@@ -135,9 +143,20 @@ pub struct QualityKnobs {
     /// When `true`, arterial street-lamp glow meshes are built (Low+).
     /// Potato skips them with day/night disabled.
     pub street_lamps_enabled: bool,
-    /// Cel-shading building outlines (dense-center chunk). High preset only;
-    /// Advanced settings can override.
-    pub outlines_enabled: bool,
+    /// When `true`, the cheap inverted-hull cel outline is drawn on the
+    /// dense-center building chunk (see `mf-render`'s `outline.rs`).
+    ///
+    /// Originally High-only (spec §art-direction), but the tier-truth pass
+    /// (owner feedback: the low tiers "look like shit") found this is the
+    /// single biggest readability lever for the *unlit* tiers: with no
+    /// lighting and near-white building colors, Potato/Low read as flat
+    /// white mush with no edge definition. The outline is a bounded cost —
+    /// exactly ONE of the 64 building chunks, inverted-hull, regardless of
+    /// tier — so even Potato (agent_cap 0, no trees) has the budget for it,
+    /// and it is what makes the "white cel blocks with crisp black edges"
+    /// art direction land on every tier instead of only High. Enabled on all
+    /// four tiers; the per-chunk scoping in `outline.rs` keeps it cheap.
+    pub outline_enabled: bool,
 }
 
 /// Per-knob deltas on top of the active [`QualityTier`] preset. Every field
@@ -266,7 +285,7 @@ pub fn merge_knobs(base: QualityKnobs, overrides: &QualityOverrides) -> QualityK
     }
 
     if let Some(outlines) = overrides.outlines {
-        k.outlines_enabled = outlines;
+        k.outline_enabled = outlines;
     }
 
     if let Some(vsync) = overrides.vsync {
@@ -299,7 +318,6 @@ pub fn sync_effective_knobs_system(
     if effective.0 != merged {
         effective.0 = merged;
     }
-}
 
 impl QualityTier {
     /// Player-facing label for combo boxes (not `Debug` — "Potato" is fine,
@@ -334,13 +352,25 @@ impl QualityTier {
                 fog: Some((900.0, 2_600.0)),
                 atmosphere_enabled: false,
                 atmosphere_fog_steps: 0,
-                outlines_enabled: false,
                 water_quality: 0,
                 bloom_enabled: false,
                 street_lamps_enabled: false,
+                // The one cheap thing that saves Potato from flat white mush:
+                // crisp black edges on the dense core turn "broken High" into
+                // a deliberate flat-shaded minimal style. One chunk draw; the
+                // tier has the budget (agent_cap 0, no trees, no shadows).
+                outline_enabled: true,
             },
             QualityTier::Low => QualityKnobs {
                 vsync: true,
+                // MSAA off on Low. 2x looked tempting as "cheap edge-AA" for
+                // the newly-added outlines/route stripes, but WebGPU only
+                // GUARANTEES sample counts [1, 4] for the Depth32Float target
+                // Bevy uses here — 2x panics outright on lavapipe (software)
+                // and can be unsupported on real integrated GPUs too, exactly
+                // the hardware this tier targets. 4x is the next portable
+                // step but too costly for the weak-GPU tier, so this stays 1
+                // (off); the outline crispness is the win, not AA.
                 msaa_samples: 1,
                 shadow_map_size: None,
                 unlit_material: true,
@@ -356,10 +386,13 @@ impl QualityTier {
                 fog: Some((3_000.0, 5_500.0)),
                 atmosphere_enabled: false,
                 atmosphere_fog_steps: 0,
-                outlines_enabled: false,
                 water_quality: 1,
                 bloom_enabled: false,
                 street_lamps_enabled: true,
+                // The headline Low fix: outlines give the unlit white massing
+                // the edge definition it was completely missing, so Low reads
+                // as a city instead of "Potato with a longer draw distance".
+                outline_enabled: true,
             },
             QualityTier::Medium => QualityKnobs {
                 vsync: true,
@@ -378,10 +411,14 @@ impl QualityTier {
                 fog: None,
                 atmosphere_enabled: true,
                 atmosphere_fog_steps: 32,
-                outlines_enabled: false,
                 water_quality: 2,
                 bloom_enabled: true,
                 street_lamps_enabled: true,
+                // Medium reads via shadows already, but the cel outline is the
+                // signature art direction and one chunk is trivial next to the
+                // shadow/bloom/atmosphere passes it already runs — keep the
+                // look consistent from Low all the way to High.
+                outline_enabled: true,
             },
             QualityTier::High => QualityKnobs {
                 vsync: true,
@@ -398,10 +435,10 @@ impl QualityTier {
                 fog: None,
                 atmosphere_enabled: true,
                 atmosphere_fog_steps: 56,
-                outlines_enabled: true,
                 water_quality: 2,
                 bloom_enabled: true,
                 street_lamps_enabled: true,
+                outline_enabled: true,
             },
         }
     }
@@ -515,8 +552,9 @@ mod tests {
             QualityTier::High.knobs().atmosphere_fog_steps
                 > QualityTier::Medium.knobs().atmosphere_fog_steps
         );
-        assert!(!QualityTier::Medium.knobs().outlines_enabled);
-        assert!(QualityTier::High.knobs().outlines_enabled);
+        // Outline is enabled on every tier after the tier-truth pass.
+        assert!(QualityTier::Potato.knobs().outline_enabled);
+        assert!(QualityTier::High.knobs().outline_enabled);
         assert_eq!(QualityTier::Potato.knobs().water_quality, 0);
         assert_eq!(QualityTier::Low.knobs().water_quality, 1);
         assert_eq!(QualityTier::Medium.knobs().water_quality, 2);
@@ -529,6 +567,13 @@ mod tests {
         assert!(QualityTier::Low.knobs().street_lamps_enabled);
         assert!(QualityTier::Medium.knobs().street_lamps_enabled);
         assert!(QualityTier::High.knobs().street_lamps_enabled);
+        // Cel outline is now on for every tier (the tier-truth readability
+        // fix): one bounded dense-center chunk draw, cheap enough even for
+        // Potato, and the signature "white cel blocks" look end to end.
+        assert!(QualityTier::Potato.knobs().outline_enabled);
+        assert!(QualityTier::Low.knobs().outline_enabled);
+        assert!(QualityTier::Medium.knobs().outline_enabled);
+        assert!(QualityTier::High.knobs().outline_enabled);
     }
 
     /// Fog `end_m` must sit strictly inside `building_draw_distance_m`
@@ -625,5 +670,59 @@ mod tests {
             recommend_tier_from_frame_times(30.0, 40.0),
             QualityTier::Potato
         );
+    }
+
+    /// Property: every numeric knob is monotone across Potato → Low →
+    /// Medium → High (non-decreasing for "more is better", non-increasing
+    /// for "coarser is cheaper"). Catches a future tier-table edit that
+    /// accidentally makes Medium worse than Low on some axis.
+    #[test]
+    fn numeric_knobs_are_monotone_across_tiers() {
+        let tiers = [
+            QualityTier::Potato,
+            QualityTier::Low,
+            QualityTier::Medium,
+            QualityTier::High,
+        ];
+        let knobs: Vec<QualityKnobs> = tiers.iter().map(|t| t.knobs()).collect();
+
+        // "More is better" (or equal): non-decreasing.
+        for w in knobs.windows(2) {
+            assert!(w[0].msaa_samples <= w[1].msaa_samples);
+            assert!(w[0].agent_cap <= w[1].agent_cap);
+            assert!(w[0].atmosphere_fog_steps <= w[1].atmosphere_fog_steps);
+            assert!(w[0].water_quality <= w[1].water_quality);
+        }
+
+        // Draw distances: None = unlimited = greatest. Treat as +∞.
+        let draw = |d: Option<f32>| d.unwrap_or(f32::INFINITY);
+        for w in knobs.windows(2) {
+            assert!(draw(w[0].building_draw_distance_m) <= draw(w[1].building_draw_distance_m));
+            assert!(draw(w[0].tree_draw_distance_m) <= draw(w[1].tree_draw_distance_m));
+        }
+
+        // Shadow map: None < Some(n), and sizes non-decreasing when present.
+        let shadow_rank = |s: Option<u32>| s.map(|n| n as i64).unwrap_or(-1);
+        for w in knobs.windows(2) {
+            assert!(shadow_rank(w[0].shadow_map_size) <= shadow_rank(w[1].shadow_map_size));
+        }
+
+        // "Coarser is cheaper": non-increasing.
+        for w in knobs.windows(2) {
+            assert!(w[0].terrain_subdiv_divisor >= w[1].terrain_subdiv_divisor);
+            assert!(w[0].ribbon_densify_step_m >= w[1].ribbon_densify_step_m);
+        }
+
+        // Bool knobs that flip false→true (or stay) as tier rises.
+        for w in knobs.windows(2) {
+            assert!(!w[0].vsync || w[1].vsync);
+            assert!(!w[0].day_night_enabled || w[1].day_night_enabled);
+            assert!(!w[0].tree_enabled || w[1].tree_enabled);
+            assert!(!w[0].atmosphere_enabled || w[1].atmosphere_enabled);
+            assert!(!w[0].bloom_enabled || w[1].bloom_enabled);
+            assert!(!w[0].street_lamps_enabled || w[1].street_lamps_enabled);
+            // unlit is the inverse: true on weak tiers, false on strong.
+            assert!(!w[1].unlit_material || w[0].unlit_material);
+        }
     }
 }

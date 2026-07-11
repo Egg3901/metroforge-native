@@ -8,6 +8,8 @@
 //! changes — NOTHING outside `mf-net` may know the sim is a separate
 //! process.
 
+use std::time::Duration;
+
 use mf_protocol::{FromSimMsg, ToSim};
 
 pub trait SimTransport: Send + Sync {
@@ -18,4 +20,7 @@ pub trait SimTransport: Send + Sync {
     /// Whether the transport believes the sim is currently reachable
     /// (received *something* within the liveness window).
     fn is_alive(&self) -> bool;
+    /// How long since the last inbound frame. `None` if nothing has been
+    /// received yet (caller should treat connect-time as the baseline).
+    fn silence_duration(&self) -> Duration;
 }

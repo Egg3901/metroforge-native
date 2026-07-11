@@ -18,16 +18,21 @@ mod outline;
 /// Public so `mf-game` ghost previews can share the same vivid route table
 /// (and theme) as finished transit — see `tools.rs` route_ghost_color.
 pub mod palette;
+pub mod perf;
 mod reveal;
 mod roads;
 mod sky;
+mod stats;
 mod street_lamps;
 mod subway;
 mod terrain;
+mod terrain_material;
 mod transit;
 mod trees;
 mod vehicles;
 mod water;
+
+pub use stats::RenderCacheStats;
 
 use bevy::core_pipeline::bloom::{Bloom, BloomCompositeMode, BloomPrefilter};
 use bevy::core_pipeline::tonemapping::Tonemapping;
@@ -39,6 +44,7 @@ use mf_state::{EffectiveKnobs, QualityTier, Theme};
 use crate::daynight::DayNightState;
 
 pub use buildings::BuildingsDenseCenter;
+pub use perf::{MfPerfCountersPlugin, PerfCounters};
 
 /// Peak bloom intensity at full night (Medium/High). Ramps linearly with
 /// `DayNightState.night_factor`; 0 during day so the bloom node early-outs.
@@ -74,22 +80,29 @@ impl Plugin for MfRenderPlugin {
                 .chain(),
         )
         .insert_resource(DirectionalLightShadowMap { size: 2048 })
+        .init_resource::<RenderCacheStats>()
         .add_plugins((
-            reveal::MfRevealPlugin,
-            sky::MfSkyPlugin,
-            terrain::MfTerrainPlugin,
-            water::MfWaterPlugin,
-            roads::MfRoadsPlugin,
-            buildings::MfBuildingsPlugin,
-            transit::MfTransitPlugin,
-            trees::MfTreesPlugin,
-            street_lamps::MfStreetLampsPlugin,
-            vehicles::MfVehiclesPlugin,
-            agents::MfAgentsPlugin,
-            daynight::MfDayNightPlugin,
-            atmosphere::MfAtmospherePlugin,
-            subway::MfSubwayPlugin,
-            outline::MfOutlinePlugin,
+            (
+                perf::MfPerfCountersPlugin,
+                reveal::MfRevealPlugin,
+                terrain_material::MfTerrainMaterialPlugin,
+                sky::MfSkyPlugin,
+                terrain::MfTerrainPlugin,
+                water::MfWaterPlugin,
+                roads::MfRoadsPlugin,
+                buildings::MfBuildingsPlugin,
+                transit::MfTransitPlugin,
+            ),
+            (
+                trees::MfTreesPlugin,
+                street_lamps::MfStreetLampsPlugin,
+                vehicles::MfVehiclesPlugin,
+                agents::MfAgentsPlugin,
+                daynight::MfDayNightPlugin,
+                atmosphere::MfAtmospherePlugin,
+                subway::MfSubwayPlugin,
+                outline::MfOutlinePlugin,
+            ),
         ))
         .add_systems(
             Update,
@@ -234,6 +247,14 @@ fn apply_quality_render_settings_system(
                 },
                 Tonemapping::None,
             ));
+        }
+    } else {
+        // Medium/High want no fog: strip leftover startup DistanceFog that
+        // `camera.rs` inserted at spawn. If that spawn lands after the tier's
+        // first change tick the `is_changed` sweep below never removes it,
+        // leaving a milky wash on lit tiers — so strip it every frame here.
+        for camera in &cameras {
+            commands.entity(camera).remove::<DistanceFog>();
         }
     }
     // Bloom backfill for Medium/High: camera may spawn after the tier's

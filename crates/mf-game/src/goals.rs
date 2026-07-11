@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::audio::{PlaySfx, Sfx};
+use crate::design_system as ds;
 use crate::hud::ToastLog;
 use crate::state::{AppState, PendingInit};
 use mf_protocol::ToastTone;
@@ -156,8 +158,7 @@ struct GoalsFile {
 }
 
 fn goals_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("com", "ahousedivided", "MetroForge")
-        .map(|dirs| dirs.config_dir().join("goals.toml"))
+    crate::paths::goals_toml_path()
 }
 
 /// Per-city goal completion, persisted to `goals.toml` next to
@@ -243,6 +244,7 @@ impl Plugin for MfGoalsPlugin {
                 bevy_egui::EguiPrimaryContextPass,
                 goals_panel_system
                     .run_if(in_state(AppState::InGame))
+                    .run_if(crate::egui_idle::egui_content_active)
                     .run_if(|| !crate::design_system::hud_hidden()),
             );
     }
@@ -263,6 +265,7 @@ fn goals_eval_system(
     ui_state: Res<LatestUi>,
     mut goals: ResMut<GoalsState>,
     mut toasts: ResMut<ToastLog>,
+    mut sfx: EventWriter<PlaySfx>,
 ) {
     let Some(state) = &ui_state.0 else { return };
     let newly = newly_completed(GOAL_DEFS, state, &goals.completed);
@@ -272,14 +275,8 @@ fn goals_eval_system(
     for id in newly {
         goals.completed.insert(id);
         let title = goal_def(id).title;
-        toasts
-            .0
-            .push((format!("Goal complete: {title}"), ToastTone::Good));
-        const TOAST_LOG_CAP: usize = 20;
-        if toasts.0.len() > TOAST_LOG_CAP {
-            let overflow = toasts.0.len() - TOAST_LOG_CAP;
-            toasts.0.drain(0..overflow);
-        }
+        toasts.push(format!("Goal complete: {title}"), ToastTone::Good);
+        sfx.write(PlaySfx(Sfx::GoalComplete));
     }
     goals.save();
 }
@@ -304,13 +301,19 @@ pub fn goals_panel_system(
     let unlocked = goals.unlocked_tier();
     let max_tier = GOAL_DEFS.iter().map(|g| g.tier).max().unwrap_or(1);
 
-    egui::Window::new("Goals")
-        .id(egui::Id::new("goals_panel"))
-        .collapsible(true)
-        .resizable(false)
-        .open(&mut open.0)
-        .default_pos(egui::pos2(14.0, 70.0))
-        .show(ctx, |ui| {
+    ds::window(
+        ctx,
+        ds::WindowOpts {
+            title: "Goals",
+            id: egui::Id::new("goals_panel"),
+            open: Some(&mut open.0),
+            collapsible: true,
+            resizable: false,
+            default_pos: Some(egui::pos2(14.0, 70.0)),
+            default_width: None,
+            anchor: None,
+        },
+        |ui| {
             for tier in 1..=unlocked {
                 ui.label(crate::design_system::label_muted(format!("Tier {tier}")));
                 for def in GOAL_DEFS.iter().filter(|g| g.tier == tier) {
@@ -318,7 +321,7 @@ pub fn goals_panel_system(
                     let (cur, target) = (def.progress)(state);
                     ui.horizontal(|ui| {
                         if done {
-                            ui.colored_label(egui::Color32::from_rgb(0x34, 0xc7, 0x59), "\u{2713}");
+                            ui.colored_label(crate::design_system::GOOD, "\u{2713}");
                         } else {
                             ui.label("  ");
                         }
@@ -330,15 +333,11 @@ pub fn goals_panel_system(
                             } else {
                                 1.0
                             };
-                            ui.add(
-                                egui::ProgressBar::new(frac)
-                                    .desired_width(200.0)
-                                    .show_percentage(),
-                            );
+                            let _ = crate::design_system::progress_bar(ui, frac, 200.0);
                         });
                     });
                 }
-                ui.separator();
+                crate::design_system::thin_separator(ui);
             }
             if unlocked < max_tier {
                 ui.label(crate::design_system::label_muted(format!(
@@ -346,7 +345,8 @@ pub fn goals_panel_system(
                     unlocked + 1
                 )));
             }
-        });
+        },
+    );
     Ok(())
 }
 
@@ -392,7 +392,7 @@ mod tests {
             farebox_recovery: None,
             lifetime: None,
             districts: Vec::new(),
-            overcrowded_routes: Vec::new(),
+            overcrowded_routes: None,
         }
     }
 

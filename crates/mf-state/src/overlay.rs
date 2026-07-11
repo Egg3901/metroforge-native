@@ -9,6 +9,7 @@ use bevy_ecs::prelude::*;
 /// `mf-game` for that. Same crate-split reason as [`crate::subway::SubwayView`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OverlayMode {
+    /// No demand overlay drawn.
     #[default]
     Off,
     /// Client-computed, network-independent gravity model over
@@ -37,6 +38,7 @@ impl OverlayMode {
 /// another crate-boundary move.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OverlayState {
+    /// Active overlay mode (cycled by game input).
     pub mode: OverlayMode,
 }
 

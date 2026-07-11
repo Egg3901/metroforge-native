@@ -40,16 +40,20 @@
 //! its own, wider range — see `FOOTPRINT_MIN_HEIGHT`/`FOOTPRINT_MAX_HEIGHT`)
 //! for buildings the sidecar didn't have a real height for (`height_dm == 0`).
 
+use bevy::math::Vec3A;
 use bevy::prelude::*;
+use bevy::render::primitives::Aabb;
 
 use mf_protocol::BuildingFootprint;
 use mf_state::{CurrentCity, EffectiveKnobs, HeightAt, LatestFields, RevealState, Theme};
 
+use crate::atmosphere::CloudShadowParams;
 use crate::mesh_utils::{
     append_cuboid_cel, append_prism, append_rooftop_detail, hash01, polygon_area, MeshBuffers,
 };
 use crate::palette;
 use crate::reveal::{BuildingMaterial, RevealExtension};
+use crate::RenderCacheStats;
 
 const CHUNKS_PER_SIDE: usize = 8;
 
@@ -99,6 +103,9 @@ impl Plugin for MfBuildingsPlugin {
                     apply_night_dim_system.in_set(crate::MfRenderSet::Dynamic),
                     apply_facade_uniforms_system.in_set(crate::MfRenderSet::Dynamic),
                     apply_reveal_system.in_set(crate::MfRenderSet::Dynamic),
+                    apply_cloud_shadow_to_buildings_system
+                        .in_set(crate::MfRenderSet::Dynamic)
+                        .after(crate::atmosphere::AtmosphereReady),
                 ),
             );
     }
@@ -303,10 +310,13 @@ fn build_buildings_system(
     effective: Res<EffectiveKnobs>,
     theme: Res<Theme>,
     day_night: Res<crate::daynight::DayNightState>,
+    cloud_shadows: Res<CloudShadowParams>,
     mut state: ResMut<BuildingsState>,
     mut dense_center: ResMut<BuildingsDenseCenter>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<BuildingMaterial>>,
+    mut stats: ResMut<RenderCacheStats>,
+    counters: Res<crate::perf::PerfCounters>,
 ) {
     let Some(city_json) = &city.static_city else {
         return;
@@ -321,6 +331,8 @@ fn build_buildings_system(
     {
         return;
     }
+    let _span = tracing::info_span!("buildings_rebuild").entered();
+    let _timer = crate::perf::PerfSpan::start(&counters.buildings_rebuild_us);
     state.version = Some(new_version);
     state.buildings_count = new_buildings_count;
     state.theme = Some(*theme);
@@ -780,14 +792,19 @@ fn build_buildings_system(
         },
         // Fresh material starts with reveal off; facade night/enable are
         // baked from the live day-night + tier so a mid-night Medium rebuild
-        // doesn't flash unlit windows for a frame.
+        // doesn't flash unlit windows for a frame. Cloud-shadow texture is
+        // wired from `CloudShadowParams` (may still be default Handle at first
+        // build); reveal is picked up by `apply_reveal_system` next tick since
+        // `applied_reveal_bucket` is reset below.
         extension: RevealExtension {
+            cloud_noise: Some(cloud_shadows.texture.clone()),
             facade: Vec4::new(
                 day_night.night_factor,
                 if facade_enabled { 1.0 } else { 0.0 },
                 0.0,
                 0.0,
             ),
+
             ..default()
         },
     });
@@ -825,18 +842,29 @@ fn build_buildings_system(
             -half + (cz as f32 + 0.5) * chunk_size,
         );
         let mesh = meshes.add(buf.build());
+        // Chunk-aligned AABB (not a full vertex scan): frustum-cull friendly
+        // and O(1) at spawn. Y half-extent covers water-level basements up
+        // through FOOTPRINT_MAX_HEIGHT skyscrapers so culling stays correct
+        // without walking millions of verts on NYC.
+        let half_xz = chunk_size * 0.5;
+        let aabb = Aabb {
+            center: Vec3A::new(center.x, 200.0, center.y),
+            half_extents: Vec3A::new(half_xz, 400.0, half_xz),
+        };
         let entity = commands
             .spawn((
                 Mesh3d(mesh),
                 MeshMaterial3d(material.clone()),
                 Transform::IDENTITY,
                 Visibility::default(),
+                aabb,
                 BuildingChunk { center },
                 Name::new(format!("buildings-chunk-{cx}-{cz}")),
             ))
             .id();
         state.chunks.push(entity);
     }
+    stats.building_chunks = state.chunks.len();
 }
 
 /// Per-tier building draw distance (spec §4: 3/6/12km/unlimited).
@@ -845,7 +873,10 @@ fn draw_distance_system(
     chunks: Query<(Entity, &BuildingChunk)>,
     cameras: Query<&Transform, With<Camera3d>>,
     mut visibility: Query<&mut Visibility>,
+    counters: Res<crate::perf::PerfCounters>,
 ) {
+    let _span = tracing::info_span!("building_draw_distance").entered();
+    let _timer = crate::perf::PerfSpan::start(&counters.building_draw_distance_us);
     let Ok(cam) = cameras.single() else {
         return;
     };
@@ -859,11 +890,12 @@ fn draw_distance_system(
             None => true,
             Some(limit) => cam_xz.distance(chunk.center) <= limit,
         };
-        *vis = if visible {
+        let next = if visible {
             Visibility::Visible
         } else {
             Visibility::Hidden
         };
+        crate::perf::set_visibility_if_changed(&mut vis, next, Some(&counters));
     }
 }
 
@@ -1019,6 +1051,27 @@ fn apply_reveal_system(
         mat.extension.params = Vec4::new(reveal_state.strength, 0.0, 0.0, 0.0);
     }
     state.applied_reveal_bucket = Some(bucket);
+}
+
+fn apply_cloud_shadow_to_buildings_system(
+    shadows: Res<CloudShadowParams>,
+    state: Res<BuildingsState>,
+    mut materials: ResMut<Assets<BuildingMaterial>>,
+) {
+    let Some(handle) = &state.material else {
+        return;
+    };
+    if let Some(mat) = materials.get_mut(handle) {
+        mat.extension.cloud = Vec4::new(
+            shadows.offset.x,
+            shadows.offset.y,
+            shadows.strength,
+            shadows.inv_scale,
+        );
+        if mat.extension.cloud_noise.is_none() && shadows.texture != Handle::default() {
+            mat.extension.cloud_noise = Some(shadows.texture.clone());
+        }
+    }
 }
 
 #[cfg(test)]

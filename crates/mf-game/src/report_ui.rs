@@ -22,13 +22,6 @@ use crate::campaign::{objectives_for, CampaignProgress, ScenarioOutcome};
 use crate::design_system as ds;
 use crate::state::{AppState, PendingInit};
 
-/// Dim scrim color — theme-aware via [`crate::design_system::scrim`] so
-/// Dark/Purple overlays match the active chrome (was a hardcoded Light
-/// rich-black wash).
-fn scrim_color() -> egui::Color32 {
-    crate::design_system::scrim()
-}
-
 /// Dash-free verdict heading for the four ways a scenario can end. `Finished`
 /// (clean max-day out) reads as success copy; the three `Failed` reasons
 /// each get their own plain-language line rather than echoing the wire
@@ -146,104 +139,84 @@ fn report_ui_system(
         return Ok(());
     };
     let ctx = contexts.ctx_mut()?;
+    let fade = ds::animate(ctx, egui::Id::new("report_fade"), 1.0);
 
-    egui::Area::new(egui::Id::new("report_scrim"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(egui::Pos2::ZERO)
-        .show(ctx, |ui| {
-            let screen = ui.ctx().screen_rect();
-            ui.allocate_response(screen.size(), egui::Sense::hover());
-            ui.painter()
-                .rect_filled(screen, egui::CornerRadius::ZERO, scrim_color());
+    ds::modal(ctx, egui::Id::new("report_modal"), fade, |ui| {
+        ui.set_width(360.0);
+        ui.vertical_centered(|ui| {
+            ui.label(ds::heading(verdict_heading(*outcome)));
+            ui.add_space(ds::SPACE_MD);
+
+            let earned = progress.stars(&pending.preset_key);
+            star_row(ui, earned);
+            if let Some(objectives) = objectives_for(&pending.preset_key) {
+                for (i, goal) in objectives.stars.iter().enumerate() {
+                    let text = crate::campaign::describe_goal(*goal);
+                    let rich = if (i as u8) < earned {
+                        ds::label_body(text)
+                    } else {
+                        ds::label_muted(text)
+                    };
+                    ui.label(rich);
+                }
+            }
+
+            ui.add_space(ds::SPACE_MD);
+            thin_separator(ui);
+            ui.add_space(ds::SPACE_XS);
+
+            key_number_row(ui, "Day", format!("{}", state.day));
+            key_number_row(ui, "Population served", format_thousands(state.population));
+            key_number_row(
+                ui,
+                "Daily transit trips",
+                format_thousands(state.daily_transit_trips),
+            );
+            key_number_row(ui, "Approval", format!("{:.0}%", state.approval));
+            key_number_row(ui, "Coverage", format!("{:.0}%", state.coverage * 100.0));
+            key_number_row(
+                ui,
+                "Net (last day)",
+                format_signed_cash(last_day_net(state)),
+            );
+
+            ui.add_space(ds::SPACE_LG);
+
+            if matches!(*outcome, ScenarioOutcome::Finished) {
+                let keep_playing = ds::button_sized(
+                    ui,
+                    "Keep playing",
+                    ds::ButtonKind::Primary,
+                    Some(egui::vec2(220.0, 40.0)),
+                );
+                hover_tick(&keep_playing, &mut hovered, &mut sfx);
+                if keep_playing.clicked() {
+                    sfx.write(PlaySfx(Sfx::Confirm));
+                    *dismissed_for = Some(*outcome);
+                }
+                ui.add_space(ds::SPACE_XS);
+            }
+
+            let back_to_menu = ds::button_sized(
+                ui,
+                "Back to menu",
+                ds::ButtonKind::Ghost,
+                Some(egui::vec2(220.0, 40.0)),
+            );
+            hover_tick(&back_to_menu, &mut hovered, &mut sfx);
+            if back_to_menu.clicked() {
+                sfx.write(PlaySfx(Sfx::Cancel));
+                *dismissed_for = Some(*outcome);
+                next_state.set(AppState::MainMenu);
+            }
         });
-
-    egui::Area::new(egui::Id::new("report_panel"))
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .show(ctx, |ui| {
-            egui::Frame::default()
-                .fill(ds::panel_bg())
-                .corner_radius(ds::CORNER_RADIUS)
-                .inner_margin(egui::Margin::symmetric(32, 28))
-                .show(ui, |ui| {
-                    ui.set_width(360.0);
-                    ui.vertical_centered(|ui| {
-                        ui.label(ds::heading(verdict_heading(*outcome)));
-                        ui.add_space(ds::SPACE_MD);
-
-                        let earned = progress.stars(&pending.preset_key);
-                        star_row(ui, earned);
-                        if let Some(objectives) = objectives_for(&pending.preset_key) {
-                            for (i, goal) in objectives.stars.iter().enumerate() {
-                                let text = crate::campaign::describe_goal(*goal);
-                                let rich = if (i as u8) < earned {
-                                    ds::label_body(text)
-                                } else {
-                                    ds::label_muted(text)
-                                };
-                                ui.label(rich);
-                            }
-                        }
-
-                        ui.add_space(ds::SPACE_MD);
-                        thin_separator(ui);
-                        ui.add_space(ds::SPACE_XS);
-
-                        key_number_row(ui, "Day", format!("{}", state.day));
-                        key_number_row(ui, "Population served", format_thousands(state.population));
-                        key_number_row(
-                            ui,
-                            "Daily transit trips",
-                            format_thousands(state.daily_transit_trips),
-                        );
-                        key_number_row(ui, "Approval", format!("{:.0}%", state.approval));
-                        key_number_row(ui, "Coverage", format!("{:.0}%", state.coverage * 100.0));
-                        key_number_row(
-                            ui,
-                            "Net (last day)",
-                            format_signed_cash(last_day_net(state)),
-                        );
-
-                        ui.add_space(ds::SPACE_LG);
-
-                        if matches!(*outcome, ScenarioOutcome::Finished) {
-                            let keep_playing = ui.add_sized(
-                                [220.0, 40.0],
-                                egui::Button::new(
-                                    egui::RichText::new("Keep playing")
-                                        .color(egui::Color32::WHITE)
-                                        .strong(),
-                                )
-                                .fill(ds::accent()),
-                            );
-                            hover_tick(&keep_playing, &mut hovered, &mut sfx);
-                            if keep_playing.clicked() {
-                                sfx.write(PlaySfx(Sfx::Confirm));
-                                *dismissed_for = Some(*outcome);
-                            }
-                            ui.add_space(ds::SPACE_XS);
-                        }
-
-                        let back_to_menu =
-                            ui.add_sized([220.0, 40.0], egui::Button::new("Back to menu"));
-                        hover_tick(&back_to_menu, &mut hovered, &mut sfx);
-                        if back_to_menu.clicked() {
-                            sfx.write(PlaySfx(Sfx::Cancel));
-                            *dismissed_for = Some(*outcome);
-                            next_state.set(AppState::MainMenu);
-                        }
-                    });
-                });
-        });
+    });
 
     Ok(())
 }
 
-/// A muted, near-invisible group divider — same "clean flat separation"
-/// convention `hud.rs`'s own `thin_separator` uses (kept local per this
-/// file's "no `hud.rs` dependency" rule above).
 fn thin_separator(ui: &mut egui::Ui) {
-    ui.add(egui::Separator::default().shrink(6.0));
+    ds::thin_separator(ui);
 }
 
 /// One hover tick the first frame the pointer lands on a widget — same
@@ -268,6 +241,7 @@ impl Plugin for MfReportUiPlugin {
             EguiPrimaryContextPass,
             report_ui_system
                 .run_if(in_state(AppState::InGame))
+                .run_if(crate::egui_idle::egui_content_active)
                 .run_if(|| !crate::design_system::hud_hidden()),
         );
     }
@@ -351,7 +325,7 @@ mod tests {
             farebox_recovery: None,
             lifetime: None,
             districts: Vec::new(),
-            overcrowded_routes: Vec::new(),
+            overcrowded_routes: None,
         }
     }
 

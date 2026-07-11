@@ -9,12 +9,40 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.4"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
-bevy = { version = "0.16", default-features = false }
+# Explicit feature set (default-features = false): we do not use glTF, skeletal
+# animation, gamepads, Bevy picking, vorbis file decoding, or web/Android
+# backends. Kept: PBR + gizmos + audio (custom Decodable SFX) + bevy_ui
+# (subway vignette ImageNode) + bevy_state (AppState) + png/hdr/tonemap LUTs.
+# See BUILDING.md for the audit notes and measured compile/size impact.
+bevy = { version = "0.16", default-features = false, features = [
+    "std",
+    "async_executor",
+    "bevy_asset",
+    "bevy_audio",
+    "bevy_color",
+    "bevy_core_pipeline",
+    "bevy_gizmos",
+    "bevy_log",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_sprite",
+    "bevy_state",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_window",
+    "bevy_winit",
+    "hdr",
+    "multi_threaded",
+    "png",
+    "tonemapping_luts",
+    "wayland",
+    "x11",
+] }
 # mf-net/mf-state only need ECS + the Plugin/App scaffolding (Resource/Event
 # derive, systems, schedules) — depending on the small subcrates directly
 # instead of the full `bevy` facade keeps their compile times down.
@@ -25,7 +53,15 @@ bevy_ecs = "0.16"
 # subcrate `bevy`'s facade re-exports it from, so this stays type-identical
 # with `bevy::prelude::Vec2` without pulling in the full `bevy` crate.
 bevy_math = "0.16"
-bevy_egui = "0.36"
+# Drop bevy_egui's default `picking` + `bevy_ui` integration features: our UI
+# is pure egui, and Bevy UI is only used by mf-render's subway vignette (via
+# the `bevy` feature set above), not through bevy_egui.
+bevy_egui = { version = "0.36", default-features = false, features = [
+    "manage_clipboard",
+    "open_url",
+    "default_fonts",
+    "render",
+] }
 # `mf-game`'s `attract.rs` sets the OS window icon directly via
 # `winit::window::Icon` (bevy_winit exposes `WinitWindows` but not `Icon`
 # itself). Pinned to the same "0.30" bevy_winit 0.16.1 depends on so cargo
@@ -36,7 +72,10 @@ winit = { version = "0.30", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 crossbeam-channel = "0.5"
-tungstenite = "0.24"
+# 0.26+ uses thiserror 2 (same major as mf-protocol/mf-net), removing one
+# duplicate thiserror 1 consumer. Remaining thiserror 1 copies are transitive
+# (calloop / encase / naga_oil) and not unifiable from this workspace.
+tungstenite = "0.26"
 bytemuck = "1"
 directories = "5"
 toml = "0.8"
@@ -49,9 +88,18 @@ mf-net = { path = "crates/mf-net" }
 mf-state = { path = "crates/mf-state" }
 mf-render = { path = "crates/mf-render" }
 
-# Keep incremental debug builds fast; release still optimized for the shipped binary.
+# Keep incremental debug builds of *our* crates fast; bump dependency opt
+# level so Bevy/wgpu run usably under `cargo run` without waiting on a
+# full release build.
 [profile.dev]
 opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Shipped binary: thin LTO + single codegen unit + strip. Measured size
+# impact is recorded in BUILDING.md / the PR that introduced these knobs.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

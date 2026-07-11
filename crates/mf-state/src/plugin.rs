@@ -6,6 +6,7 @@ use bevy_ecs::prelude::*;
 use mf_net::{NetSet, SimEvent};
 use mf_protocol::{FromSimJson, FromSimMsg};
 
+use crate::attract::AttractLighting;
 use crate::city::CurrentCity;
 use crate::demand::LatestDemand;
 use crate::fields::LatestFields;
@@ -16,11 +17,13 @@ use crate::quality::{
     sync_effective_knobs_system, DetectedQuality, EffectiveKnobs, QualityOverrides, QualityTier,
 };
 use crate::reveal::RevealState;
+use crate::route_focus::RouteFocus;
 use crate::subway::SubwayView;
 use crate::theme::Theme;
 use crate::ui::LatestUi;
 use crate::weather::WeatherEffects;
 
+/// Registers shared sim-mirror resources and applies inbound `SimEvent`s.
 pub struct MfStatePlugin;
 
 impl Plugin for MfStatePlugin {
@@ -39,7 +42,9 @@ impl Plugin for MfStatePlugin {
             .init_resource::<RevealState>()
             .init_resource::<LatestDemand>()
             .init_resource::<OverlayState>()
+            .init_resource::<RouteFocus>()
             .init_resource::<WeatherEffects>()
+            .init_resource::<AttractLighting>()
             // `add_event` is idempotent (it's an `init_resource` under the
             // hood), so it's safe whether or not `MfNetPlugin` was added
             // first; declared explicitly here since `mf-state` reads it.

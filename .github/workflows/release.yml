@@ -64,7 +64,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Egg3901/metroforge
-          ref: 2c812bed3a2da92783d86dd47be445241365aac8
+          ref: e576cc90712cb6a19fc58a348bb18ae9d3388f46
           path: metroforge
 
       - name: Derive version from tag
@@ -181,12 +181,37 @@ jobs:
             exit 1
           fi
 
+      # Second gate: enter an actual city. v0.5.1's first candidate had a
+      # protocol regression where the ui stream never decoded - title screen
+      # rendered fine (this gate alone passed) while the game could never
+      # leave the loading screen. MF_AUTOSTART drives straight into NYC.
+      - name: Smoke-test in-city (autostart, cold player run)
+        working-directory: metroforge-native
+        run: |
+          cd /tmp/mf-smoke
+          Xvfb :98 -screen 0 1280x800x24 & echo $! > xvfb2.pid
+          sleep 3
+          DISPLAY=:98 MF_AUTOSTART=nyc ./metroforge > run-city.log 2>&1 & echo $! > game2.pid
+          sleep 100
+          DISPLAY=:98 import -window root shot-city.png
+          kill "$(cat game2.pid)" 2>/dev/null || true
+          kill "$(cat xvfb2.pid)" 2>/dev/null || true
+          UNIQUE=$(identify -format %k shot-city.png)
+          echo "in-city unique colors: $UNIQUE"
+          tail -20 run-city.log || true
+          if [ "$UNIQUE" -lt 1000 ]; then
+            echo "::error::In-city smoke FAILED: $UNIQUE unique colors - the game likely never left the loading screen"
+            exit 1
+          fi
+
       - name: Upload smoke screenshot (always, for eyeballing)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: release-smoke-screenshot
-          path: /tmp/mf-smoke/shot.png
+          path: |
+            /tmp/mf-smoke/shot.png
+            /tmp/mf-smoke/shot-city.png
           if-no-files-found: ignore
 
       - name: Upload release assets
@@ -219,7 +244,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Egg3901/metroforge
-          ref: 2c812bed3a2da92783d86dd47be445241365aac8
+          ref: e576cc90712cb6a19fc58a348bb18ae9d3388f46
           path: metroforge
 
       - name: Derive version from tag
@@ -256,6 +281,16 @@ jobs:
       - name: cargo build --release -p mf-game
         working-directory: metroforge-native
         run: cargo build --release -p mf-game
+
+      # hdiutil needs free temp space roughly equal to the dmg contents; the
+      # ~10GB cargo target dir filled the runner on v0.5.0-alpha. The client
+      # binary is already built - stash it, drop the build tree, then package.
+      - name: Free runner disk before packaging
+        working-directory: metroforge-native
+        run: |
+          mkdir -p /tmp/mf-bin && cp target/release/metroforge /tmp/mf-bin/
+          rm -rf target
+          mkdir -p target/release && cp /tmp/mf-bin/metroforge target/release/
 
       - name: Package (macos)
         working-directory: metroforge-native

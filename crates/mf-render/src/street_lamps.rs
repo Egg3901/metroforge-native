@@ -17,6 +17,7 @@ use crate::mesh_utils::{
 };
 use crate::palette;
 use crate::roads::{ARTERIAL_WIDTH, BRIDGE_DECK_Y, ROAD_Y_OFFSET};
+use crate::RenderCacheStats;
 
 const CHUNKS_PER_SIDE: usize = 8;
 /// Spacing between lamp glow dots along arterial centerlines.
@@ -66,6 +67,7 @@ fn build_street_lamps_system(
     mut state: ResMut<StreetLampsState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut stats: ResMut<RenderCacheStats>,
 ) {
     let Some(cj) = &city.static_city else {
         return;
@@ -92,6 +94,7 @@ fn build_street_lamps_system(
     }
 
     if !knobs.street_lamps_enabled {
+        stats.street_lamp_chunks = 0;
         return;
     }
 
@@ -198,6 +201,7 @@ fn build_street_lamps_system(
             .id();
         state.entities.push(e);
     }
+    stats.street_lamp_chunks = state.entities.len();
 }
 
 fn street_lamp_visibility_system(
@@ -206,12 +210,19 @@ fn street_lamp_visibility_system(
     chunks: Query<(Entity, &StreetLampChunk)>,
     cameras: Query<&Transform, With<Camera3d>>,
     mut visibility: Query<&mut Visibility>,
+    counters: Res<crate::perf::PerfCounters>,
 ) {
+    let _span = tracing::info_span!("street_lamp_visibility").entered();
+    let _timer = crate::perf::PerfSpan::start(&counters.street_lamp_visibility_us);
     let night_on = day_night.night_factor >= LAMP_VISIBLE_NIGHT;
     let Ok(cam) = cameras.single() else {
         for (entity, _) in &chunks {
             if let Ok(mut vis) = visibility.get_mut(entity) {
-                *vis = Visibility::Hidden;
+                crate::perf::set_visibility_if_changed(
+                    &mut vis,
+                    Visibility::Hidden,
+                    Some(&counters),
+                );
             }
         }
         return;
@@ -222,18 +233,22 @@ fn street_lamp_visibility_system(
         let Ok(mut vis) = visibility.get_mut(entity) else {
             continue;
         };
-        if !night_on {
-            *vis = Visibility::Hidden;
-            continue;
-        }
-        let in_range = match max_dist {
-            None => true,
-            Some(limit) => cam_xz.distance(chunk.center) <= limit,
-        };
-        *vis = if in_range {
-            Visibility::Visible
-        } else {
+        let next = if !night_on {
             Visibility::Hidden
+        } else {
+            let in_range = match max_dist {
+                None => true,
+                Some(limit) => cam_xz.distance(chunk.center) <= limit,
+            };
+            if in_range {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            }
         };
+        // Baseline instrumentation: count redundant writes, still always assign
+        // so change-detection cost is visible in MF_PERF before the transition-
+        // only fix lands.
+        crate::perf::set_visibility_if_changed(&mut vis, next, Some(&counters));
     }
 }
