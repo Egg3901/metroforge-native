@@ -90,7 +90,7 @@ fn mark_egui_idle_system(
     pause: Option<Res<PauseState>>,
     mut contexts: EguiContexts,
 ) {
-    let input_busy = contexts
+    let _input_busy = contexts
         .ctx_mut()
         .ok()
         .map(|ctx| {
@@ -100,11 +100,23 @@ fn mark_egui_idle_system(
         })
         .unwrap_or(false);
     let fp = hud_fingerprint(&ui, &subway, &goals, &toasts, pause.as_deref());
-    let unchanged = idle.fingerprint != 0 && fp == idle.fingerprint;
-    idle.idle = unchanged && !input_busy && !idle.cached_paint_jobs.is_empty();
-    if !idle.idle {
-        idle.fingerprint = fp;
-    }
+    let _unchanged = idle.fingerprint != 0 && fp == idle.fingerprint;
+    // DISABLED (P0 playability fix): idling `run_if`-skipped widget CONSTRUCTION
+    // for the entire in-game HUD (top bar, bottom toolbar, tutorial, goals,
+    // finance/station panels, end report). With the widgets not built:
+    //   * clicks were dropped — the press landed on cached pixels with no live
+    //     widget behind them, so buttons "did nothing" (couldn't Skip the
+    //     tutorial, couldn't use tools);
+    //   * in-progress fades froze at partial opacity — the fingerprint tracks
+    //     HUD *data* but not pointer position or active egui animations, so the
+    //     tutorial card and panels rendered half-transparent;
+    //   * a stale/partial cached frame could persist, so top-bar controls read
+    //     as missing.
+    // The fingerprint machinery is kept so a future version can idle safely
+    // (must also fold in hover + `ctx.has_requested_repaint()`), but until then
+    // never idle: correctness (a playable HUD) outweighs skipping tessellation.
+    idle.idle = false;
+    idle.fingerprint = fp;
 }
 
 fn restore_egui_idle_paint_jobs(
