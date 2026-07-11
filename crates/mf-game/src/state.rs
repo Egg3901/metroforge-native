@@ -187,6 +187,7 @@ fn boot_system(
 ) {
     let config = MfConfig::load();
     commands.insert_resource(config.graphics);
+    commands.insert_resource(crate::graphics_perf::ShowFps(config.show_fps));
     commands.insert_resource(mf_state::WeatherEffects {
         enabled: config.weather_effects,
     });

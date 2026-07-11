@@ -193,6 +193,17 @@ impl EffectiveKnobs {
 /// ensure a minimum shadow map (atmosphere requires shadows); fog forced on
 /// synthesizes start/end from the effective draw distance when the preset
 /// had no fog.
+///
+/// ## Live vs rebuild
+/// Most knobs apply the same frame `EffectiveKnobs` updates (MSAA, fog,
+/// shadows, draw-distance culling, vsync, outlines, atmosphere eligibility).
+/// These Advanced-facing knobs **rebuild scene meshes** automatically because
+/// their bake keys already include the knob value:
+/// - [`QualityKnobs::tree_enabled`] — park tree chunk rebuild
+///
+/// Preset-only knobs that also rebuild (not exposed in Advanced UI):
+/// - [`QualityKnobs::terrain_subdiv_divisor`] — terrain mesh
+/// - [`QualityKnobs::ribbon_densify_step_m`] — roads / transit ribbons
 pub fn merge_knobs(base: QualityKnobs, overrides: &QualityOverrides) -> QualityKnobs {
     let mut k = base;
 
@@ -217,7 +228,10 @@ pub fn merge_knobs(base: QualityKnobs, overrides: &QualityOverrides) -> QualityK
 
     if let Some(fog_on) = overrides.fog {
         if fog_on {
-            k.fog = Some(k.fog.unwrap_or_else(|| synthesize_fog_range(k.building_draw_distance_m)));
+            k.fog = Some(
+                k.fog
+                    .unwrap_or_else(|| synthesize_fog_range(k.building_draw_distance_m)),
+            );
         } else {
             k.fog = None;
         }
@@ -511,10 +525,12 @@ mod tests {
 
     #[test]
     fn overrides_are_deltas_on_preset() {
-        let mut o = QualityOverrides::default();
-        assert!(o.is_empty());
-        o.trees = Some(true);
-        o.vsync = Some(true);
+        let o = QualityOverrides {
+            trees: Some(true),
+            vsync: Some(true),
+            ..Default::default()
+        };
+        assert!(!o.is_empty());
         let potato = QualityTier::Potato.effective_knobs(&o);
         assert!(potato.tree_enabled);
         assert!(potato.vsync);
@@ -525,8 +541,10 @@ mod tests {
 
     #[test]
     fn volumetric_clouds_override_enables_shadows() {
-        let mut o = QualityOverrides::default();
-        o.volumetric_clouds = Some(true);
+        let o = QualityOverrides {
+            volumetric_clouds: Some(true),
+            ..Default::default()
+        };
         let k = QualityTier::Potato.effective_knobs(&o);
         assert!(k.atmosphere_enabled);
         assert!(k.shadow_map_size.is_some());
@@ -535,8 +553,10 @@ mod tests {
 
     #[test]
     fn draw_distance_unlimited_sentinel() {
-        let mut o = QualityOverrides::default();
-        o.draw_distance_m = Some(DRAW_DISTANCE_UNLIMITED_M);
+        let o = QualityOverrides {
+            draw_distance_m: Some(DRAW_DISTANCE_UNLIMITED_M),
+            ..Default::default()
+        };
         let k = QualityTier::Low.effective_knobs(&o);
         assert!(k.building_draw_distance_m.is_none());
         assert!(k.tree_draw_distance_m.is_none());
@@ -544,8 +564,10 @@ mod tests {
 
     #[test]
     fn fog_override_off_clears_preset_fog() {
-        let mut o = QualityOverrides::default();
-        o.fog = Some(false);
+        let o = QualityOverrides {
+            fog: Some(false),
+            ..Default::default()
+        };
         assert!(QualityTier::Potato.effective_knobs(&o).fog.is_none());
     }
 
@@ -556,7 +578,10 @@ mod tests {
             recommend_tier_from_frame_times(12.0, 13.0),
             QualityTier::Medium
         );
-        assert_eq!(recommend_tier_from_frame_times(18.0, 20.0), QualityTier::Low);
+        assert_eq!(
+            recommend_tier_from_frame_times(18.0, 20.0),
+            QualityTier::Low
+        );
         assert_eq!(
             recommend_tier_from_frame_times(30.0, 40.0),
             QualityTier::Potato

@@ -11,12 +11,17 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 use mf_net::{NetStatus, ReconnectState, SimEvent, SimLink};
 use mf_protocol::envelope::FromSimJson;
 use mf_protocol::{Difficulty, FromSimMsg, ToSim, ToastTone};
-use mf_state::{LatestUi, QualityTier, SubwayView, Theme, WeatherEffects};
+use mf_state::{
+    DetectedQuality, EffectiveKnobs, LatestUi, QualityOverrides, QualityTier, ShadowQuality,
+    SubwayView, Theme, WeatherEffects, DRAW_DISTANCE_MIN_M, DRAW_DISTANCE_UNLIMITED_M,
+};
 
 use crate::audio::{PlaySfx, Sfx};
+use crate::camera::CameraRig;
 use crate::campaign::{self, CampaignProgress};
 use crate::config::MfConfig;
 use crate::goals::GoalsPanelOpen;
+use crate::graphics_perf::{self, GraphicsBenchmark, ShowFps, BENCHMARK_DURATION_SECS};
 use crate::saves::{self, SaveManager, SaveSlot};
 use crate::state::{toggle_pause, AppState, MenuScreen, PauseState, PendingInit, SimHello};
 
@@ -248,12 +253,25 @@ fn fixed_width_label(ui: &mut egui::Ui, text: egui::RichText, width: f32) {
 /// The tier rows shared by every quality combo box (Settings / pause).
 /// Settings owns the only quality UI now — the in-game top bar no longer
 /// duplicates these controls (design audit: play HUD is for play).
+/// "Auto" clears `quality_override` and re-applies the boot-time GPU detect.
 fn quality_options(
     ui: &mut egui::Ui,
     quality: &mut QualityTier,
     config: &mut MfConfig,
+    detected: QualityTier,
     sfx: &mut EventWriter<PlaySfx>,
 ) {
+    let auto_selected = config.quality_override.is_none();
+    let auto_label = format!("Auto ({})", detected.label());
+    if ui
+        .selectable_label(auto_selected, auto_label)
+        .on_hover_text("Use GPU auto-detect (default). Clears any saved quality override.")
+        .clicked()
+    {
+        *quality = detected;
+        config.set_quality_override(None);
+        sfx.write(PlaySfx(Sfx::Confirm));
+    }
     for tier in [
         QualityTier::Potato,
         QualityTier::Low,
@@ -261,7 +279,7 @@ fn quality_options(
         QualityTier::High,
     ] {
         if ui
-            .selectable_label(*quality == tier, tier.label())
+            .selectable_label(!auto_selected && *quality == tier, tier.label())
             .clicked()
         {
             *quality = tier;
@@ -291,6 +309,16 @@ fn theme_options(
     }
 }
 
+/// Persist Advanced deltas into both the live resource and config.toml.
+fn apply_graphics_overrides(
+    overrides: &mut QualityOverrides,
+    config: &mut MfConfig,
+    next: QualityOverrides,
+) {
+    *overrides = next;
+    config.set_graphics_overrides(next);
+}
+
 /// Bundles the Settings-screen resources so callers stay under Bevy's
 /// 16-param system limit (adding weather alone pushed `main_menu_hud_system`
 /// over).
@@ -300,6 +328,11 @@ struct SettingsControls<'w> {
     theme: ResMut<'w, Theme>,
     weather: ResMut<'w, WeatherEffects>,
     config: ResMut<'w, MfConfig>,
+    overrides: ResMut<'w, QualityOverrides>,
+    effective: Res<'w, EffectiveKnobs>,
+    detected: Res<'w, DetectedQuality>,
+    show_fps: ResMut<'w, ShowFps>,
+    benchmark: ResMut<'w, GraphicsBenchmark>,
 }
 
 /// ConnectingSim previously registered NO ui system at all, so a player whose
@@ -634,6 +667,7 @@ fn main_menu_hud_system(
     exit: EventWriter<AppExit>,
     hovered: Local<Option<egui::Id>>,
     slots_cache: Local<Option<Vec<saves::SlotEntry>>>,
+    rigs: Query<&mut CameraRig>,
 ) -> Result {
     match *screen {
         MenuScreen::Title => title_screen_ui(contexts, screen, exit, sfx, hovered)?,
@@ -657,7 +691,7 @@ fn main_menu_hud_system(
             // the persisted flag (the Replay button does that) re-arms the flow
             // on the next city load, which is the only way to reach `InGame`
             // from here anyway.
-            if settings_screen_ui(contexts, settings, None, sfx, hovered)? {
+            if settings_screen_ui(contexts, settings, None, rigs, sfx, hovered)? {
                 *screen = MenuScreen::Title;
             }
         }
@@ -1077,12 +1111,10 @@ fn city_select_screen_ui(
     Ok(())
 }
 
-/// Settings screen: quality tier + theme, the two overrides `config.rs`
-/// actually persists to `config.toml` (there's nothing else in that file
-/// to expose yet). Shared verbatim by the title screen's Settings button
-/// and the in-game pause menu's Settings button — both call sites own
-/// what "Back" means for them (return to `MenuScreen::Title` vs. close
-/// the pause-menu settings panel) via this function's `bool` return
+/// Settings screen: quality preset + theme + Advanced graphics deltas
+/// (persisted under `[graphics]` in config.toml), FPS toggle, and an
+/// in-game 10s benchmark. Shared by the title screen and the pause menu —
+/// both call sites own what "Back" means via the `bool` return
 /// (true == Back was clicked this frame).
 #[allow(clippy::too_many_arguments)]
 fn settings_screen_ui(
@@ -1091,6 +1123,7 @@ fn settings_screen_ui(
     // `None` on the title screen (no live flow to restart), `Some` from the
     // in-game pause menu (so Replay restarts the flow immediately).
     mut tutorial: Option<ResMut<crate::tutorial::TutorialState>>,
+    mut rigs: Query<&mut CameraRig>,
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
 ) -> Result<bool> {
@@ -1121,75 +1154,28 @@ fn settings_screen_ui(
             egui::Frame::default()
                 .fill(panel_bg())
                 .corner_radius(crate::design_system::CORNER_RADIUS)
-                .inner_margin(egui::Margin::symmetric(28, 24))
+                .inner_margin(egui::Margin::symmetric(28, 20))
                 .show(ui, |ui| {
-                    ui.set_width(320.0);
+                    ui.set_width(360.0);
                     ui.vertical_centered(|ui| {
                         draw_logo(ui, 36.0);
                         ui.add_space(6.0);
                         ui.label(crate::design_system::heading("Settings").color(text_color()));
-                        ui.add_space(24.0);
+                        ui.add_space(16.0);
 
-                        field_label(ui, "Quality");
-                        egui::ComboBox::from_id_salt("settings_quality")
-                            .selected_text(settings.quality.label())
-                            .width(300.0)
-                            .show_ui(ui, |ui| {
-                                quality_options(
+                        egui::ScrollArea::vertical()
+                            .max_height(ui.ctx().screen_rect().height() * 0.72)
+                            .show(ui, |ui| {
+                                ui.set_width(340.0);
+                                settings_body_ui(
                                     ui,
-                                    &mut settings.quality,
-                                    &mut settings.config,
+                                    &mut settings,
+                                    tutorial.as_mut(),
+                                    &mut rigs,
                                     &mut sfx,
-                                )
+                                    &mut hovered,
+                                );
                             });
-
-                        ui.add_space(14.0);
-                        field_label(ui, "Theme");
-                        egui::ComboBox::from_id_salt("settings_theme")
-                            .selected_text(settings.theme.label())
-                            .width(300.0)
-                            .show_ui(ui, |ui| {
-                                theme_options(
-                                    ui,
-                                    &mut settings.theme,
-                                    &mut settings.config,
-                                    &mut sfx,
-                                )
-                            });
-
-                        ui.add_space(14.0);
-                        field_label(ui, "Weather");
-                        let tier_allows = settings.quality.knobs().atmosphere_enabled;
-                        ui.add_enabled_ui(tier_allows, |ui| {
-                            let mut enabled = settings.weather.enabled;
-                            let label = if tier_allows {
-                                "Fog & clouds"
-                            } else {
-                                "Fog & clouds (Medium+)"
-                            };
-                            if ui.checkbox(&mut enabled, label).changed() {
-                                settings.weather.enabled = enabled;
-                                settings.config.set_weather_effects(enabled);
-                                sfx.write(PlaySfx(Sfx::Confirm));
-                            }
-                        });
-
-                        ui.add_space(28.0);
-                        let replay = ui.add_sized(
-                            [220.0, 36.0],
-                            egui::Button::new(egui::RichText::new("Replay tutorial").size(13.0)),
-                        );
-                        hover_tick(&replay, &mut hovered, &mut sfx);
-                        if replay.clicked() {
-                            sfx.write(PlaySfx(Sfx::Confirm));
-                            // Re-arm the flow and clear the persisted "done"
-                            // flag, so it shows on the next city load (or
-                            // immediately, if this was opened mid-game).
-                            settings.config.set_tutorial_completed(false);
-                            if let Some(tutorial) = tutorial.as_mut() {
-                                tutorial.request_replay();
-                            }
-                        }
 
                         ui.add_space(10.0);
                         let back = ui.add_sized(
@@ -1206,6 +1192,342 @@ fn settings_screen_ui(
                 });
         });
     Ok(back_clicked)
+}
+
+fn settings_body_ui(
+    ui: &mut egui::Ui,
+    settings: &mut SettingsControls,
+    tutorial: Option<&mut ResMut<crate::tutorial::TutorialState>>,
+    rigs: &mut Query<&mut CameraRig>,
+    sfx: &mut EventWriter<PlaySfx>,
+    hovered: &mut Option<egui::Id>,
+) {
+    let preset = *settings.quality;
+    let preset_knobs = preset.knobs();
+    let effective = settings.effective.0;
+
+    field_label(ui, "Quality");
+    let quality_text = if settings.config.quality_override.is_none() {
+        format!("Auto ({})", settings.detected.0.label())
+    } else {
+        settings.quality.label().to_string()
+    };
+    egui::ComboBox::from_id_salt("settings_quality")
+        .selected_text(quality_text)
+        .width(320.0)
+        .show_ui(ui, |ui| {
+            quality_options(
+                ui,
+                &mut settings.quality,
+                &mut settings.config,
+                settings.detected.0,
+                sfx,
+            )
+        });
+
+    ui.add_space(12.0);
+    field_label(ui, "Theme");
+    egui::ComboBox::from_id_salt("settings_theme")
+        .selected_text(settings.theme.label())
+        .width(320.0)
+        .show_ui(ui, |ui| {
+            theme_options(ui, &mut settings.theme, &mut settings.config, sfx)
+        });
+
+    ui.add_space(18.0);
+    ui.label(
+        egui::RichText::new("Advanced")
+            .size(15.0)
+            .color(text_color())
+            .strong(),
+    );
+    ui.label(
+        egui::RichText::new("Overrides apply instantly on top of the selected preset.")
+            .size(11.0)
+            .color(muted_text()),
+    );
+    ui.add_space(8.0);
+
+    // --- Shadows ---
+    field_label(ui, "Shadows");
+    let shadow_eff = ShadowQuality::from_map_size(effective.shadow_map_size);
+    egui::ComboBox::from_id_salt("settings_shadows")
+        .selected_text(shadow_eff.label())
+        .width(320.0)
+        .show_ui(ui, |ui| {
+            for q in [
+                ShadowQuality::Off,
+                ShadowQuality::Medium,
+                ShadowQuality::High,
+            ] {
+                let selected = shadow_eff == q;
+                if ui.selectable_label(selected, q.label()).clicked() && !selected {
+                    let mut next = *settings.overrides;
+                    next.shadows =
+                        if q == ShadowQuality::from_map_size(preset_knobs.shadow_map_size) {
+                            None
+                        } else {
+                            Some(q)
+                        };
+                    apply_graphics_overrides(&mut settings.overrides, &mut settings.config, next);
+                    sfx.write(PlaySfx(Sfx::Confirm));
+                }
+            }
+        });
+
+    ui.add_space(10.0);
+    // --- Draw distance ---
+    field_label(ui, "Draw distance");
+    let mut draw_m = effective
+        .building_draw_distance_m
+        .unwrap_or(DRAW_DISTANCE_UNLIMITED_M);
+    let draw_label = if effective.building_draw_distance_m.is_none() {
+        "Unlimited".to_string()
+    } else {
+        format!("{:.0} m", draw_m)
+    };
+    ui.label(
+        egui::RichText::new(draw_label)
+            .size(12.0)
+            .color(muted_text()),
+    );
+    let draw_response = ui.add(egui::Slider::new(
+        &mut draw_m,
+        DRAW_DISTANCE_MIN_M..=DRAW_DISTANCE_UNLIMITED_M,
+    ));
+    if draw_response.changed() {
+        let mut next = *settings.overrides;
+        let preset_m = preset_knobs
+            .building_draw_distance_m
+            .unwrap_or(DRAW_DISTANCE_UNLIMITED_M);
+        next.draw_distance_m = if (draw_m - preset_m).abs() < 1.0 {
+            None
+        } else {
+            Some(draw_m)
+        };
+        // Live apply every drag frame; persist only when the gesture ends
+        // (or on a non-drag click) so we don't rewrite config.toml per pixel.
+        *settings.overrides = next;
+        if !draw_response.dragged() {
+            settings.config.set_graphics_overrides(next);
+        }
+    }
+    if draw_response.drag_stopped() {
+        settings.config.set_graphics_overrides(*settings.overrides);
+    }
+
+    ui.add_space(10.0);
+    // --- Trees (rebuilds park tree meshes) ---
+    let mut trees = effective.tree_enabled;
+    if ui
+        .checkbox(&mut trees, "Trees")
+        .on_hover_text("Toggling rebuilds park tree meshes (one frame).")
+        .changed()
+    {
+        let mut next = *settings.overrides;
+        next.trees = if trees == preset_knobs.tree_enabled {
+            None
+        } else {
+            Some(trees)
+        };
+        apply_graphics_overrides(&mut settings.overrides, &mut settings.config, next);
+        sfx.write(PlaySfx(Sfx::Confirm));
+    }
+
+    // --- Distance fog ---
+    let mut fog_on = effective.fog.is_some();
+    if ui
+        .checkbox(&mut fog_on, "Distance fog")
+        .on_hover_text("Masks draw-distance pop-in on weaker presets.")
+        .changed()
+    {
+        let mut next = *settings.overrides;
+        let preset_fog = preset_knobs.fog.is_some();
+        next.fog = if fog_on == preset_fog {
+            None
+        } else {
+            Some(fog_on)
+        };
+        apply_graphics_overrides(&mut settings.overrides, &mut settings.config, next);
+        sfx.write(PlaySfx(Sfx::Confirm));
+    }
+
+    // --- Volumetric clouds ---
+    let mut clouds = settings
+        .overrides
+        .volumetric_clouds
+        .unwrap_or(preset_knobs.atmosphere_enabled && settings.weather.enabled);
+    if ui
+        .checkbox(&mut clouds, "Volumetric clouds")
+        .on_hover_text(
+            "Scrolling fog/cloud volumes. Enabling on weak presets also turns on Medium shadows (required).",
+        )
+        .changed()
+    {
+        let mut next = *settings.overrides;
+        next.volumetric_clouds = if clouds == preset_knobs.atmosphere_enabled {
+            None
+        } else {
+            Some(clouds)
+        };
+        if clouds {
+            settings.weather.enabled = true;
+            settings.config.set_weather_effects(true);
+            if effective.shadow_map_size.is_none()
+                && next.shadows.unwrap_or(ShadowQuality::from_map_size(
+                    preset_knobs.shadow_map_size,
+                )) == ShadowQuality::Off
+            {
+                next.shadows = Some(ShadowQuality::Medium);
+            }
+        } else {
+            settings.weather.enabled = false;
+            settings.config.set_weather_effects(false);
+        }
+        apply_graphics_overrides(&mut settings.overrides, &mut settings.config, next);
+        sfx.write(PlaySfx(Sfx::Confirm));
+    }
+
+    // --- Outlines ---
+    let mut outlines = effective.outlines_enabled;
+    if ui
+        .checkbox(&mut outlines, "Building outlines")
+        .on_hover_text("Cel-shading outline on the dense urban-core building chunk.")
+        .changed()
+    {
+        let mut next = *settings.overrides;
+        next.outlines = if outlines == preset_knobs.outlines_enabled {
+            None
+        } else {
+            Some(outlines)
+        };
+        apply_graphics_overrides(&mut settings.overrides, &mut settings.config, next);
+        sfx.write(PlaySfx(Sfx::Confirm));
+    }
+
+    // --- VSync ---
+    let mut vsync = effective.vsync;
+    if ui.checkbox(&mut vsync, "VSync").changed() {
+        let mut next = *settings.overrides;
+        next.vsync = if vsync == preset_knobs.vsync {
+            None
+        } else {
+            Some(vsync)
+        };
+        apply_graphics_overrides(&mut settings.overrides, &mut settings.config, next);
+        sfx.write(PlaySfx(Sfx::Confirm));
+    }
+
+    ui.add_space(8.0);
+    let has_deltas = !settings.overrides.is_empty();
+    ui.add_enabled_ui(has_deltas, |ui| {
+        let reset = ui.add_sized(
+            [280.0, 32.0],
+            egui::Button::new(egui::RichText::new("Reset to preset").size(13.0)),
+        );
+        hover_tick(&reset, hovered, sfx);
+        if reset.clicked() {
+            apply_graphics_overrides(
+                &mut settings.overrides,
+                &mut settings.config,
+                QualityOverrides::default(),
+            );
+            settings.weather.enabled = settings.config.weather_effects;
+            sfx.write(PlaySfx(Sfx::Confirm));
+        }
+    });
+
+    ui.add_space(16.0);
+    ui.label(
+        egui::RichText::new("Performance")
+            .size(15.0)
+            .color(text_color())
+            .strong(),
+    );
+    ui.add_space(6.0);
+
+    let mut show_fps = settings.show_fps.0;
+    if ui.checkbox(&mut show_fps, "Show FPS counter").changed() {
+        settings.show_fps.0 = show_fps;
+        settings.config.set_show_fps(show_fps);
+        sfx.write(PlaySfx(Sfx::Confirm));
+    }
+
+    ui.add_space(8.0);
+    let can_bench = rigs.single().is_ok() && !settings.benchmark.is_running();
+    ui.add_enabled_ui(can_bench, |ui| {
+        let label = if settings.benchmark.is_running() {
+            format!("Benchmarking… ({BENCHMARK_DURATION_SECS:.0}s)")
+        } else {
+            format!("Run {BENCHMARK_DURATION_SECS:.0}s benchmark")
+        };
+        let bench_btn = ui.add_sized(
+            [280.0, 34.0],
+            egui::Button::new(egui::RichText::new(label).size(13.0)),
+        );
+        hover_tick(&bench_btn, hovered, sfx);
+        if bench_btn.clicked() {
+            graphics_perf::begin_benchmark(&mut settings.benchmark, rigs);
+            sfx.write(PlaySfx(Sfx::Confirm));
+        }
+    });
+    if rigs.single().is_err() {
+        ui.label(
+            egui::RichText::new("Benchmark needs a loaded city (pause → Settings).")
+                .size(11.0)
+                .color(muted_text()),
+        );
+    }
+
+    if let Some(result) = settings.benchmark.result() {
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new(format!(
+                "Avg {:.1} ms · 1% low {:.1} ms",
+                result.avg_ms, result.low_1pct_ms
+            ))
+            .size(12.0)
+            .color(text_color()),
+        );
+        ui.label(
+            egui::RichText::new(format!("Recommended: {}", result.recommended.label()))
+                .size(13.0)
+                .color(accent()),
+        );
+        let apply = ui.add_sized(
+            [280.0, 34.0],
+            egui::Button::new(
+                egui::RichText::new(format!("Apply {}", result.recommended.label())).size(13.0),
+            ),
+        );
+        hover_tick(&apply, hovered, sfx);
+        if apply.clicked() {
+            let tier = result.recommended;
+            *settings.quality = tier;
+            settings.config.set_quality_override(Some(tier));
+            apply_graphics_overrides(
+                &mut settings.overrides,
+                &mut settings.config,
+                QualityOverrides::default(),
+            );
+            settings.benchmark.clear_result();
+            sfx.write(PlaySfx(Sfx::Confirm));
+        }
+    }
+
+    ui.add_space(16.0);
+    let replay = ui.add_sized(
+        [220.0, 36.0],
+        egui::Button::new(egui::RichText::new("Replay tutorial").size(13.0)),
+    );
+    hover_tick(&replay, hovered, sfx);
+    if replay.clicked() {
+        sfx.write(PlaySfx(Sfx::Confirm));
+        settings.config.set_tutorial_completed(false);
+        if let Some(tutorial) = tutorial {
+            tutorial.request_replay();
+        }
+    }
 }
 
 fn loading_hud_system(
@@ -1439,16 +1761,17 @@ fn pause_overlay_system(
     mut hovered: Local<Option<egui::Id>>,
     mut slot_occupied_cache: Local<Option<[bool; SAVE_SLOT_COUNT]>>,
     mut pause_settings_open: Local<bool>,
+    rigs: Query<&mut CameraRig>,
 ) -> Result {
     if !pause.active {
         return Ok(());
     }
     // Owner ask: Settings must be reachable "from the in-game pause menu",
     // not just the title screen. Reuses `settings_screen_ui` verbatim
-    // (same quality/theme/weather controls, same widget layout) rather than a
-    // second copy of the ComboBoxes bolted onto the pause panel.
+    // (same quality/theme/Advanced controls) rather than a second copy
+    // bolted onto the pause panel.
     if *pause_settings_open {
-        if settings_screen_ui(contexts, settings, Some(tutorial), sfx, hovered)? {
+        if settings_screen_ui(contexts, settings, Some(tutorial), rigs, sfx, hovered)? {
             *pause_settings_open = false;
         }
         return Ok(());

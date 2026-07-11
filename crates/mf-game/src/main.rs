@@ -12,6 +12,7 @@ mod command_bus;
 mod config;
 mod design_system;
 mod goals;
+mod graphics_perf;
 mod hud;
 mod input;
 mod map_mode;
@@ -30,6 +31,7 @@ mod verify;
 
 use bevy::prelude::*;
 use bevy::window::{PresentMode, Window, WindowPlugin};
+use graphics_perf::MfGraphicsPerfPlugin;
 use mf_net::MfNetPlugin;
 use mf_render::MfRenderPlugin;
 use mf_state::MfStatePlugin;
@@ -93,15 +95,13 @@ fn main() {
             promo::MfPromoPlugin,
             tutorial::MfTutorialPlugin,
             goals::MfGoalsPlugin,
+            MfGraphicsPerfPlugin,
         ));
     // MF_PERF_LOG=1: log frame-time diagnostics (avg/FPS) once per second.
-    // Costs nothing when unset; gives players and CI a zero-setup way to
-    // capture before/after numbers for performance work.
+    // FrameTimeDiagnosticsPlugin is always registered by MfGraphicsPerfPlugin
+    // (FPS overlay + benchmark); this only adds the console logger.
     if std::env::var_os("MF_PERF_LOG").is_some() {
-        app.add_plugins((
-            bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
-            bevy::diagnostic::LogDiagnosticsPlugin::default(),
-        ));
+        app.add_plugins(bevy::diagnostic::LogDiagnosticsPlugin::default());
     }
     app.run();
 }
