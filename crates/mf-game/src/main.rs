@@ -29,6 +29,7 @@ mod overlays;
 mod panels;
 mod paths;
 mod perf;
+mod photomode;
 mod promo;
 mod quality_boot;
 mod report_ui;
@@ -133,7 +134,8 @@ fn main() {
             perf::MfPerfPlugin,
             egui_idle::MfEguiIdlePlugin,
         ))
-        .add_plugins(MfGraphicsPerfPlugin);
+        // Bevy's Plugins tuple caps at 15 elements; overflow lives here.
+        .add_plugins((photomode::MfPhotoModePlugin, MfGraphicsPerfPlugin));
     // MF_PERF / MF_PERF_LOG: Bevy diagnostic plugins + spans. MF_PERF also
     // drives the 60s sample-then-exit harness in `perf.rs`.
     // (FrameTimeDiagnosticsPlugin is already registered by
