@@ -19,6 +19,7 @@ mod outline;
 /// (and theme) as finished transit — see `tools.rs` route_ghost_color.
 pub mod palette;
 pub mod perf;
+mod photomode;
 mod reveal;
 mod roads;
 mod sky;
@@ -45,6 +46,7 @@ use crate::daynight::DayNightState;
 
 pub use buildings::BuildingsDenseCenter;
 pub use perf::{MfPerfCountersPlugin, PerfCounters};
+pub use photomode::PhotoModeRender;
 
 /// Peak bloom intensity at full night (Medium/High). Ramps linearly with
 /// `DayNightState.night_factor`; 0 during day so the bloom node early-outs.
@@ -104,6 +106,7 @@ impl Plugin for MfRenderPlugin {
                 outline::MfOutlinePlugin,
             ),
         ))
+        .add_plugins(photomode::MfPhotoModeRenderPlugin)
         .add_systems(
             Update,
             (

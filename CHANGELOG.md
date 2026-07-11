@@ -10,6 +10,9 @@ sibling `metroforge` repo and reach releases via the pinned sidecar SHA in
 ## [Unreleased]
 
 ### Added
+- Photo / cinematic mode: P toggles free-fly camera (HUD hidden, local
+  time-of-day scrubber, FOV, optional letterbox), F12 saves a PNG to the
+  Pictures folder, and 2-4 keyframe Catmull-Rom paths for trailer shots
 - Bulletproof sidecar crash recovery for 1.0: detect process exit vs websocket
   silence (>5s), auto-restart with re-handshake + autosave restore under a
   "Reconnecting to simulation" overlay (no MainMenu bounce), friendly
