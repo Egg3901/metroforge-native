@@ -3259,12 +3259,15 @@ dependencies = [
  "bevy_app",
  "bevy_ecs",
  "crossbeam-channel",
+ "directories",
+ "libc",
  "mf-protocol",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tracing",
  "tungstenite",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

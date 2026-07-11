@@ -7,7 +7,7 @@ use bevy::app::AppExit;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
-use mf_net::{NetStatus, ReconnectState, SimEvent, SimLink};
+use mf_net::{NetStatus, ReconnectPhase, ReconnectState, SimEvent, SimLink, MAX_ATTEMPTS};
 use mf_protocol::envelope::FromSimJson;
 use mf_protocol::{Difficulty, FromSimMsg, ToSim, ToastTone};
 use mf_state::{LatestUi, QualityTier, SubwayView, Theme, WeatherEffects};
@@ -20,6 +20,7 @@ use crate::goals::GoalsPanelOpen;
 use crate::saves::{self, PlaytimeTracker, SaveManager, SaveMeta, SaveSlot};
 use crate::state::{toggle_pause, AppState, MenuScreen, PauseState, PendingInit, SimHello};
 
+const GOOD: egui::Color32 = ds::GOOD;
 const WARN: egui::Color32 = ds::WARN;
 const BAD: egui::Color32 = ds::BAD;
 
@@ -102,6 +103,12 @@ impl Plugin for MfHudPlugin {
                         .run_if(in_state(AppState::InGame))
                         .run_if(|| !ds::ui_gallery_enabled())
                         .run_if(crate::egui_idle::egui_content_active),
+                    reconnect_overlay_system
+                        .run_if(in_state(AppState::InGame))
+                        .run_if(|| !ds::ui_gallery_enabled()),
+                    sim_error_screen_system
+                        .run_if(in_state(AppState::SimError))
+                        .run_if(|| !ds::ui_gallery_enabled()),
                     fatal_banner_system.run_if(|| !ds::ui_gallery_enabled()),
                 )
                     .chain()
@@ -273,8 +280,9 @@ struct SettingsControls<'w> {
 fn connecting_hud_system(mut contexts: EguiContexts, reconnect: Res<ReconnectState>) -> Result {
     let ctx = contexts.ctx_mut()?;
     egui::CentralPanel::default()
-        .frame(egui::Frame::NONE.fill(ds::menu_wash()))
+        .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
         .show(ctx, |ui| {
+            crate::design_system::paint_menu_gradient_scrim(ui.painter(), ui.max_rect());
             ui.vertical_centered(|ui| {
                 ui.add_space((ui.available_height() * 0.28).max(24.0));
                 draw_logo(ui, 56.0);
@@ -282,13 +290,16 @@ fn connecting_hud_system(mut contexts: EguiContexts, reconnect: Res<ReconnectSta
                 ui.label(ds::heading("MetroForge"));
                 ui.add_space(ds::SPACE_SM);
                 match &reconnect.status {
-                    NetStatus::Fatal(msg) => {
-                        ui.colored_label(BAD, format!("Could not start the simulation: {msg}"));
+                    NetStatus::Fatal(diag) => {
+                        ui.colored_label(
+                            BAD,
+                            format!("Could not start the simulation: {}", diag.message),
+                        );
                     }
-                    NetStatus::Reconnecting { attempt } => {
+                    NetStatus::Reconnecting { attempt, .. } => {
                         ui.label(
                             egui::RichText::new(format!(
-                                "Starting the simulation (attempt {attempt} of 5)..."
+                                "Starting the simulation (attempt {attempt} of {MAX_ATTEMPTS})..."
                             ))
                             .color(muted_text()),
                         );
@@ -787,9 +798,14 @@ fn title_screen_ui(
     let ctx = contexts.ctx_mut()?;
     let fade = ds::animate(ctx, egui::Id::new("title_fade"), 1.0);
 
+    // Transparent central panel: the attract-mode diorama is the brand
+    // surface. A horizontal gradient scrim keeps the menu column readable
+    // without milking out the city on the far side. Version is painted in
+    // the bottom-right corner below rather than in its own bottom bar.
     egui::CentralPanel::default()
-        .frame(egui::Frame::NONE.fill(ds::menu_wash()))
+        .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
         .show(ctx, |ui| {
+            crate::design_system::paint_menu_gradient_scrim(ui.painter(), ui.max_rect());
             ui.set_opacity(fade);
             let screen_rect = ui.max_rect();
 
@@ -976,11 +992,12 @@ fn city_select_screen_ui(
             });
         });
 
-    // Soft wash only — city cards carry their own fills so the diorama
+    // Soft gradient wash — city cards carry their own fills so the diorama
     // still reads behind the grid (brand-first menu composition).
     egui::CentralPanel::default()
-        .frame(egui::Frame::NONE.fill(ds::menu_wash()))
+        .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
         .show(ctx, |ui| {
+            crate::design_system::paint_menu_gradient_scrim(ui.painter(), ui.max_rect());
             ui.set_opacity(fade);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -1374,8 +1391,9 @@ fn loading_hud_system(
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     egui::CentralPanel::default()
-        .frame(egui::Frame::NONE.fill(ds::menu_wash()))
+        .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
         .show(ctx, |ui| {
+            crate::design_system::paint_menu_gradient_scrim(ui.painter(), ui.max_rect());
             ui.vertical_centered(|ui| {
                 ui.add_space((ui.available_height() * 0.28).max(24.0));
                 draw_logo(ui, 48.0);
@@ -1495,14 +1513,21 @@ fn in_game_hud_system(
                     // routes. Clicking it opens the route panel focused on the
                     // first flagged route so the player can act on it. Only
                     // shown when the sidecar reports any (old ones send none).
-                    let first_overcrowded = state
-                        .overcrowded_routes
+                    // The sidecar reports a scalar count; which route is
+                    // busiest comes from per-route live_crowding.
+                    let count = state.overcrowded_routes.unwrap_or(0) as usize;
+                    let busiest = state
+                        .routes
                         .iter()
-                        .find(|id| state.routes.iter().any(|r| r.id == **id))
-                        .copied();
-                    if let Some(route_id) = first_overcrowded {
+                        .filter(|r| r.live_crowding.unwrap_or(0.0) > 1.0)
+                        .max_by(|a, b| {
+                            a.live_crowding
+                                .unwrap_or(0.0)
+                                .total_cmp(&b.live_crowding.unwrap_or(0.0))
+                        })
+                        .map(|r| r.id);
+                    if let (true, Some(route_id)) = (count > 0, busiest) {
                         thin_separator(ui);
-                        let count = state.overcrowded_routes.len();
                         let plural = if count == 1 { "" } else { "s" };
                         let chip = egui::Button::new(
                             egui::RichText::new(format!("{count} crowded route{plural}"))
@@ -1757,16 +1782,211 @@ fn pause_overlay_system(
     Ok(())
 }
 
-/// Surfaces `mf-net`'s fatal reconnect failure as a banner rather than a
-/// silent black screen (spec §3.2 reconnect: "5 attempts -> fatal error
-/// screen"; `state.rs`'s watchdog already dropped us back to `MainMenu`).
+/// Brief full-screen overlay while a mid-game sidecar reconnect is in
+/// flight. Stays on `InGame` underneath so the world doesn't tear down.
+fn reconnect_overlay_system(mut contexts: EguiContexts, reconnect: Res<ReconnectState>) -> Result {
+    let NetStatus::Reconnecting {
+        attempt,
+        reason,
+        phase,
+    } = &reconnect.status
+    else {
+        return Ok(());
+    };
+    let ctx = contexts.ctx_mut()?;
+    egui::Area::new(egui::Id::new("reconnect_scrim"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::Pos2::ZERO)
+        .show(ctx, |ui| {
+            let screen = ui.ctx().screen_rect();
+            ui.allocate_response(screen.size(), egui::Sense::hover());
+            ui.painter().rect_filled(
+                screen,
+                egui::CornerRadius::ZERO,
+                egui::Color32::from_rgba_unmultiplied(8, 10, 14, 200),
+            );
+        });
+    egui::Area::new(egui::Id::new("reconnect_panel"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            egui::Frame::default()
+                .fill(panel_bg())
+                .corner_radius(egui::CornerRadius::same(2))
+                .inner_margin(egui::Margin::symmetric(28, 22))
+                .show(ui, |ui| {
+                    ui.set_width(360.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            egui::RichText::new("Reconnecting to simulation")
+                                .size(20.0)
+                                .strong()
+                                .color(text_color()),
+                        );
+                        ui.add_space(crate::design_system::SPACE_SM);
+                        let phase_label = match phase {
+                            ReconnectPhase::Respawning => "Restarting sidecar…",
+                            ReconnectPhase::Handshaking => "Re-handshaking…",
+                            ReconnectPhase::Reloading => "Restoring city…",
+                        };
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{phase_label} (attempt {attempt} of {MAX_ATTEMPTS})"
+                            ))
+                            .color(muted_text()),
+                        );
+                        ui.label(
+                            egui::RichText::new(reason.detail())
+                                .size(12.0)
+                                .color(muted_text()),
+                        );
+                    });
+                });
+        });
+    Ok(())
+}
+
+/// Full-screen fatal diagnostics after 3 failed reconnects: reason, sidecar
+/// log tail, and a one-click copy-diagnostics button. Never a silent freeze.
+fn sim_error_screen_system(
+    mut contexts: EguiContexts,
+    mut reconnect: ResMut<ReconnectState>,
+    mut next_state: ResMut<NextState<AppState>>,
+    mut exit: EventWriter<AppExit>,
+    mut sfx: EventWriter<PlaySfx>,
+    mut error_played: Local<bool>,
+    mut copied_flash: Local<Option<std::time::Instant>>,
+) -> Result {
+    let NetStatus::Fatal(diag) = reconnect.status.clone() else {
+        *error_played = false;
+        return Ok(());
+    };
+    if !*error_played {
+        sfx.write(PlaySfx(Sfx::Error));
+        *error_played = true;
+    }
+    let clipboard = diag.clipboard_text();
+    let ctx = contexts.ctx_mut()?;
+    let mut go_menu = false;
+    let mut go_quit = false;
+    let mut did_copy = false;
+    egui::CentralPanel::default()
+        .frame(egui::Frame::default().fill(crate::design_system::menu_wash()))
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space((ui.available_height() * 0.08).max(16.0));
+                draw_logo(ui, 48.0);
+                ui.add_space(crate::design_system::SPACE_MD);
+                ui.label(
+                    egui::RichText::new("Simulation disconnected")
+                        .size(26.0)
+                        .strong()
+                        .color(text_color()),
+                );
+                ui.add_space(crate::design_system::SPACE_SM);
+                ui.label(egui::RichText::new(&diag.message).size(14.0).color(BAD));
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Cause: {} — {}",
+                        diag.reason.label(),
+                        diag.reason.detail()
+                    ))
+                    .size(13.0)
+                    .color(muted_text()),
+                );
+                ui.add_space(crate::design_system::SPACE_MD);
+                ui.label(
+                    egui::RichText::new("Sidecar log (tail)")
+                        .size(13.0)
+                        .strong()
+                        .color(text_color()),
+                );
+                ui.add_space(4.0);
+                let mut log = if diag.log_tail.trim().is_empty() {
+                    "(no stderr captured)".to_string()
+                } else {
+                    diag.log_tail.clone()
+                };
+                egui::ScrollArea::vertical()
+                    .max_height(220.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut log)
+                                .desired_width(520.0)
+                                .font(egui::TextStyle::Monospace)
+                                .interactive(false),
+                        );
+                    });
+                ui.add_space(crate::design_system::SPACE_MD);
+                ui.horizontal(|ui| {
+                    let copy = ui.add_sized(
+                        [180.0, 36.0],
+                        egui::Button::new(
+                            egui::RichText::new("Copy diagnostics")
+                                .color(egui::Color32::WHITE)
+                                .size(14.0),
+                        )
+                        .fill(accent()),
+                    );
+                    if copy.clicked() {
+                        ui.ctx().copy_text(clipboard.clone());
+                        did_copy = true;
+                    }
+                    if ui
+                        .add_sized(
+                            [140.0, 36.0],
+                            egui::Button::new(egui::RichText::new("Back to menu").size(14.0)),
+                        )
+                        .clicked()
+                    {
+                        go_menu = true;
+                    }
+                    if ui
+                        .add_sized(
+                            [100.0, 36.0],
+                            egui::Button::new(egui::RichText::new("Quit").size(14.0)),
+                        )
+                        .clicked()
+                    {
+                        go_quit = true;
+                    }
+                });
+                if copied_flash.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2)) {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("Copied to clipboard.")
+                            .size(12.0)
+                            .color(GOOD),
+                    );
+                }
+            });
+        });
+    if did_copy {
+        *copied_flash = Some(std::time::Instant::now());
+        sfx.write(PlaySfx(Sfx::Confirm));
+    }
+    if go_menu {
+        sfx.write(PlaySfx(Sfx::Cancel));
+        reconnect.clear_fatal();
+        next_state.set(AppState::Boot);
+    }
+    if go_quit {
+        sfx.write(PlaySfx(Sfx::Cancel));
+        exit.write(AppExit::Success);
+    }
+    Ok(())
+}
+
+/// Surfaces a boot-time fatal reconnect failure on the main menu as a banner
+/// (in-session fatals use [`sim_error_screen_system`] instead).
 fn fatal_banner_system(
     mut contexts: EguiContexts,
     reconnect: Res<ReconnectState>,
     mut sfx: EventWriter<PlaySfx>,
     mut error_played: Local<bool>,
 ) -> Result {
-    let NetStatus::Fatal(msg) = &reconnect.status else {
+    let NetStatus::Fatal(diag) = &reconnect.status else {
         *error_played = false;
         return Ok(());
     };
@@ -1776,7 +1996,7 @@ fn fatal_banner_system(
     }
     let ctx = contexts.ctx_mut()?;
     egui::TopBottomPanel::bottom("fatal_banner").show(ctx, |ui| {
-        ui.colored_label(BAD, format!("Lost connection to the sim: {msg}"));
+        ui.colored_label(BAD, format!("Lost connection to the sim: {}", diag.message));
     });
     Ok(())
 }

@@ -343,6 +343,9 @@ mod tests {
         fn is_alive(&self) -> bool {
             true
         }
+        fn silence_duration(&self) -> std::time::Duration {
+            std::time::Duration::ZERO
+        }
     }
 
     fn test_link() -> (SimLink, TestTransport) {

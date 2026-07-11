@@ -10,6 +10,18 @@ sibling `metroforge` repo and reach releases via the pinned sidecar SHA in
 ## [Unreleased]
 
 ### Added
+- Bulletproof sidecar crash recovery for 1.0: detect process exit vs websocket
+  silence (>5s), auto-restart with re-handshake + autosave restore under a
+  "Reconnecting to simulation" overlay (no MainMenu bounce), friendly
+  diagnostics screen with log tail + copy button after 3 failed restarts,
+  process-group / PDEATHSIG (Unix) and Job Object kill-on-close (Windows)
+  orphan prevention, stale-sidecar reap on startup, and
+  `MF_TEST_KILL_SIDECAR` recovery harness (optional CI job).
+- Crash handling: local panic reports (message, backtrace, OS/GPU, version,
+  last 200 log lines) under the OS data dir; next-launch dismissible notice
+  with Open report location / Continue / Safe mode; `--safe-mode` forces
+  Potato and disables weather (bloom/outlines follow Potato); sidecar stderr
+  captured to a rotating log
 - Windows desktop polish wave 2 (#72): DPI-aware scaling, F11/Alt+Enter
   borderless fullscreen (persisted), window size/position recall, rendering
   pause on minimize/alt-tab, single-instance focus guard, native icon in

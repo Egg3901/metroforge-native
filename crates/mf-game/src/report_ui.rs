@@ -325,7 +325,7 @@ mod tests {
             farebox_recovery: None,
             lifetime: None,
             districts: Vec::new(),
-            overcrowded_routes: Vec::new(),
+            overcrowded_routes: None,
         }
     }
 

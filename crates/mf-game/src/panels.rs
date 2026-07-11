@@ -569,8 +569,13 @@ fn finance_panel_system(
             if let Some(recovery) = state.farebox_recovery {
                 stat_row(ui, "Farebox recovery", format!("{:.0}%", recovery * 100.0));
             }
-            if let Some(lifetime) = state.lifetime {
-                stat_row(ui, "Lifetime earnings", format_cash(lifetime));
+            if let Some(ledger) = &state.lifetime {
+                let net = ledger.fares + ledger.subsidy
+                    - ledger.operations
+                    - ledger.maintenance
+                    - ledger.interest;
+                stat_row(ui, "Lifetime net", format_cash(net));
+                stat_row(ui, "Lifetime fares", format_cash(ledger.fares));
             }
 
             if !state.insights.is_empty() {
@@ -748,7 +753,7 @@ mod tests {
             farebox_recovery: None,
             lifetime: None,
             districts: Vec::new(),
-            overcrowded_routes: Vec::new(),
+            overcrowded_routes: None,
         }
     }
 

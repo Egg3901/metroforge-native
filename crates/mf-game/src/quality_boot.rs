@@ -1,5 +1,5 @@
-//! One-shot quality-tier resolution at boot (spec §4): `config.toml`
-//! override beats `MF_QUALITY` beats GPU auto-detect beats the
+//! One-shot quality-tier resolution at boot (spec §4): `--safe-mode` beats
+//! `config.toml` override beats `MF_QUALITY` beats GPU auto-detect beats the
 //! `QualityTier` resource's own `Medium` default. Resolves exactly once,
 //! then gets out of the way — from that point on `hud.rs`'s quality
 //! selector owns the `QualityTier` resource, and this module must never
@@ -20,13 +20,39 @@ use bevy::window::{PresentMode, PrimaryWindow, Window};
 use mf_state::{detect_quality_tier, GpuDeviceKind, QualityTier};
 
 use crate::config::MfConfig;
+use crate::crash::{self, SafeMode};
 
 pub struct MfQualityBootPlugin;
 
 impl Plugin for MfQualityBootPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (resolve_quality_system, apply_vsync_system).chain());
+        app.add_systems(
+            Update,
+            (
+                record_adapter_for_crash_system,
+                resolve_quality_system,
+                apply_vsync_system,
+            )
+                .chain(),
+        );
     }
+}
+
+/// Stash GPU adapter details for the panic hook as soon as Bevy exposes them,
+/// independent of which quality source wins (including `--safe-mode`).
+fn record_adapter_for_crash_system(
+    mut done: Local<bool>,
+    adapter_info: Option<Res<RenderAdapterInfo>>,
+) {
+    if *done {
+        return;
+    }
+    let Some(adapter_info) = adapter_info else {
+        return;
+    };
+    let kind = map_device_kind(adapter_info.device_type);
+    crash::record_gpu_adapter(&adapter_info.name, kind);
+    *done = true;
 }
 
 /// Runs every `Update` until it resolves (config / env / GPU detect can each
@@ -36,10 +62,19 @@ fn resolve_quality_system(
     mut done: Local<bool>,
     mut env_invalid_warned: Local<bool>,
     mut quality: ResMut<QualityTier>,
+    safe_mode: Res<SafeMode>,
     config: Option<Res<MfConfig>>,
     adapter_info: Option<Res<RenderAdapterInfo>>,
 ) {
     if *done {
+        return;
+    }
+
+    // `--safe-mode` / crash-dialog Safe mode: Potato wins over every other
+    // source so a bad GPU/driver combo can boot without weather/bloom/outlines.
+    if safe_mode.0 {
+        resolve(&mut quality, QualityTier::Potato, "--safe-mode");
+        *done = true;
         return;
     }
 
