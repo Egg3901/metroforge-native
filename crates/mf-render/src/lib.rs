@@ -18,6 +18,7 @@ mod outline;
 /// Public so `mf-game` ghost previews can share the same vivid route table
 /// (and theme) as finished transit — see `tools.rs` route_ghost_color.
 pub mod palette;
+pub mod perf;
 mod reveal;
 mod roads;
 mod sky;
@@ -39,6 +40,7 @@ use mf_state::{QualityTier, Theme};
 use crate::daynight::DayNightState;
 
 pub use buildings::BuildingsDenseCenter;
+pub use perf::{MfPerfCountersPlugin, PerfCounters};
 
 /// Peak bloom intensity at full night (Medium/High). Ramps linearly with
 /// `DayNightState.night_factor`; 0 during day so the bloom node early-outs.
@@ -75,21 +77,26 @@ impl Plugin for MfRenderPlugin {
         )
         .insert_resource(DirectionalLightShadowMap { size: 2048 })
         .add_plugins((
-            reveal::MfRevealPlugin,
-            sky::MfSkyPlugin,
-            terrain::MfTerrainPlugin,
-            water::MfWaterPlugin,
-            roads::MfRoadsPlugin,
-            buildings::MfBuildingsPlugin,
-            transit::MfTransitPlugin,
-            trees::MfTreesPlugin,
-            street_lamps::MfStreetLampsPlugin,
-            vehicles::MfVehiclesPlugin,
-            agents::MfAgentsPlugin,
-            daynight::MfDayNightPlugin,
-            atmosphere::MfAtmospherePlugin,
-            subway::MfSubwayPlugin,
-            outline::MfOutlinePlugin,
+            (
+                perf::MfPerfCountersPlugin,
+                reveal::MfRevealPlugin,
+                sky::MfSkyPlugin,
+                terrain::MfTerrainPlugin,
+                water::MfWaterPlugin,
+                roads::MfRoadsPlugin,
+                buildings::MfBuildingsPlugin,
+                transit::MfTransitPlugin,
+            ),
+            (
+                trees::MfTreesPlugin,
+                street_lamps::MfStreetLampsPlugin,
+                vehicles::MfVehiclesPlugin,
+                agents::MfAgentsPlugin,
+                daynight::MfDayNightPlugin,
+                atmosphere::MfAtmospherePlugin,
+                subway::MfSubwayPlugin,
+                outline::MfOutlinePlugin,
+            ),
         ))
         .add_systems(
             Update,

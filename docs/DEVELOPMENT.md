@@ -73,6 +73,28 @@ straight to `Loading` with that city on Normal difficulty: this box has no displ
 to click an egui menu through, and it doubles as a fast-boot path for screenshots
 and scripted smoke tests.
 
+## Performance harness (`MF_PERF`)
+
+`MF_PERF=1` enables Bevy's frame-time / entity-count diagnostics and a sample-
+then-exit harness in `crates/mf-game/src/perf.rs`. After `InGame` settles it
+records frame-time percentiles, visible-mesh draw-call proxies, entity/mesh/
+material counts, and instrumented mf-render system CPU for `MF_PERF_SECONDS`
+(default 60), prints an `MF_PERF REPORT`, then quits. Set `MF_PERF_ASSERT=1` to
+also enforce `MF_PERF_BUDGET_FRAME_MS_P95` / `MF_PERF_BUDGET_DRAW_CALLS_P95`
+(loose defaults aimed at lavapipe smoke, not a GPU FPS target).
+
+```sh
+export MF_AUTOSTART=nyc
+export MF_PERF=1
+export MF_PERF_SECONDS=60
+# optional CI gate:
+# export MF_PERF_ASSERT=1
+cargo run --release -p mf-game
+```
+
+`MF_PERF_LOG=1` alone still enables the lighter once-per-second diagnostic log
+without the sample-then-exit harness.
+
 ## Headless verification recipe
 
 This box has no GPU, so rendering is validated with Mesa's software Vulkan

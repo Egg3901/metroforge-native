@@ -186,18 +186,20 @@ fn menu_screen_override() -> Option<MenuScreen> {
 /// instead of duplicating that policy here.
 fn boot_system(
     mut commands: Commands,
+    config: Res<MfConfig>,
     mut reconnect: ResMut<ReconnectState>,
     mut next_state: ResMut<NextState<AppState>>,
     safe_mode: Res<SafeMode>,
 ) {
-    let config = MfConfig::load();
-    // Safe mode forces weather off for this session (bloom/outlines already
-    // follow Potato via quality_boot). Config on disk is left alone.
+    // `MfConfig` is loaded and inserted in `main` before the window is created
+    // (so size/position/fullscreen apply on first frame); boot reads it via the
+    // `config` param. Safe mode forces weather off for this session
+    // (bloom/outlines already follow Potato via quality_boot); the on-disk
+    // config is left alone.
     let weather_enabled = config.weather_effects && !safe_mode.0;
     commands.insert_resource(mf_state::WeatherEffects {
         enabled: weather_enabled,
     });
-    commands.insert_resource(config);
 
     match SimLink::spawn_and_connect(None) {
         Ok(link) => {
