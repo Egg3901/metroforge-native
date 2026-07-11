@@ -409,22 +409,28 @@ fn configure_orphan_prevention(cmd: &mut Command) -> anyhow::Result<()> {
     {
         use std::os::unix::process::CommandExt;
         // Own process group so Drop can signal the whole tree (bun → node,
-        // etc.), and PR_SET_PDEATHSIG so a hard client kill still reaps us.
+        // etc.). On Linux also arm PR_SET_PDEATHSIG so a hard client kill still
+        // reaps us. `prctl`/`PR_SET_PDEATHSIG` are Linux-only (not portable
+        // `unix`), so gate them by target_os — macOS has no PDEATHSIG
+        // equivalent and relies on the process-group kill in `kill_child_tree`.
         unsafe {
             cmd.pre_exec(|| {
                 // New process group with this pid as leader.
                 if libc::setpgid(0, 0) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }
-                // Survive execve; when the parent dies the kernel delivers
-                // SIGTERM to this process.
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                // Close the race where the parent died between fork and
-                // prctl: if ppid is already 1, suicide now.
-                if libc::getppid() == 1 {
-                    libc::raise(libc::SIGTERM);
+                #[cfg(target_os = "linux")]
+                {
+                    // Survive execve; when the parent dies the kernel delivers
+                    // SIGTERM to this process.
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    // Close the race where the parent died between fork and
+                    // prctl: if ppid is already 1, suicide now.
+                    if libc::getppid() == 1 {
+                        libc::raise(libc::SIGTERM);
+                    }
                 }
                 Ok(())
             });
