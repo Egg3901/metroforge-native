@@ -13,7 +13,8 @@
 //!   by a previous unclean exit.
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Read};
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -319,17 +320,87 @@ fn spawn_stderr_reader(stderr: std::process::ChildStderr, log_tail: SidecarLogTa
     std::thread::Builder::new()
         .name("mf-net-sidecar-stderr".into())
         .spawn(move || {
+            // Tee: in-memory tail (fatal diagnostics screen, this PR) plus
+            // the rotating on-disk log (#80) from one reader thread.
+            let mut disk = sidecar_stderr_log_path().and_then(|p| {
+                if let Some(parent) = p.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                RotatingLog::open(&p, STDERR_LOG_MAX_BYTES).ok()
+            });
             let mut reader = BufReader::new(stderr);
             let mut buf = [0u8; 1024];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
-                    Ok(n) => log_tail.append(&buf[..n]),
+                    Ok(n) => {
+                        log_tail.append(&buf[..n]);
+                        if let Some(d) = disk.as_mut() {
+                            let _ = d.write_chunk(&buf[..n]);
+                        }
+                    }
                     Err(_) => break,
                 }
             }
         })
         .expect("failed to spawn sidecar stderr reader");
+}
+
+/// Rotate `sidecar-stderr.log` once it exceeds this many bytes (#80).
+const STDERR_LOG_MAX_BYTES: u64 = 512 * 1024;
+
+fn sidecar_logs_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("com", "[REDACTED]", "MetroForge")
+        .map(|dirs| dirs.data_dir().join("logs"))
+}
+
+fn sidecar_stderr_log_path() -> Option<PathBuf> {
+    sidecar_logs_dir().map(|d| d.join("sidecar-stderr.log"))
+}
+
+/// Append-only log that renames to `*.1` and starts fresh past `max_bytes`
+/// (#80's rotating stderr sink, fed here by the tee above).
+struct RotatingLog {
+    path: PathBuf,
+    max_bytes: u64,
+    file: File,
+    written: u64,
+}
+
+impl RotatingLog {
+    fn open(path: &std::path::Path, max_bytes: u64) -> std::io::Result<Self> {
+        let written = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            max_bytes,
+            file,
+            written,
+        })
+    }
+
+    fn write_chunk(&mut self, chunk: &[u8]) -> std::io::Result<()> {
+        if self.written >= self.max_bytes {
+            self.rotate()?;
+        }
+        self.file.write_all(chunk)?;
+        self.written = self.written.saturating_add(chunk.len() as u64);
+        Ok(())
+    }
+
+    fn rotate(&mut self) -> std::io::Result<()> {
+        self.file.flush()?;
+        let rotated = self.path.with_extension("log.1");
+        let _ = std::fs::remove_file(&rotated);
+        let _ = std::fs::rename(&self.path, &rotated);
+        self.file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.path)?;
+        self.written = 0;
+        Ok(())
+    }
 }
 
 /// Platform hooks that keep a crashed client from leaving a zombie sidecar.
