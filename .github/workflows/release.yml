@@ -257,6 +257,16 @@ jobs:
         working-directory: metroforge-native
         run: cargo build --release -p mf-game
 
+      # hdiutil needs free temp space roughly equal to the dmg contents; the
+      # ~10GB cargo target dir filled the runner on v0.5.0-alpha. The client
+      # binary is already built - stash it, drop the build tree, then package.
+      - name: Free runner disk before packaging
+        working-directory: metroforge-native
+        run: |
+          mkdir -p /tmp/mf-bin && cp target/release/metroforge /tmp/mf-bin/
+          rm -rf target
+          mkdir -p target/release && cp /tmp/mf-bin/metroforge target/release/
+
       - name: Package (macos)
         working-directory: metroforge-native
         run: ./scripts/package.sh macos "${{ steps.version.outputs.value }}"
