@@ -268,6 +268,12 @@ struct ConfigFile {
     /// Disable UI fades and attract-mode camera drift.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     reduce_motion: bool,
+    /// Looping city ambience bed (`audio/synth.rs::render_city_ambience`).
+    /// Off by default: the band-passed noise bed read as harsh, so ambience
+    /// is opt-in via `config.toml` while one-shot SFX stay on. Omitted from
+    /// TOML when false, same pattern as `mute` / `show_fps`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    ambience_enabled: bool,
 }
 
 fn default_weather_effects() -> bool {
@@ -315,6 +321,7 @@ impl Default for ConfigFile {
             ui_scale: UI_SCALE_DEFAULT,
             colorblind: ConfigColorblind::Off,
             reduce_motion: false,
+            ambience_enabled: false,
         }
     }
 }
@@ -363,6 +370,9 @@ pub struct MfConfig {
     pub colorblind: ColorblindMode,
     /// When true, skip UI fades and attract camera yaw drift.
     pub reduce_motion: bool,
+    /// Looping city ambience bed. Off by default (opt-in via config.toml);
+    /// one-shot SFX are unaffected.
+    pub ambience_enabled: bool,
     path: Option<PathBuf>,
 }
 
@@ -387,6 +397,7 @@ impl Default for MfConfig {
             ui_scale: UI_SCALE_DEFAULT,
             colorblind: ColorblindMode::Off,
             reduce_motion: false,
+            ambience_enabled: false,
             path: None,
         }
     }
@@ -429,6 +440,7 @@ impl MfConfig {
             ui_scale: clamp_ui_scale(file.ui_scale),
             colorblind: ColorblindMode::from(file.colorblind),
             reduce_motion: file.reduce_motion,
+            ambience_enabled: file.ambience_enabled,
             path: Some(path),
         }
     }
@@ -461,6 +473,7 @@ impl MfConfig {
             ui_scale: clamp_ui_scale(self.ui_scale),
             colorblind: ConfigColorblind::from(self.colorblind),
             reduce_motion: self.reduce_motion,
+            ambience_enabled: self.ambience_enabled,
         };
         let toml_str = toml::to_string_pretty(&file)?;
         std::fs::write(path, toml_str)?;
@@ -602,6 +615,7 @@ mod tests {
             ui_scale: 1.0,
             colorblind: ConfigColorblind::Off,
             reduce_motion: false,
+            ambience_enabled: false,
         }
     }
 
