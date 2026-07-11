@@ -270,10 +270,21 @@ pub fn menu_wash() -> egui::Color32 {
 // calls).
 
 /// MF_HIDE_HUD=1 suppresses every egui layer for clean marketing frames
-/// (promo harness); checked once, cheap everywhere.
+/// (promo harness); checked once, cheap everywhere. Photo mode also hides
+/// the HUD dynamically via [`set_photo_mode_hides_hud`].
 pub fn hud_hidden() -> bool {
-    static ONCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ONCE.get_or_init(|| std::env::var_os("MF_HIDE_HUD").is_some())
+    static ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let env = *ENV.get_or_init(|| std::env::var_os("MF_HIDE_HUD").is_some());
+    env || PHOTO_MODE_HIDES_HUD.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static PHOTO_MODE_HIDES_HUD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Called by `photomode.rs` on enter/exit so the main HUD (and other
+/// `run_if(!hud_hidden())` panels) disappear without an env restart.
+pub fn set_photo_mode_hides_hud(hide: bool) {
+    PHOTO_MODE_HIDES_HUD.store(hide, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub const CORNER_RADIUS_PX: u8 = 2;

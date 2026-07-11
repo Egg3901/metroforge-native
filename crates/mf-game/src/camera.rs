@@ -163,7 +163,8 @@ impl Plugin for MfCameraPlugin {
                     camera_transform_system,
                 )
                     .chain()
-                    .run_if(in_state(crate::state::AppState::InGame)),
+                    .run_if(in_state(crate::state::AppState::InGame))
+                    .run_if(not(crate::photomode::photo_mode_blocks_camera)),
             );
     }
 }

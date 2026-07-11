@@ -17,6 +17,7 @@ mod input;
 mod map_mode;
 mod overlays;
 mod panels;
+mod photomode;
 mod promo;
 mod quality_boot;
 mod report_ui;
@@ -93,6 +94,7 @@ fn main() {
             promo::MfPromoPlugin,
             tutorial::MfTutorialPlugin,
             goals::MfGoalsPlugin,
+            photomode::MfPhotoModePlugin,
         ));
     // MF_PERF_LOG=1: log frame-time diagnostics (avg/FPS) once per second.
     // Costs nothing when unset; gives players and CI a zero-setup way to

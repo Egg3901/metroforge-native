@@ -18,6 +18,7 @@ mod outline;
 /// Public so `mf-game` ghost previews can share the same vivid route table
 /// (and theme) as finished transit — see `tools.rs` route_ghost_color.
 pub mod palette;
+mod photomode;
 mod reveal;
 mod roads;
 mod sky;
@@ -34,6 +35,7 @@ use bevy::prelude::*;
 use mf_state::{QualityTier, Theme};
 
 pub use buildings::BuildingsDenseCenter;
+pub use photomode::PhotoModeRender;
 
 /// Ordering backbone for the whole crate. `Terrain` must run (and, on a
 /// rebuild, replace `mf_state::HeightAt`) before anything that samples
@@ -75,6 +77,7 @@ impl Plugin for MfRenderPlugin {
             atmosphere::MfAtmospherePlugin,
             subway::MfSubwayPlugin,
             outline::MfOutlinePlugin,
+            photomode::MfPhotoModeRenderPlugin,
         ))
         .add_systems(
             Update,

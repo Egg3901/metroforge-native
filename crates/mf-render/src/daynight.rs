@@ -22,6 +22,7 @@ use bevy::prelude::*;
 use mf_state::{LatestUi, QualityTier, Theme};
 
 use crate::palette;
+use crate::photomode::PhotoModeRender;
 
 /// Mirrors `metroforge/src/core/constants.ts`'s `TICKS_PER_DAY` (spec: "each
 /// tick is a 50ms host step; `TICKS_PER_DAY = 1200`").
@@ -143,8 +144,19 @@ fn compute_day_night_system(
     ui: Res<LatestUi>,
     quality: Res<QualityTier>,
     theme: Res<Theme>,
+    photo: Res<PhotoModeRender>,
     mut state: ResMut<DayNightState>,
 ) {
+    // Photo-mode scrubber: local hour override, does not touch the sim clock.
+    // Checked first so a scrub still works under Dark/Purple/potato (the
+    // player asked to frame a shot, not to fight the theme's fixed hour).
+    if let Some(hour) = photo.override_hour {
+        let hour = hour.rem_euclid(24.0);
+        let elevation = (((hour - 6.0) / 12.0) * PI).sin();
+        state.target_hour = hour;
+        state.target_night_factor = (-elevation * 1.2).clamp(0.0, 1.0);
+        return;
+    }
     // Dark/Purple ARE the night rig promoted to a standing theme (issue
     // #32): pin permanent midnight so the sun drops to the dim cool moon,
     // ambient falls to the night floor, and transit emissives read as a

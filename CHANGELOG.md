@@ -10,6 +10,9 @@ sibling `metroforge` repo and reach releases via the pinned sidecar SHA in
 ## [Unreleased]
 
 ### Added
+- Photo / cinematic mode: P toggles free-fly camera (HUD hidden, local
+  time-of-day scrubber, FOV, optional letterbox), F12 saves a PNG to the
+  Pictures folder, and 2–4 keyframe Catmull-Rom paths for trailer shots
 - Main menu overhaul and app icon (#47)
 - Release installers: Windows NSIS setup.exe, macOS .dmg, Linux tarball with
   desktop integration (#52)
