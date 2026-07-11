@@ -193,19 +193,21 @@ fn transit_update_system(
     };
 
     let densify_step = quality.knobs().ribbon_densify_step_m;
+    let world_size = city
+        .static_city
+        .as_ref()
+        .map(|c| c.world_size as f32)
+        .unwrap_or(8_000.0);
     let mut sig = signature_of(u) ^ (u64::from(densify_step.to_bits()) << 1);
     // Fold theme + unlit into the gate so Settings switches repaint transit.
     sig ^= (*theme as u64) << 48;
     if quality.knobs().unlit_material {
         sig ^= 1 << 47;
     }
+    // World size affects viaduct pier chunk assignment.
+    sig ^= u64::from(world_size.to_bits()) << 8;
     if state.signature != Some(sig) {
         state.signature = Some(sig);
-        let world_size = city
-            .static_city
-            .as_ref()
-            .map(|c| c.world_size as f32)
-            .unwrap_or(8_000.0);
         rebuild_stations(
             &mut commands,
             u,
