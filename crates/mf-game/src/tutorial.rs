@@ -348,7 +348,7 @@ fn tutorial_overlay_system(
     let mut skip_clicked = false;
     let fade = crate::design_system::animate(ctx, egui::Id::new("tutorial_fade"), 1.0);
     egui::Area::new(egui::Id::new("tutorial_hint"))
-        .order(egui::Order::Foreground)
+        .order(crate::design_system::ORDER_HINT)
         .anchor(anchor, offset)
         .show(ctx, |ui| {
             ui.set_opacity(fade);

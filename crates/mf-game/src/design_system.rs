@@ -142,6 +142,24 @@ pub const CORNER_RADIUS: egui::CornerRadius = egui::CornerRadius::ZERO;
 /// Open / close / hover motion window (seconds).
 pub const ANIM_SECS: f32 = 0.15;
 
+// ---------------------------------------------------------------------
+// Z-order policy (salvaged from the HUD-unification pass, PR #75)
+// ---------------------------------------------------------------------
+// egui `Order` is a coarse stack; within a layer later-drawn areas win.
+// Modals sit at `Tooltip` so a pause / settings / report card always
+// paints above panels, toasts, and world-anchored tutorial hints — the
+// hint and the modal used to share `Foreground`, so a hint could bleed
+// over the dimmed card. Policy (low to high): hints < panels < toasts < modal.
+
+/// World-anchored tutorial hint cards (below floating panels and toasts).
+pub const ORDER_HINT: egui::Order = egui::Order::Middle;
+/// Floating panels (goals / finance / station windows).
+pub const ORDER_PANEL: egui::Order = egui::Order::Middle;
+/// Toast strip (above panels, below modal).
+pub const ORDER_TOAST: egui::Order = egui::Order::Foreground;
+/// Pause / settings / report scrim + card. Nothing may render above this.
+pub const ORDER_MODAL: egui::Order = egui::Order::Tooltip;
+
 /// Semantic crowding ramp for a `0.0..1.0` live-crowding value (sim-depth,
 /// PR #31): interpolates [`GOOD`] (empty) -> [`WARN`] (filling) -> [`BAD`]
 /// (packed) so a route stripe/row reads its load at a glance. Values are
@@ -635,7 +653,7 @@ pub fn modal<R>(
     }
 
     egui::Area::new(id.with("scrim"))
-        .order(egui::Order::Foreground)
+        .order(ORDER_MODAL)
         .fixed_pos(egui::Pos2::ZERO)
         .show(ctx, |ui| {
             let screen = ui.ctx().screen_rect();
@@ -646,7 +664,7 @@ pub fn modal<R>(
         });
 
     let inner = egui::Area::new(id.with("panel"))
-        .order(egui::Order::Foreground)
+        .order(ORDER_MODAL)
         .anchor(
             egui::Align2::CENTER_CENTER,
             egui::vec2(0.0, (1.0 - open_t) * 12.0),
@@ -1266,6 +1284,14 @@ pub fn sparkline(ui: &mut egui::Ui, values: &[f64], size: egui::Vec2) -> egui::R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn z_order_policy_is_strictly_increasing() {
+        // Middle < Foreground < Tooltip (egui Order discriminant order).
+        assert!(ORDER_HINT < ORDER_TOAST);
+        assert!(ORDER_TOAST < ORDER_MODAL);
+        assert_eq!(ORDER_HINT, ORDER_PANEL);
+    }
 
     #[test]
     fn crowding_color_hits_the_semantic_endpoints() {
