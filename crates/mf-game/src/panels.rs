@@ -282,13 +282,10 @@ fn station_upgrade_button(
         ui.label(ds::label_small("This station is at its maximum level."));
         return;
     }
-    let resp = ui.add(
-        egui::Button::new(
-            egui::RichText::new(format!("Upgrade to level {}", station.level + 1))
-                .color(egui::Color32::WHITE),
-        )
-        .fill(ds::accent())
-        .corner_radius(ds::CORNER_RADIUS),
+    let resp = ds::button(
+        ui,
+        format!("Upgrade to level {}", station.level + 1),
+        ds::ButtonKind::Primary,
     );
     if resp.clicked() {
         if let Some(link) = link {
@@ -340,30 +337,23 @@ fn station_panel_system(
     };
 
     let mut open = true;
-    egui::Window::new(station_title(station))
-        // Fixed id: the title text changes per selected station, and
-        // `egui::Window::new`'s own doc is explicit that a changing title
-        // requires `.id(...)` with a value that doesn't change, or the
-        // window loses its position/collapsed state every time the
-        // selection changes.
-        .id(egui::Id::new("mf_station_inspection_panel"))
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .default_width(STATION_PANEL_WIDTH)
-        .anchor(
-            egui::Align2::RIGHT_TOP,
-            egui::vec2(-ds::SPACE_MD, PANEL_TOP_OFFSET_PX),
-        )
-        .frame(
-            egui::Frame::default()
-                .fill(ds::panel_bg())
-                .inner_margin(egui::Margin::symmetric(
-                    ds::SPACE_SM as i8,
-                    ds::SPACE_SM as i8,
-                )),
-        )
-        .show(ctx, |ui| {
+    let title = station_title(station);
+    ds::window(
+        ctx,
+        ds::WindowOpts {
+            title: &title,
+            id: egui::Id::new("mf_station_inspection_panel"),
+            open: Some(&mut open),
+            collapsible: false,
+            resizable: false,
+            default_pos: None,
+            default_width: Some(STATION_PANEL_WIDTH),
+            anchor: Some((
+                egui::Align2::RIGHT_TOP,
+                egui::vec2(-ds::SPACE_MD, PANEL_TOP_OFFSET_PX),
+            )),
+        },
+        |ui| {
             ui.horizontal(|ui| {
                 let (icon_rect, _) =
                     ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
@@ -418,7 +408,7 @@ fn station_panel_system(
             }
 
             ui.add_space(ds::SPACE_SM);
-            ui.separator();
+            ds::thin_separator(ui);
             ui.add_space(ds::SPACE_XXS);
 
             ui.label(ds::label_muted("Routes serving this station"));
@@ -441,10 +431,11 @@ fn station_panel_system(
             }
 
             ui.add_space(ds::SPACE_SM);
-            ui.separator();
+            ds::thin_separator(ui);
             ui.add_space(ds::SPACE_XXS);
             station_upgrade_button(ui, station, link.as_deref(), &mut bus);
-        });
+        },
+    );
 
     if !open {
         *selected = SelectedTarget::None;
@@ -489,36 +480,29 @@ fn finance_panel_system(
         return Ok(());
     };
 
-    egui::Window::new("Finance")
-        .id(egui::Id::new("mf_finance_panel"))
-        .collapsible(false)
-        .resizable(false)
-        .default_width(FINANCE_PANEL_WIDTH)
-        // Left side, `hud_top`'s cash readout is already up there so a
-        // player's eye is already trained on this corner for money; the
-        // station panel anchors RIGHT, so the two never start stacked on
-        // top of each other even if both are open at once.
-        .anchor(
-            egui::Align2::LEFT_TOP,
-            egui::vec2(ds::SPACE_MD, PANEL_TOP_OFFSET_PX),
-        )
-        .frame(
-            egui::Frame::default()
-                .fill(ds::panel_bg())
-                .inner_margin(egui::Margin::symmetric(
-                    ds::SPACE_SM as i8,
-                    ds::SPACE_SM as i8,
-                )),
-        )
-        .show(ctx, |ui| {
+    ds::window(
+        ctx,
+        ds::WindowOpts {
+            title: "Finance",
+            id: egui::Id::new("mf_finance_panel"),
+            open: None,
+            collapsible: false,
+            resizable: false,
+            default_pos: None,
+            default_width: Some(FINANCE_PANEL_WIDTH),
+            anchor: Some((
+                egui::Align2::LEFT_TOP,
+                egui::vec2(ds::SPACE_MD, PANEL_TOP_OFFSET_PX),
+            )),
+        },
+        |ui| {
             if let Some(banner) = fail_banner_text(state) {
-                egui::Frame::default()
+                egui::Frame::NONE
                     .fill(ds::BAD)
                     .inner_margin(egui::Margin::symmetric(
                         ds::SPACE_SM as i8,
                         ds::SPACE_XS as i8,
                     ))
-                    .corner_radius(ds::CORNER_RADIUS)
                     .show(ui, |ui| {
                         ui.label(
                             egui::RichText::new(banner)
@@ -542,7 +526,7 @@ fn finance_panel_system(
             });
 
             ui.add_space(ds::SPACE_SM);
-            ui.separator();
+            ds::thin_separator(ui);
             ui.add_space(ds::SPACE_XXS);
 
             ui.label(ds::label_muted("Yesterday"));
@@ -553,7 +537,7 @@ fn finance_panel_system(
             money_row(ui, "Maintenance", -ld.maintenance);
             money_row(ui, "Interest", -ld.interest);
             ui.add_space(ds::SPACE_XXS);
-            ui.separator();
+            ds::thin_separator(ui);
             money_row(ui, "Net", day_ledger_net(ld));
 
             ui.add_space(ds::SPACE_SM);
@@ -565,7 +549,7 @@ fn finance_panel_system(
             );
 
             ui.add_space(ds::SPACE_SM);
-            ui.separator();
+            ds::thin_separator(ui);
             ui.add_space(ds::SPACE_XXS);
             stat_row(
                 ui,
@@ -596,14 +580,15 @@ fn finance_panel_system(
 
             if !state.insights.is_empty() {
                 ui.add_space(ds::SPACE_SM);
-                ui.separator();
+                ds::thin_separator(ui);
                 ui.add_space(ds::SPACE_XXS);
                 ui.label(ds::label_muted("Insights"));
                 for insight in &state.insights {
                     insight_row(ui, insight);
                 }
             }
-        });
+        },
+    );
 
     Ok(())
 }
