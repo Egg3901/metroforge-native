@@ -18,7 +18,7 @@ jobs:
           path: metroforge-native
 
       - name: Install Bevy Linux system deps
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev pkg-config libwayland-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -78,7 +78,7 @@ jobs:
           path: metroforge
 
       - name: Install Bevy Linux system deps
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev pkg-config xvfb mesa-vulkan-drivers
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev pkg-config libwayland-dev xvfb mesa-vulkan-drivers
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
