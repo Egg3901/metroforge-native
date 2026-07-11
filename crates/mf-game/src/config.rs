@@ -105,9 +105,27 @@ struct ConfigFile {
     window_x: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     window_y: Option<i32>,
+    /// Autosave cadence in sim-days. `0` disables autosave. Defaults to
+    /// [`crate::saves::DEFAULT_AUTOSAVE_INTERVAL_DAYS`] for legacy configs.
+    #[serde(default = "default_autosave_interval_days")]
+    autosave_interval_days: u32,
+    /// Whether the bottom-right HUD minimap (`minimap.rs`) is expanded.
+    /// Defaults to on so existing config.toml files (which predate the
+    /// minimap) still show it without an edit, same rationale as
+    /// `weather_effects` above.
+    #[serde(default = "default_minimap_open")]
+    minimap_open: bool,
 }
 
 fn default_weather_effects() -> bool {
+    true
+}
+
+fn default_autosave_interval_days() -> u32 {
+    crate::saves::DEFAULT_AUTOSAVE_INTERVAL_DAYS
+}
+
+fn default_minimap_open() -> bool {
     true
 }
 
@@ -123,6 +141,8 @@ impl Default for ConfigFile {
             window_height: None,
             window_x: None,
             window_y: None,
+            autosave_interval_days: default_autosave_interval_days(),
+            minimap_open: true,
         }
     }
 }
@@ -149,6 +169,14 @@ pub struct MfConfig {
     pub window_height: Option<f32>,
     pub window_x: Option<i32>,
     pub window_y: Option<i32>,
+    /// Autosave every N sim-days (`0` = off). See
+    /// [`crate::saves::DEFAULT_AUTOSAVE_INTERVAL_DAYS`].
+    pub autosave_interval_days: u32,
+    /// Whether the HUD minimap (`minimap.rs`) is expanded. `M` toggles the
+    /// top-down map mode (`map_mode.rs`), so the minimap claims `N` instead
+    /// (verified unclaimed by grep before wiring it up, same convention
+    /// `map_mode.rs`'s module doc uses for `M`).
+    pub minimap_open: bool,
     path: Option<PathBuf>,
 }
 
@@ -164,6 +192,8 @@ impl Default for MfConfig {
             window_height: None,
             window_x: None,
             window_y: None,
+            autosave_interval_days: crate::saves::DEFAULT_AUTOSAVE_INTERVAL_DAYS,
+            minimap_open: true,
             path: None,
         }
     }
@@ -197,6 +227,8 @@ impl MfConfig {
             window_height: file.window_height,
             window_x: file.window_x,
             window_y: file.window_y,
+            autosave_interval_days: file.autosave_interval_days,
+            minimap_open: file.minimap_open,
             path: Some(path),
         }
     }
@@ -220,6 +252,8 @@ impl MfConfig {
             window_height: self.window_height,
             window_x: self.window_x,
             window_y: self.window_y,
+            autosave_interval_days: self.autosave_interval_days,
+            minimap_open: self.minimap_open,
         };
         let toml_str = toml::to_string_pretty(&file)?;
         std::fs::write(path, toml_str)?;
@@ -263,6 +297,22 @@ impl MfConfig {
             tracing::warn!("mf-game: failed to persist config.toml: {e}");
         }
     }
+
+    pub fn set_autosave_interval_days(&mut self, days: u32) {
+        self.autosave_interval_days = days;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
+
+    /// Persist the minimap's collapsed/expanded state (`N` toggle, see
+    /// `minimap.rs`).
+    pub fn set_minimap_open(&mut self, open: bool) {
+        self.minimap_open = open;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -280,6 +330,8 @@ mod tests {
             window_height: None,
             window_x: None,
             window_y: None,
+            autosave_interval_days: 10,
+            minimap_open: true,
         }
     }
 
@@ -310,6 +362,7 @@ mod tests {
         assert_eq!(back.quality_override, Some(ConfigQuality::Medium));
         assert!(!back.borderless_fullscreen);
         assert_eq!(back.window_width, None);
+        assert_eq!(back.autosave_interval_days, 10);
     }
 
     #[test]
@@ -384,5 +437,20 @@ mod tests {
             let back: Theme = cfg.into();
             assert_eq!(theme, back);
         }
+    }
+
+    #[test]
+    fn autosave_interval_roundtrips_and_defaults() {
+        let file = ConfigFile {
+            autosave_interval_days: 5,
+            ..ConfigFile::default()
+        };
+        let s = toml::to_string_pretty(&file).unwrap();
+        assert!(s.contains("5"));
+        let back: ConfigFile = toml::from_str(&s).unwrap();
+        assert_eq!(back.autosave_interval_days, 5);
+
+        let legacy: ConfigFile = toml::from_str("weather_effects = false\n").unwrap();
+        assert_eq!(legacy.autosave_interval_days, 10);
     }
 }

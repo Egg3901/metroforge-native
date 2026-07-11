@@ -142,9 +142,9 @@ fn tram_unlocked(ui_state: &LatestUi) -> bool {
 // ---------------------------------------------------------------------
 
 #[derive(Resource, Default)]
-struct RoutePanelState {
-    open: bool,
-    selected: Option<i64>,
+pub struct RoutePanelState {
+    pub open: bool,
+    pub selected: Option<i64>,
     /// Which route id `name_edit`/`fare_edit` currently mirror; re-seeded
     /// from the live `UiRoute` whenever `selected` changes to a route id
     /// this doesn't match yet.
@@ -537,6 +537,25 @@ fn route_panel_system(
                         panel.selected = if is_selected { None } else { Some(route.id) };
                         sfx.write(PlaySfx(Sfx::Confirm));
                     }
+
+                    // Sim-depth (PR #31): a live-crowding chip on the right of
+                    // the row, colored green -> amber -> red. Only shown when
+                    // the sidecar sends `liveCrowding` (old ones omit it).
+                    if let Some(crowding) = route.live_crowding {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let (dot, dot_resp) = ui
+                                .allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                            ui.painter().rect_filled(
+                                dot,
+                                egui::CornerRadius::same(5),
+                                ds::crowding_color(crowding),
+                            );
+                            dot_resp.on_hover_text(format!(
+                                "Live crowding {:.0}%",
+                                crowding.clamp(0.0, 1.0) * 100.0
+                            ));
+                        });
+                    }
                 });
                 ui.label(ds::label_small(format!(
                     "{} station(s), {} vehicle(s), mode {}",
@@ -624,6 +643,56 @@ fn route_editor(
     // panel for the 3D scene.
     let labels = route_station_labels(route, stations);
     ds::route_line_diagram(ui, color, &labels, &route.segment_loads);
+    ui.add_space(ds::SPACE_XXS);
+
+    // Sim-depth (PR #31): this route's daily farebox vs operating cost, plus
+    // a live-crowding readout. Each row is drawn only when the sidecar sends
+    // the matching field, so an old sidecar (which omits all three) shows the
+    // editor exactly as before.
+    if let Some(crowding) = route.live_crowding {
+        ui.horizontal(|ui| {
+            ui.label(ds::label_muted("Live crowding"));
+            let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter().rect_filled(
+                dot,
+                egui::CornerRadius::same(5),
+                ds::crowding_color(crowding),
+            );
+            ui.label(
+                ds::value_strong(format!("{:.0}%", crowding.clamp(0.0, 1.0) * 100.0))
+                    .color(ds::crowding_color(crowding)),
+            );
+        });
+    }
+    if let Some(farebox) = route.farebox {
+        ui.horizontal(|ui| {
+            ui.label(ds::label_muted("Farebox / day"));
+            ui.label(ds::value_strong(format_cash(farebox)).color(ds::GOOD));
+        });
+    }
+    if let Some(cost) = route.operating_cost {
+        ui.horizontal(|ui| {
+            ui.label(ds::label_muted("Operating cost / day"));
+            ui.label(ds::value_strong(format_cash(cost)).color(ds::BAD));
+        });
+    }
+    // Net line only when BOTH numbers are present, so it isn't computed off a
+    // half-populated pair.
+    if let (Some(farebox), Some(cost)) = (route.farebox, route.operating_cost) {
+        let net = farebox - cost;
+        let good = net >= 0.0;
+        let prefix = if good { "+" } else { "-" };
+        ui.horizontal(|ui| {
+            ui.label(ds::label_muted("Net / day"));
+            ui.label(
+                ds::value_strong(format!("{prefix}{}", format_cash(net.abs()))).color(if good {
+                    ds::GOOD
+                } else {
+                    ds::BAD
+                }),
+            );
+        });
+    }
     ui.add_space(ds::SPACE_XXS);
 
     ui.horizontal(|ui| {
@@ -901,6 +970,9 @@ mod tests {
             load: 0.0,
             crowding: 0.0,
             segment_loads: vec![],
+            live_crowding: None,
+            operating_cost: None,
+            farebox: None,
         }
     }
 

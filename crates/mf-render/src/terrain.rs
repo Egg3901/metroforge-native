@@ -4,6 +4,10 @@
 //! real bilinear sampler once fields have arrived, so every other layer
 //! (roads/buildings/transit/vehicles/agents/camera) can position things on
 //! the ground.
+//!
+//! Water: on Potato, water stays flat vertex-colored quads in this mesh
+//! (status quo). On Low+, pure-water quads are omitted here and drawn by
+//! `water.rs`'s stylized `WaterMaterial` overlay instead.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,6 +19,9 @@ use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, Theme};
 use crate::mesh_utils::MeshBuffers;
 use crate::palette;
 use crate::roads::{ARTERIAL_WIDTH, COLLECTOR_WIDTH, LOCAL_WIDTH};
+use crate::water::{
+    make_water_material, water_bundle, WaterMaterial, WaterMeshBuffers, WATER_SURFACE_Y,
+};
 
 /// Max relief per spec §3.3 ("max relief 200-400 m") — picked the midpoint.
 // Was 300 (spec: max relief 200-400m): that much artificial relief buried
@@ -47,14 +54,17 @@ impl Plugin for MfTerrainPlugin {
 
 #[derive(Resource, Default)]
 struct TerrainState {
-    /// `(fields.version, subdiv_divisor, theme)` — the geometry/color-
-    /// affecting knobs. `Theme` is included so a theme switch forces the
-    /// same full rebuild path as a subdivision change, rather than needing
-    /// its own in-place vertex-color recolor system (ground/water/park
-    /// colors are baked directly into the mesh's vertex-color attribute at
-    /// build time, not read from the material each frame).
-    key: Option<(u32, u32, Theme)>,
+    /// `(fields.version, subdiv_divisor, theme, shader_water)` — the
+    /// geometry/color-affecting knobs. `Theme` is included so a theme
+    /// switch forces the same full rebuild path as a subdivision change,
+    /// rather than needing its own in-place vertex-color recolor system
+    /// (ground/water/park colors are baked directly into the mesh's
+    /// vertex-color attribute at build time, not read from the material
+    /// each frame). `shader_water` flips when `water_quality` crosses
+    /// zero (Potato flat-in-terrain vs Low+ separate water mesh).
+    key: Option<(u32, u32, Theme, bool)>,
     entity: Option<Entity>,
+    water_entity: Option<Entity>,
     material: Option<Handle<StandardMaterial>>,
 }
 
@@ -129,6 +139,7 @@ fn build_terrain_system(
     mut state: ResMut<TerrainState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut water_materials: ResMut<Assets<WaterMaterial>>,
     mut height_at: ResMut<HeightAt>,
 ) {
     let Some(city_json) = &city.static_city else {
@@ -137,14 +148,19 @@ fn build_terrain_system(
     let Some(f) = &fields.0 else {
         return;
     };
-    let divisor = quality.knobs().terrain_subdiv_divisor.max(1);
-    let key = (f.version, divisor, *theme);
+    let knobs = quality.knobs();
+    let divisor = knobs.terrain_subdiv_divisor.max(1);
+    let shader_water = knobs.water_quality > 0;
+    let key = (f.version, divisor, *theme, shader_water);
     if state.key == Some(key) {
         return;
     }
     state.key = Some(key);
 
     if let Some(e) = state.entity.take() {
+        commands.entity(e).despawn();
+    }
+    if let Some(e) = state.water_entity.take() {
         commands.entity(e).despawn();
     }
 
@@ -190,12 +206,13 @@ fn build_terrain_system(
     let xs = stepped(field_w, divisor);
     let ys = stepped(field_h, divisor);
 
-    let mut buf = MeshBuffers::new();
+    let mut land_buf = MeshBuffers::new();
+    let mut water_buf = WaterMeshBuffers::new();
     let ground = palette::ground();
     let water = palette::water();
     let park = palette::park();
 
-    let vertex_at = |ix: usize, iy: usize| -> (Vec3, Color) {
+    let vertex_at = |ix: usize, iy: usize| -> (Vec3, Color, f32) {
         let gx = xs[ix];
         let gy = ys[iy];
         let idx = (gy * field_w + gx) as usize;
@@ -240,44 +257,69 @@ fn build_terrain_system(
             graded_terrain.get(idx).copied().unwrap_or(0.0) * TERRAIN_Z_SCALE
         };
         let land = if is_park { park } else { ground };
-        let color = if water_frac <= 0.0 {
-            land
-        } else if water_frac >= 1.0 {
-            water
+        // Potato: bake water into vertex color (status quo). Low+: land
+        // mesh stays land-colored; the water overlay carries the water look.
+        let color = if !shader_water {
+            if water_frac <= 0.0 {
+                land
+            } else if water_frac >= 1.0 {
+                water
+            } else {
+                land.mix(&water, water_frac)
+            }
         } else {
-            land.mix(&water, water_frac)
+            land
         };
         let x = origin_x + gx as f32 * cell_size;
         let z = origin_y + gy as f32 * cell_size;
-        (Vec3::new(x, y, z), color)
+        (Vec3::new(x, y, z), color, water_frac)
     };
 
     for iy in 0..ys.len().saturating_sub(1) {
         for ix in 0..xs.len().saturating_sub(1) {
-            let (p00, c00) = vertex_at(ix, iy);
-            let (p10, c10) = vertex_at(ix + 1, iy);
-            let (p11, c11) = vertex_at(ix + 1, iy + 1);
-            let (p01, c01) = vertex_at(ix, iy + 1);
-            // Winding vs the declared `+Y` normal: `ix` walks `+X`, `iy`
-            // walks `+Z` (`vertex_at`'s `x`/`z` both increase with their
-            // index). Taking `p00` as the origin, `v1 = p10-p00 ~= (dx,0,0)`
-            // and `v2 = p11-p00 ~= (dx,0,dz)` (dx,dz > 0); the right-hand
-            // cross product `v1 x v2 = (0, -dx*dz, 0)` — i.e. `(p00,p10,p11)`
-            // winds CCW as seen from *below* (`-Y`), not from above where
-            // the camera and the declared normal both are. `push_quad`
-            // needs (p0,p1,p2) CCW from `normal` (Bevy/wgpu front-face =
-            // CCW), so the naive `(p00,p10,p11,p01)` order is backwards;
-            // swapping the middle two args to `(p00,p01,p11,p10)` reverses
-            // the same quad and flips the cross product to `+Y`.
-            buf.push_quad(p00, p01, p11, p10, Vec3::Y, c00, c01, c11, c10);
+            let (p00, c00, f00) = vertex_at(ix, iy);
+            let (p10, c10, f10) = vertex_at(ix + 1, iy);
+            let (p11, c11, f11) = vertex_at(ix + 1, iy + 1);
+            let (p01, c01, f01) = vertex_at(ix, iy + 1);
+            let max_f = f00.max(f10).max(f11).max(f01);
+            let min_f = f00.min(f10).min(f11).min(f01);
+
+            // Land: skip pure-water quads when the water shader owns them
+            // (avoids double-drawing NYC harbors). Potato keeps everything.
+            let emit_land = !shader_water || min_f < 0.99;
+            if emit_land {
+                // Winding vs the declared `+Y` normal: `ix` walks `+X`, `iy`
+                // walks `+Z` (`vertex_at`'s `x`/`z` both increase with their
+                // index). Taking `p00` as the origin, `v1 = p10-p00 ~= (dx,0,0)`
+                // and `v2 = p11-p00 ~= (dx,0,dz)` (dx,dz > 0); the right-hand
+                // cross product `v1 x v2 = (0, -dx*dz, 0)` — i.e. `(p00,p10,p11)`
+                // winds CCW as seen from *below* (`-Y`), not from above where
+                // the camera and the declared normal both are. `push_quad`
+                // needs (p0,p1,p2) CCW from `normal` (Bevy/wgpu front-face =
+                // CCW), so the naive `(p00,p10,p11,p01)` order is backwards;
+                // swapping the middle two args to `(p00,p01,p11,p10)` reverses
+                // the same quad and flips the cross product to `+Y`.
+                land_buf.push_quad(p00, p01, p11, p10, Vec3::Y, c00, c01, c11, c10);
+            }
+
+            // Water overlay: any quad that touches water. Flat at
+            // WATER_SURFACE_Y with water_frac in UV0.x for shoreline foam.
+            if shader_water && max_f > 0.05 {
+                let y = WATER_SURFACE_Y;
+                let w00 = Vec3::new(p00.x, y, p00.z);
+                let w10 = Vec3::new(p10.x, y, p10.z);
+                let w11 = Vec3::new(p11.x, y, p11.z);
+                let w01 = Vec3::new(p01.x, y, p01.z);
+                water_buf.push_quad(w00, w01, w11, w10, f00, f01, f11, f10);
+            }
         }
     }
-    if buf.is_empty() {
+    if land_buf.is_empty() {
         return;
     }
-    let mesh = meshes.add(buf.build());
+    let mesh = meshes.add(land_buf.build());
 
-    let unlit = quality.knobs().unlit_material;
+    let unlit = knobs.unlit_material;
     // Grid quads verified CCW-from-+Y below (fixed to match) — single-sided,
     // back-face-culled is correct for a ground plane only ever seen from
     // above. (An A/B-diffed brightness regression in the subway+Potato
@@ -306,6 +348,13 @@ fn build_terrain_system(
         ))
         .id();
     state.entity = Some(entity);
+
+    if shader_water && !water_buf.is_empty() {
+        let water_mesh = meshes.add(water_buf.build());
+        let water_mat = water_materials.add(make_water_material(*quality));
+        let water_entity = commands.spawn(water_bundle(water_mesh, water_mat)).id();
+        state.water_entity = Some(water_entity);
+    }
 
     let data = Arc::new(TerrainSampleData {
         field_w: field_w as i32,

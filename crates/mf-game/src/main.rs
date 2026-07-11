@@ -16,6 +16,7 @@ mod goals;
 mod hud;
 mod input;
 mod map_mode;
+mod minimap;
 mod overlays;
 mod panels;
 mod paths;
@@ -89,6 +90,7 @@ fn main() {
         .add_plugins((
             overlays::MfOverlaysPlugin,
             map_mode::MfMapModePlugin,
+            minimap::MfMinimapPlugin,
             panels::MfPanelsPlugin,
             campaign::MfCampaignPlugin,
             report_ui::MfReportUiPlugin,

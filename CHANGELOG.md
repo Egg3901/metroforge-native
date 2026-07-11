@@ -14,6 +14,9 @@ sibling `metroforge` repo and reach releases via the pinned sidecar SHA in
   (persisted), remember size/position, pause rendering when minimized/alt-tabbed,
   single-instance focus-existing-window guard, embedded exe icon + VERSIONINFO,
   crash reports under the OS local data dir
+- Hardened save/load: versioned wrapper schema with migration registry,
+  atomic writes + backup recovery, autosave ring of 3 (interval in
+  Settings), and a title-screen Load Game browser with per-slot metadata
 - Main menu overhaul and app icon (#47)
 - Release installers: Windows NSIS setup.exe, macOS .dmg, Linux tarball with
   desktop integration (#52)
