@@ -37,8 +37,8 @@ impl Plugin for MfQualityBootPlugin {
             Update,
             (
                 record_adapter_for_crash_system,
-                resolve_quality_system.before(mf_state::quality::sync_effective_knobs_system),
-                apply_vsync_system.after(mf_state::quality::sync_effective_knobs_system),
+                resolve_quality_system.before(mf_state::KnobSyncSet),
+                apply_vsync_system.after(mf_state::KnobSyncSet),
             ),
         );
     }

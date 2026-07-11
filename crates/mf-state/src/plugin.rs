@@ -56,11 +56,29 @@ impl Plugin for MfStatePlugin {
                 (
                     apply_sim_events_system.after(NetSet::Drain),
                     // Before any render consumer reads knobs this frame.
-                    sync_effective_knobs_system,
+                    // Registered exactly once, inside `KnobSyncSet` — other
+                    // crates order against the SET, never the bare system, so
+                    // `sync_effective_knobs_system` is a single schedule
+                    // instance and stays usable as an ordering target.
+                    sync_effective_knobs_system.in_set(KnobSyncSet),
                 ),
             );
     }
 }
+
+/// Ordering handle for [`sync_effective_knobs_system`]. The system merges the
+/// active quality preset with the player's Advanced overrides into
+/// [`EffectiveKnobs`]; anything that reads knobs this frame must run after it.
+///
+/// It exists because the system was previously `add_systems`'d in BOTH
+/// `MfStatePlugin` and `MfRenderPlugin` to hang a `.before(Terrain)` edge off
+/// it, which made it a duplicated `SystemTypeSet`. `MfQualityBootPlugin` then
+/// ordered `.before`/`.after` the bare system, and Bevy panics at schedule
+/// build when you order against an ambiguous duplicate — so the release
+/// binary crashed on boot. Registering the system once and ordering everyone
+/// against this set removes the ambiguity.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct KnobSyncSet;
 
 /// Drains this frame's `SimEvent`s into the shared resources. Runs after
 /// `mf-net`'s drain system (`NetSet::Drain`) so events pushed this frame are
