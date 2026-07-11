@@ -25,6 +25,7 @@ mod saves;
 mod state;
 mod theme_boot;
 mod tools;
+mod tutorial;
 mod verify;
 
 use bevy::prelude::*;
@@ -90,6 +91,7 @@ fn main() {
             report_ui::MfReportUiPlugin,
             attract::MfAttractPlugin,
             promo::MfPromoPlugin,
+            tutorial::MfTutorialPlugin,
             goals::MfGoalsPlugin,
         ));
     // MF_PERF_LOG=1: log frame-time diagnostics (avg/FPS) once per second.

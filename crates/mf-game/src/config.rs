@@ -80,6 +80,13 @@ struct ConfigFile {
     quality_override: Option<ConfigQuality>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     theme_override: Option<ConfigTheme>,
+    /// Whether the first-launch tutorial (`tutorial.rs`) has been completed
+    /// or skipped. `false` (the default for a missing key / fresh install)
+    /// arms the flow on the next city load; `true` suppresses it. A plain
+    /// bool rather than an `Option` since "never seen it" and "explicitly
+    /// not done" are the same state to the flow.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    tutorial_completed: bool,
     /// Scrolling fog/cloud weather. Defaults to on when absent so existing
     /// config.toml files keep the new Medium+ atmosphere without an edit.
     #[serde(default = "default_weather_effects")]
@@ -95,6 +102,7 @@ impl Default for ConfigFile {
         ConfigFile {
             quality_override: None,
             theme_override: None,
+            tutorial_completed: false,
             weather_effects: true,
         }
     }
@@ -106,6 +114,10 @@ impl Default for ConfigFile {
 pub struct MfConfig {
     pub quality_override: Option<QualityTier>,
     pub theme_override: Option<Theme>,
+    /// Whether the first-launch tutorial has been completed or skipped (see
+    /// `tutorial.rs`). Read at `InGame` entry to decide whether to arm the
+    /// flow; the "Replay tutorial" setting clears it back to `false`.
+    pub tutorial_completed: bool,
     /// Player preference for atmospheric weather (fog/cloud). Still gated
     /// by quality tier at render time.
     pub weather_effects: bool,
@@ -117,6 +129,7 @@ impl Default for MfConfig {
         MfConfig {
             quality_override: None,
             theme_override: None,
+            tutorial_completed: false,
             weather_effects: true,
             path: None,
         }
@@ -149,6 +162,10 @@ impl MfConfig {
             .as_ref()
             .and_then(|f| f.theme_override)
             .map(Theme::from);
+        let tutorial_completed = parsed
+            .as_ref()
+            .map(|f| f.tutorial_completed)
+            .unwrap_or(false);
         let weather_effects = parsed
             .as_ref()
             .map(|f| f.weather_effects)
@@ -156,6 +173,7 @@ impl MfConfig {
         MfConfig {
             quality_override,
             theme_override,
+            tutorial_completed,
             weather_effects,
             path: Some(path),
         }
@@ -173,6 +191,7 @@ impl MfConfig {
         let file = ConfigFile {
             quality_override: self.quality_override.map(ConfigQuality::from),
             theme_override: self.theme_override.map(ConfigTheme::from),
+            tutorial_completed: self.tutorial_completed,
             weather_effects: self.weather_effects,
         };
         let toml_str = toml::to_string_pretty(&file)?;
@@ -189,6 +208,16 @@ impl MfConfig {
 
     pub fn set_theme_override(&mut self, theme: Option<Theme>) {
         self.theme_override = theme;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
+
+    /// Persist whether the first-launch tutorial is done. `true` on
+    /// completion/skip suppresses the flow; the "Replay tutorial" setting
+    /// passes `false` to re-arm it on the next city load.
+    pub fn set_tutorial_completed(&mut self, completed: bool) {
+        self.tutorial_completed = completed;
         if let Err(e) = self.save() {
             tracing::warn!("mf-game: failed to persist config.toml: {e}");
         }
@@ -211,6 +240,7 @@ mod tests {
         let file = ConfigFile {
             quality_override: Some(ConfigQuality::High),
             theme_override: None,
+            tutorial_completed: false,
             weather_effects: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
@@ -224,6 +254,7 @@ mod tests {
         let file = ConfigFile {
             quality_override: None,
             theme_override: None,
+            tutorial_completed: false,
             weather_effects: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
@@ -245,6 +276,7 @@ mod tests {
         let file = ConfigFile {
             quality_override: None,
             theme_override: None,
+            tutorial_completed: false,
             weather_effects: false,
         };
         let s = toml::to_string_pretty(&file).unwrap();
@@ -258,12 +290,37 @@ mod tests {
         let file = ConfigFile {
             quality_override: None,
             theme_override: Some(ConfigTheme::Purple),
+            tutorial_completed: false,
             weather_effects: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("purple"));
         let back: ConfigFile = toml::from_str(&s).unwrap();
         assert_eq!(back.theme_override, Some(ConfigTheme::Purple));
+    }
+
+    #[test]
+    fn tutorial_completed_roundtrips_through_toml() {
+        let file = ConfigFile {
+            quality_override: None,
+            theme_override: None,
+            tutorial_completed: true,
+            weather_effects: true,
+        };
+        let s = toml::to_string_pretty(&file).unwrap();
+        assert!(s.contains("tutorial_completed"));
+        let back: ConfigFile = toml::from_str(&s).unwrap();
+        assert!(back.tutorial_completed);
+    }
+
+    #[test]
+    fn tutorial_completed_defaults_false_and_is_omitted_when_unset() {
+        let file = ConfigFile::default();
+        let s = toml::to_string_pretty(&file).unwrap();
+        // Skipped when false, so a fresh install writes no tutorial key.
+        assert!(!s.contains("tutorial_completed"));
+        let back: ConfigFile = toml::from_str(&s).unwrap();
+        assert!(!back.tutorial_completed);
     }
 
     #[test]
