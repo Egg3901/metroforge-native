@@ -43,6 +43,16 @@ jobs:
         working-directory: metroforge-native
         run: cargo test --workspace -j 4
 
+      # Non-blocking dependency hygiene: duplicate versions, yanked crates,
+      # and license allowlist. Failures print as annotations but never block
+      # the smoke/clippy gate or release.yml.
+      - name: cargo deny (warn only)
+        continue-on-error: true
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: metroforge-native/Cargo.toml
+          command: check advisories bans licenses sources
+
   sidecar-smoke:
     runs-on: ubuntu-latest
     steps:

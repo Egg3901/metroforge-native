@@ -11,4 +11,3 @@ mf-protocol = { workspace = true }
 
 [dependencies.bevy]
 workspace = true
-default-features = true
