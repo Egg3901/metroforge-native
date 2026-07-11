@@ -73,6 +73,20 @@ straight to `Loading` with that city on Normal difficulty: this box has no displ
 to click an egui menu through, and it doubles as a fast-boot path for screenshots
 and scripted smoke tests.
 
+### Sidecar crash-recovery harness
+
+`MF_TEST_KILL_SIDECAR=<seconds>` (e.g. `30`) kills the owned sidecar that many
+wall-clock seconds after `InGame`, then asserts the client recovers in place
+(re-handshake + autosave/city restore, no MainMenu bounce). Writes
+`sidecar-recovery-result.txt` (or `$MF_TEST_KILL_SIDECAR_RESULT`) with `ok=1` on
+success. Optional CI job: `sidecar-recovery` in `.github/workflows/ci.yml`
+(`continue-on-error: true` until the sidecar binary path is a hard gate).
+
+```sh
+MF_AUTOSTART=nyc MF_TEST_KILL_SIDECAR=30 MF_SIDECAR_PATH=/path/to/metroforge-sidecar \
+  cargo run -p mf-game --release
+```
+
 ## Headless verification recipe
 
 This box has no GPU, so rendering is validated with Mesa's software Vulkan

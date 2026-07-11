@@ -10,6 +10,13 @@ sibling `metroforge` repo and reach releases via the pinned sidecar SHA in
 ## [Unreleased]
 
 ### Added
+- Bulletproof sidecar crash recovery for 1.0: detect process exit vs websocket
+  silence (>5s), auto-restart with re-handshake + autosave restore under a
+  "Reconnecting to simulation" overlay (no MainMenu bounce), friendly
+  diagnostics screen with log tail + copy button after 3 failed restarts,
+  process-group / PDEATHSIG (Unix) and Job Object kill-on-close (Windows)
+  orphan prevention, stale-sidecar reap on startup, and
+  `MF_TEST_KILL_SIDECAR` recovery harness (optional CI job).
 - Main menu overhaul and app icon (#47)
 - Release installers: Windows NSIS setup.exe, macOS .dmg, Linux tarball with
   desktop integration (#52)

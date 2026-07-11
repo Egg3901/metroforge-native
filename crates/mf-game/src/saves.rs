@@ -200,6 +200,19 @@ impl SaveManager {
         self.pending_load.is_some()
     }
 
+    /// Read the autosave slot and return its opaque sim JSON for an
+    /// immediate mid-game `LoadSave` (reconnect path). Returns `None` when
+    /// missing/unreadable so the caller can fall back to a fresh `Init`.
+    pub fn take_autosave_json_for_reconnect(&mut self) -> Option<String> {
+        match Self::try_load(SaveSlot::Autosave) {
+            Ok((_meta, sim_json)) => Some(sim_json),
+            Err(e) => {
+                tracing::info!("mf-game: no autosave for reconnect ({e})");
+                None
+            }
+        }
+    }
+
     /// Start a save into `slot`: sends `ToSim::RequestSave` and remembers
     /// `slot` plus the metadata snapshotted right now (`city_label`/`day`/
     /// `cash` — whatever's true the instant the player clicked, not
@@ -414,16 +427,17 @@ fn autosave_system(
 }
 
 /// Sends the actual `ToSim::LoadSave` for whatever [`SaveManager::load`]
-/// queued, once `Loading` is entered. See the module doc's CRITICAL section
-/// for why this is deferred here instead of sent directly from `load`.
+/// (or [`SaveManager::stage_autosave_for_reconnect`]) queued. Runs in
+/// `Loading` (menu continue) and `InGame` (sidecar reconnect restore). See
+/// the module doc's CRITICAL section for why this is deferred here instead
+/// of sent directly from `load`.
 fn send_pending_load_system(mut manager: ResMut<SaveManager>, link: Option<Res<SimLink>>) {
     if manager.pending_load.is_none() {
         return;
     }
     let Some(link) = link else {
-        // No transport yet (shouldn't happen — Loading requires a SimLink
-        // to have gotten this far) — retry next frame rather than dropping
-        // the queued load.
+        // No transport yet — retry next frame rather than dropping the
+        // queued load (reconnect may still be swapping SimLink).
         return;
     };
     if let Some(sim_json) = manager.pending_load.take() {
@@ -442,7 +456,8 @@ impl Plugin for MfSavesPlugin {
             (
                 capture_saved_system,
                 autosave_system.run_if(in_state(AppState::InGame)),
-                send_pending_load_system.run_if(in_state(AppState::Loading)),
+                send_pending_load_system
+                    .run_if(in_state(AppState::Loading).or(in_state(AppState::InGame))),
             ),
         );
     }

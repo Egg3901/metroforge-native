@@ -22,6 +22,7 @@ mod quality_boot;
 mod report_ui;
 mod reveal_input;
 mod saves;
+mod sidecar_kill_test;
 mod state;
 mod theme_boot;
 mod tools;
@@ -75,6 +76,7 @@ fn main() {
             hud::MfHudPlugin,
             saves::MfSavesPlugin,
             verify::MfVerifyPlugin,
+            sidecar_kill_test::MfSidecarKillTestPlugin,
             MfQualityBootPlugin,
             MfThemeBootPlugin,
             audio::MfAudioPlugin,
