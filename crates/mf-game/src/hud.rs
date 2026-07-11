@@ -20,6 +20,7 @@ use crate::goals::GoalsPanelOpen;
 use crate::saves::{self, PlaytimeTracker, SaveManager, SaveMeta, SaveSlot};
 use crate::state::{toggle_pause, AppState, MenuScreen, PauseState, PendingInit, SimHello};
 
+const WARN: egui::Color32 = ds::WARN;
 const BAD: egui::Color32 = ds::BAD;
 
 fn panel_bg() -> egui::Color32 {
