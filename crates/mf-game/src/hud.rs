@@ -392,6 +392,37 @@ fn draw_star(
     }
 }
 
+/// A small sun (day) or crescent moon (night) glyph for the top-bar clock,
+/// painted from primitives so it needs no font glyph the embedded Inter
+/// subset might lack. Day: filled amber disc with four short rays. Night: a
+/// crescent, cut by overpainting an offset disc in the panel fill color.
+fn draw_day_night_icon(painter: &egui::Painter, rect: egui::Rect, is_night: bool) {
+    let center = rect.center();
+    let r = rect.width().min(rect.height()) * 0.32;
+    if is_night {
+        let moon = egui::Color32::from_rgb(0xc7, 0xcb, 0xd6);
+        painter.circle_filled(center, r, moon);
+        // Bite out an offset disc in the panel color to leave a crescent.
+        painter.circle_filled(center + egui::vec2(r * 0.55, -r * 0.2), r * 0.95, panel_bg());
+    } else {
+        painter.circle_filled(center, r * 0.72, WARN);
+        for i in 0..4 {
+            let a = i as f32 * std::f32::consts::FRAC_PI_2 + std::f32::consts::FRAC_PI_4;
+            let dir = egui::vec2(a.cos(), a.sin());
+            painter.line_segment(
+                [center + dir * (r * 0.95), center + dir * (r * 1.35)],
+                egui::Stroke::new(1.4, WARN),
+            );
+        }
+    }
+}
+
+/// True when `hour` (0..24) falls in the night band the day/night rig treats
+/// as dark. Matches the sky's dusk/dawn feel: lamps on from 20:00 to 06:00.
+fn is_night_hour(hour: f64) -> bool {
+    !(6.0..20.0).contains(&hour)
+}
+
 /// A simple padlock silhouette (filled body + stroked shackle arc), sized
 /// for a locked city card. Deliberately separate from `build_ui.rs`'s
 /// smaller per-toolbar-button lock badge (that file isn't touched this
@@ -1248,6 +1279,7 @@ fn in_game_hud_system(
     mut subway: ResMut<SubwayView>,
     toasts: Res<ToastLog>,
     mut goals_panel: ResMut<GoalsPanelOpen>,
+    mut route_panel: ResMut<crate::build_ui::RoutePanelState>,
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
 ) -> Result {
@@ -1283,8 +1315,14 @@ fn in_game_hud_system(
                     );
                     thin_separator(ui);
 
-                    const TICKS_PER_DAY: u64 = 1200;
-                    let hour = (state.tick % TICKS_PER_DAY) as f64 / TICKS_PER_DAY as f64 * 24.0;
+                    // Prefer the sidecar's sim `hourOfDay` (sim-depth, PR #31)
+                    // over the tick-derived clock so this readout stays
+                    // consistent with the day/night rig, which now reads the
+                    // same field. A small sun/moon glyph precedes the time.
+                    let hour = state.display_hour();
+                    let (icon_rect, _) = ui
+                        .allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                    draw_day_night_icon(ui.painter(), icon_rect, is_night_hour(hour));
                     fixed_width_label(
                         ui,
                         egui::RichText::new(format!(
@@ -1294,7 +1332,7 @@ fn in_game_hud_system(
                             ((hour.fract()) * 60.0) as u32
                         ))
                         .monospace(),
-                        140.0,
+                        128.0,
                     );
                     thin_separator(ui);
 
@@ -1325,6 +1363,37 @@ fn in_game_hud_system(
                             .monospace(),
                         130.0,
                     );
+
+                    // Sim-depth (PR #31): a warning chip counting overcrowded
+                    // routes. Clicking it opens the route panel focused on the
+                    // first flagged route so the player can act on it. Only
+                    // shown when the sidecar reports any (old ones send none).
+                    let first_overcrowded = state
+                        .overcrowded_routes
+                        .iter()
+                        .find(|id| state.routes.iter().any(|r| r.id == **id))
+                        .copied();
+                    if let Some(route_id) = first_overcrowded {
+                        thin_separator(ui);
+                        let count = state.overcrowded_routes.len();
+                        let plural = if count == 1 { "" } else { "s" };
+                        let chip = egui::Button::new(
+                            egui::RichText::new(format!("{count} crowded route{plural}"))
+                                .color(egui::Color32::WHITE)
+                                .strong(),
+                        )
+                        .fill(WARN)
+                        .corner_radius(crate::design_system::CORNER_RADIUS);
+                        let resp = ui
+                            .add(chip)
+                            .on_hover_text("Open the busiest crowded route");
+                        hover_tick(&resp, &mut hovered, &mut sfx);
+                        if resp.clicked() {
+                            route_panel.open = true;
+                            route_panel.selected = Some(route_id);
+                            sfx.write(PlaySfx(Sfx::Confirm));
+                        }
+                    }
                 } else {
                     ui.label("Connecting to city...");
                 }

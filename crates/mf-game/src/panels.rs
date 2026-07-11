@@ -21,7 +21,9 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 use mf_net::SimLink;
-use mf_protocol::{Command, DayLedger, FailReason, TransitMode, UiRoute, UiState, UiStation};
+use mf_protocol::{
+    Command, DayLedger, FailReason, TransitMode, UiDistrict, UiRoute, UiState, UiStation,
+};
 use mf_state::LatestUi;
 
 use crate::command_bus::{CmdMeta, CommandBus};
@@ -147,6 +149,18 @@ fn routes_serving_station(routes: &[UiRoute], station_id: i64) -> Vec<usize> {
         .filter(|(_, r)| r.station_ids.contains(&station_id))
         .map(|(idx, _)| idx)
         .collect()
+}
+
+/// Nearest catchment district (sim-depth, PR #31) to a point, by squared
+/// euclidean distance to each district centroid. Returns `None` when no
+/// districts are present (old sidecars send none), so the caller can simply
+/// skip the catchment line rather than inventing one.
+fn nearest_district(districts: &[UiDistrict], x: f64, y: f64) -> Option<&UiDistrict> {
+    districts.iter().min_by(|a, b| {
+        let da = (a.x - x).powi(2) + (a.y - y).powi(2);
+        let db = (b.x - x).powi(2) + (b.y - y).powi(2);
+        da.total_cmp(&db)
+    })
 }
 
 /// `last_day`'s net for the day: fares + subsidy (income) minus operations,
@@ -381,6 +395,28 @@ fn station_panel_system(
                 });
             });
 
+            // Sim-depth (PR #31): the district this station sits in, so the
+            // player can see the population/jobs it draws from. Only drawn
+            // when the sidecar sends districts (old ones send none).
+            if let Some(district) = nearest_district(&state.districts, station.x, station.y) {
+                ui.add_space(ds::SPACE_SM);
+                ui.separator();
+                ui.add_space(ds::SPACE_XXS);
+                ui.label(ds::label_muted("Catchment district"));
+                ui.label(ds::value_strong(district.name.clone()));
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(ds::label_muted("People"));
+                        ui.label(ds::value_strong(format_thousands(district.population)));
+                    });
+                    ui.add_space(ds::SPACE_MD);
+                    ui.vertical(|ui| {
+                        ui.label(ds::label_muted("Jobs"));
+                        ui.label(ds::value_strong(format_thousands(district.jobs)));
+                    });
+                });
+            }
+
             ui.add_space(ds::SPACE_SM);
             ui.separator();
             ui.add_space(ds::SPACE_XXS);
@@ -543,6 +579,16 @@ fn finance_panel_system(
                 format_thousands(state.daily_transit_trips),
             );
 
+            // Sim-depth (PR #31): farebox recovery + lifetime earnings, shown
+            // only when the sidecar actually sends them (old sidecars omit
+            // both, so these rows simply don't appear rather than reading 0).
+            if let Some(recovery) = state.farebox_recovery {
+                stat_row(ui, "Farebox recovery", format!("{:.0}%", recovery * 100.0));
+            }
+            if let Some(lifetime) = state.lifetime {
+                stat_row(ui, "Lifetime earnings", format_cash(lifetime));
+            }
+
             if !state.insights.is_empty() {
                 ui.add_space(ds::SPACE_SM);
                 ui.separator();
@@ -600,6 +646,9 @@ mod tests {
             load: 0.0,
             crowding: 0.0,
             segment_loads: Vec::new(),
+            live_crowding: None,
+            operating_cost: None,
+            farebox: None,
         }
     }
 
@@ -636,6 +685,34 @@ mod tests {
     #[test]
     fn routes_serving_station_empty_routes_is_empty() {
         assert_eq!(routes_serving_station(&[], 1), Vec::<usize>::new());
+    }
+
+    // --- nearest_district ------------------------------------------------
+
+    fn district(id: i64, name: &str, x: f64, y: f64) -> UiDistrict {
+        UiDistrict {
+            id,
+            name: name.to_string(),
+            x,
+            y,
+            population: 1000.0,
+            jobs: 500.0,
+        }
+    }
+
+    #[test]
+    fn nearest_district_picks_the_closest_centroid() {
+        let districts = vec![
+            district(1, "Downtown", 0.0, 0.0),
+            district(2, "Riverside", 100.0, 0.0),
+        ];
+        assert_eq!(nearest_district(&districts, 10.0, 5.0).unwrap().id, 1);
+        assert_eq!(nearest_district(&districts, 90.0, -5.0).unwrap().id, 2);
+    }
+
+    #[test]
+    fn nearest_district_is_none_without_districts() {
+        assert!(nearest_district(&[], 0.0, 0.0).is_none());
     }
 
     // --- day_ledger_net --------------------------------------------------
@@ -680,6 +757,12 @@ mod tests {
             max_day: None,
             era_label: None,
             command_count: 0,
+            hour_of_day: None,
+            demand_factor: None,
+            farebox_recovery: None,
+            lifetime: None,
+            districts: Vec::new(),
+            overcrowded_routes: Vec::new(),
         }
     }
 
