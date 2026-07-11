@@ -798,6 +798,81 @@ pub fn append_ribbon(
     }
 }
 
+/// Like [`append_ribbon`], but each point's absolute deck Y is supplied in
+/// `heights` (length must match `points`) instead of sampling a height
+/// closure — used by grade-aware transit so ramps / elevated decks / bridge
+/// lifts can be precomputed along the densified polyline.
+pub fn append_ribbon_at_heights(
+    buf: &mut MeshBuffers,
+    points: &[Vec2],
+    heights: &[f32],
+    y_offset: f32,
+    width: f32,
+    color: Color,
+) {
+    if points.len() < 2 || heights.len() != points.len() {
+        return;
+    }
+    let half = width * 0.5;
+    for (i, w) in points.windows(2).enumerate() {
+        let a = w[0];
+        let b = w[1];
+        let dir = (b - a).normalize_or_zero();
+        if dir == Vec2::ZERO {
+            continue;
+        }
+        let perp = Vec2::new(-dir.y, dir.x) * half;
+        let ya = heights[i] + y_offset;
+        let yb = heights[i + 1] + y_offset;
+        let a0 = Vec3::new(a.x + perp.x, ya, a.y + perp.y);
+        let a1 = Vec3::new(a.x - perp.x, ya, a.y - perp.y);
+        let b0 = Vec3::new(b.x + perp.x, yb, b.y + perp.y);
+        let b1 = Vec3::new(b.x - perp.x, yb, b.y - perp.y);
+        buf.push_flat_quad(a0, b0, b1, a1, Vec3::Y, color);
+    }
+}
+
+/// Dashed variant of [`append_ribbon_at_heights`]: emits ribbon quads only
+/// while the running arc length is inside a `dash_m` on / `gap_m` off cycle
+/// (tunnel infrastructure in the normal overview).
+pub fn append_dashed_ribbon_at_heights(
+    buf: &mut MeshBuffers,
+    points: &[Vec2],
+    heights: &[f32],
+    y_offset: f32,
+    width: f32,
+    color: Color,
+    dash_m: f32,
+    gap_m: f32,
+) {
+    if points.len() < 2 || heights.len() != points.len() {
+        return;
+    }
+    let period = (dash_m + gap_m).max(1e-3);
+    let half = width * 0.5;
+    let mut dist = 0.0_f32;
+    for (i, w) in points.windows(2).enumerate() {
+        let a = w[0];
+        let b = w[1];
+        let seg = a.distance(b);
+        let dir = (b - a).normalize_or_zero();
+        if dir != Vec2::ZERO {
+            let phase = (dist + seg * 0.5).rem_euclid(period);
+            if phase < dash_m {
+                let perp = Vec2::new(-dir.y, dir.x) * half;
+                let ya = heights[i] + y_offset;
+                let yb = heights[i + 1] + y_offset;
+                let a0 = Vec3::new(a.x + perp.x, ya, a.y + perp.y);
+                let a1 = Vec3::new(a.x - perp.x, ya, a.y - perp.y);
+                let b0 = Vec3::new(b.x + perp.x, yb, b.y + perp.y);
+                let b1 = Vec3::new(b.x - perp.x, yb, b.y - perp.y);
+                buf.push_flat_quad(a0, b0, b1, a1, Vec3::Y, color);
+            }
+        }
+        dist += seg;
+    }
+}
+
 /// Deterministic 0..1 pseudo-random value from a world-position hash — used
 /// for per-building brightness jitter and procedural-lot placement, mirrors
 /// the coordinate hash used throughout `renderer.ts`.
