@@ -11,6 +11,7 @@ mod campaign;
 mod command_bus;
 mod config;
 mod design_system;
+mod goals;
 mod hud;
 mod input;
 mod map_mode;
@@ -91,6 +92,7 @@ fn main() {
             attract::MfAttractPlugin,
             promo::MfPromoPlugin,
             tutorial::MfTutorialPlugin,
+            goals::MfGoalsPlugin,
         ));
     // MF_PERF_LOG=1: log frame-time diagnostics (avg/FPS) once per second.
     // Costs nothing when unset; gives players and CI a zero-setup way to

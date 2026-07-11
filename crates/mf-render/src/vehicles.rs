@@ -73,25 +73,27 @@ struct VehiclePool {
     box_mesh: Option<Handle<Mesh>>,
     tram_mesh: Option<Handle<Mesh>>,
     /// Shared materials keyed by quantized paint. Finite set: ~8 route
-    /// colors × ~65 brightness buckets × 2 unlit states (plus overlay-dim
-    /// variants that still collapse into the same color_idx after mix).
-    material_cache: HashMap<(usize, i32, bool), Handle<StandardMaterial>>,
+    /// colors × ~65 brightness buckets × 2 unlit states × 2 overlay-dim
+    /// states. Overlay dimming changes the mixed color, so it must be part
+    /// of the key or a material minted while an overlay is open serves the
+    /// washed-out color forever.
+    material_cache: HashMap<(usize, i32, bool, bool), Handle<StandardMaterial>>,
     /// Last-applied paint key per slot, parallel to `entities`.
-    applied_paint: Vec<Option<(usize, i32, bool)>>,
+    applied_paint: Vec<Option<(usize, i32, bool, bool)>>,
 }
 
 fn material_for_paint(
-    cache: &mut HashMap<(usize, i32, bool), Handle<StandardMaterial>>,
+    cache: &mut HashMap<(usize, i32, bool, bool), Handle<StandardMaterial>>,
     materials: &mut Assets<StandardMaterial>,
-    paint_key: (usize, i32, bool),
+    paint_key: (usize, i32, bool, bool),
     color: Color,
     brightness: f32,
 ) -> Handle<StandardMaterial> {
     cache
         .entry(paint_key)
         .or_insert_with(|| {
-            let (color_idx, brightness_bucket, unlit) = paint_key;
-            let _ = (color_idx, brightness_bucket); // key already encodes these
+            let (color_idx, brightness_bucket, unlit, overlay_dimmed) = paint_key;
+            let _ = (color_idx, brightness_bucket, overlay_dimmed); // key already encodes these
             materials.add(StandardMaterial {
                 base_color: color,
                 emissive: palette::emissive(color, (if unlit { 1.0 } else { 0.4 }) * brightness),
@@ -108,6 +110,7 @@ fn update_vehicles_system(
     ui: Res<LatestUi>,
     height_at: Res<HeightAt>,
     quality: Res<QualityTier>,
+    theme: Res<mf_state::Theme>,
     overlay: Res<mf_state::OverlayState>,
     mut pool: ResMut<VehiclePool>,
     mut commands: Commands,
@@ -124,18 +127,26 @@ fn update_vehicles_system(
     >,
 ) {
     // `LatestFrame` arrives at the sim's ~20Hz tick while this system runs
-    // every render frame (60+ Hz); `QualityTier` changes independently and
-    // flips `unlit`. Neither changing means nothing about a vehicle's
-    // position, mesh choice or paint could possibly be different from what's
-    // already applied, so skip the whole pass.
+    // every render frame (60+ Hz); `QualityTier` / `Theme` / overlay change
+    // independently and flip paint. None changing means nothing about a
+    // vehicle's position, mesh choice or paint could possibly be different
+    // from what's already applied, so skip the whole pass.
     let frame_changed = frame.is_changed();
-    if !frame_changed && !quality.is_changed() && !overlay.is_changed() {
+    if !frame_changed && !quality.is_changed() && !theme.is_changed() && !overlay.is_changed() {
         return;
     }
     let Some(f) = &frame.0 else {
         return;
     };
     let unlit = quality.knobs().unlit_material;
+    // Theme switches change `vivid_route_color` for the same color_idx —
+    // drop the paint cache so vehicles pick up the new palette immediately.
+    if theme.is_changed() {
+        pool.material_cache.clear();
+        for slot in &mut pool.applied_paint {
+            *slot = None;
+        }
+    }
     let box_mesh = pool
         .box_mesh
         .get_or_insert_with(|| {
@@ -244,7 +255,8 @@ fn update_vehicles_system(
         // this cache on essentially every changed frame for a difference no
         // player could see.
         let brightness_bucket = (brightness * 64.0).round() as i32;
-        let paint_key = (color_idx, brightness_bucket, unlit);
+        let overlay_dimmed = overlay.mode != mf_state::OverlayMode::Off;
+        let paint_key = (color_idx, brightness_bucket, unlit, overlay_dimmed);
         if pool.applied_paint.get(i).copied().flatten() != Some(paint_key) {
             let handle = material_for_paint(
                 &mut pool.material_cache,

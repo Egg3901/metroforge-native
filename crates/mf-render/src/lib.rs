@@ -6,15 +6,21 @@
 //!
 //! Layers, in bake/update order (see [`MfRenderSet`]):
 //! terrain -> roads/buildings/transit (static, cached by version/structural
-//! signature) -> vehicles/agents/daynight/subway (dynamic, every frame).
+//! signature) -> vehicles/agents/daynight/atmosphere/subway (dynamic, every
+//! frame).
 
 mod agents;
+mod atmosphere;
 mod buildings;
 mod daynight;
 mod mesh_utils;
-mod palette;
+mod outline;
+/// Public so `mf-game` ghost previews can share the same vivid route table
+/// (and theme) as finished transit — see `tools.rs` route_ghost_color.
+pub mod palette;
 mod reveal;
 mod roads;
+mod sky;
 mod subway;
 mod terrain;
 mod transit;
@@ -56,6 +62,7 @@ impl Plugin for MfRenderPlugin {
         .insert_resource(DirectionalLightShadowMap { size: 2048 })
         .add_plugins((
             reveal::MfRevealPlugin,
+            sky::MfSkyPlugin,
             terrain::MfTerrainPlugin,
             roads::MfRoadsPlugin,
             buildings::MfBuildingsPlugin,
@@ -64,7 +71,9 @@ impl Plugin for MfRenderPlugin {
             vehicles::MfVehiclesPlugin,
             agents::MfAgentsPlugin,
             daynight::MfDayNightPlugin,
+            atmosphere::MfAtmospherePlugin,
             subway::MfSubwayPlugin,
+            outline::MfOutlinePlugin,
         ))
         .add_systems(
             Update,

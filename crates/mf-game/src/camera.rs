@@ -74,6 +74,18 @@ const ORBIT_SMOOTH_RATE: f32 = 20.0;
 /// decaying to zero. Subtle by design (not full momentum/inertia); set to
 /// 0.0 to disable the release glide entirely.
 const PAN_RELEASE_DECAY_SECS: f32 = 0.12;
+/// Keyboard orbit speed (radians/sec) for Q/E rotate. Q spins the camera
+/// left (counter-clockwise looking down), E right. Writes the yaw GOAL so a
+/// held key ramps smoothly through `camera_smoothing_system` just like WASD
+/// pan does, rather than snapping per frame. ~1.6 rad/s = a full turn in
+/// about four seconds, brisk but readable.
+const KEY_ORBIT_SPEED: f32 = 1.6;
+/// Upper bound on how far a single wheel-dolly frame's zoom-to-cursor recenter
+/// may drag the pan target toward (or away from) the cursor's ground point,
+/// as a fraction of the target->cursor gap. Keeps a fast multi-notch scroll
+/// (or a near-zero distance) from yanking the whole map sideways in one
+/// frame; the smoothing curve does the rest.
+const ZOOM_CURSOR_MAX_SHIFT: f32 = 0.5;
 
 impl Default for CameraRig {
     fn default() -> Self {
@@ -162,7 +174,27 @@ fn spawn_camera(mut commands: Commands, existing: Query<Entity, With<CameraRig>>
     }
     commands.spawn((
         Camera3d::default(),
+        // Default `PerspectiveProjection::far` is 1000m -- far too tight for
+        // this camera, which can dolly out to `MAX_DOLLY` (20km) from its
+        // target. Widened so distant geometry (and the sky dome, see
+        // `mf-render`'s `sky.rs`, which needs headroom inside this plane to
+        // stay fully behind the world at any camera position) isn't clipped.
+        Projection::Perspective(PerspectiveProjection {
+            far: 60_000.0,
+            ..default()
+        }),
         Transform::from_xyz(0.0, 1200.0, 1200.0).looking_at(Vec3::ZERO, Vec3::Y),
+        // Horizon distance fog (mf-render's sky.rs keeps the color in sync
+        // with the theme/day-night sky gradient); start/end tuned to the
+        // city scale this camera actually operates at.
+        DistanceFog {
+            color: Color::WHITE,
+            falloff: FogFalloff::Linear {
+                start: 8_000.0,
+                end: 55_000.0,
+            },
+            ..default()
+        },
         CameraRig::default(),
         RigLastOutput::default(),
     ));
@@ -192,6 +224,8 @@ fn camera_input_system(
     mut egui_contexts: EguiContexts,
     windows: Query<&Window>,
     mut rigs: Query<&mut CameraRig>,
+    cameras: Query<(&Camera, &GlobalTransform)>,
+    height_at: Res<HeightAt>,
     city: Res<CurrentCity>,
 ) {
     // Drain input events every frame regardless of whether egui is eating
@@ -222,11 +256,26 @@ fn camera_input_system(
     // instead of each one restarting from wherever smoothing has gotten
     // to. `camera_smoothing_system` eases `distance` toward this.
     if wheel_delta != 0.0 {
-        rig.distance_goal = apply_wheel_dolly(rig.distance_goal, wheel_delta);
+        let old_goal = rig.distance_goal;
+        let new_goal = apply_wheel_dolly(old_goal, wheel_delta);
+        rig.distance_goal = new_goal;
+        // Zoom toward the cursor: recenter the pan goal so the ground point
+        // under the mouse stays (roughly) put as the camera dollies in/out,
+        // the way every map/city-builder zoom behaves. Written to the GOAL,
+        // in lockstep with the distance goal above, so it eases in on the
+        // same smoothing curve instead of snapping. A missing camera/cursor
+        // (headless, off-window) just skips the recenter and dollies about
+        // the current target, which is the old behavior.
+        if let (Some(cursor), Ok((camera, cam_tf))) = (window_cursor(&windows), cameras.single()) {
+            if let Some(cursor_ground) = screen_to_ground(camera, cam_tf, &height_at, cursor) {
+                rig.target_goal =
+                    zoom_toward_cursor(rig.target_goal, cursor_ground, old_goal, new_goal);
+            }
+        }
     }
 
-    // Right-drag orbit.
-    if mouse_buttons.pressed(MouseButton::Right) {
+    // Right-drag or middle-drag orbit.
+    if mouse_buttons.pressed(MouseButton::Right) || mouse_buttons.pressed(MouseButton::Middle) {
         rig.yaw -= motion_delta.x * 0.005;
         rig.pitch = (rig.pitch - motion_delta.y * 0.005).clamp(0.1, 1.4);
         // Active drag: value and goal move together, 1:1 with the mouse.
@@ -311,6 +360,21 @@ fn camera_input_system(
         rig.target_goal += (right * pan_dir.x + fwd * pan_dir.y).normalize_or_zero() * speed * dt;
     }
 
+    // Q/E keyboard orbit. Writes the yaw GOAL (never the value directly) so
+    // it rides the same smoothing as WASD pan; a held key sweeps the camera
+    // around the target at a constant angular rate. Q = counter-clockwise
+    // (left), E = clockwise (right), matching most city-builders' rotate.
+    let mut yaw_dir = 0.0;
+    if keys.pressed(KeyCode::KeyE) {
+        yaw_dir += 1.0;
+    }
+    if keys.pressed(KeyCode::KeyQ) {
+        yaw_dir -= 1.0;
+    }
+    if yaw_dir != 0.0 {
+        rig.yaw_goal += yaw_dir * KEY_ORBIT_SPEED * dt;
+    }
+
     // World-bounds clamp on BOTH the value and the goal: if only the goal
     // were clamped, a value still easing in from outside the bound (e.g.
     // right after an external write) would overshoot past it before
@@ -331,6 +395,28 @@ fn camera_input_system(
 fn apply_wheel_dolly(distance_goal: f32, wheel_delta: f32) -> f32 {
     let zoom_factor = 1.0 - wheel_delta * 0.1;
     (distance_goal * zoom_factor).clamp(MIN_DOLLY, MAX_DOLLY)
+}
+
+/// Recenters the pan `target` toward `cursor_ground` as the camera dollies
+/// from `old_dist` to `new_dist`, so the ground point under the mouse stays
+/// (approximately, for the fixed camera pitch) fixed on screen through a
+/// zoom. The shift fraction is `1 - new_dist/old_dist` — positive (toward
+/// the cursor) when zooming in, negative (away) when zooming out, zero when
+/// the distance is unchanged — clamped to +/-`ZOOM_CURSOR_MAX_SHIFT` so one
+/// aggressive scroll frame can't fling the map. Pure function for testing.
+fn zoom_toward_cursor(target: Vec2, cursor_ground: Vec2, old_dist: f32, new_dist: f32) -> Vec2 {
+    if old_dist <= 0.0 {
+        return target;
+    }
+    let frac = (1.0 - new_dist / old_dist).clamp(-ZOOM_CURSOR_MAX_SHIFT, ZOOM_CURSOR_MAX_SHIFT);
+    target + (cursor_ground - target) * frac
+}
+
+/// The single primary window's cursor position, if any. Small helper so the
+/// wheel-dolly zoom-to-cursor branch reads cleanly and the borrow of
+/// `windows` stays scoped.
+fn window_cursor(windows: &Query<&Window>) -> Option<Vec2> {
+    windows.single().ok().and_then(|w| w.cursor_position())
 }
 
 /// One frame of the post-drag-pan release glide: nudges `goal` by
@@ -551,6 +637,59 @@ mod tests {
             goal = apply_wheel_dolly(goal, -10.0); // large zoom-out notch
         }
         assert_eq!(goal, MAX_DOLLY);
+    }
+
+    // --- zoom toward cursor ------------------------------------------------
+
+    #[test]
+    fn zoom_in_moves_target_toward_cursor() {
+        let target = Vec2::new(0.0, 0.0);
+        let cursor = Vec2::new(1000.0, 0.0);
+        // Zoom in: new < old, so target should slide toward the cursor.
+        let out = zoom_toward_cursor(target, cursor, 1000.0, 900.0);
+        assert!(out.x > 0.0 && out.x < cursor.x, "got {out:?}");
+        // 10% dolly-in -> 10% of the gap closed.
+        assert!((out.x - 100.0).abs() < 0.001, "got {out:?}");
+    }
+
+    #[test]
+    fn zoom_out_moves_target_away_from_cursor() {
+        let target = Vec2::new(0.0, 0.0);
+        let cursor = Vec2::new(1000.0, 0.0);
+        // Zoom out: new > old, negative fraction, target moves away.
+        let out = zoom_toward_cursor(target, cursor, 1000.0, 1100.0);
+        assert!(out.x < 0.0, "got {out:?}");
+    }
+
+    #[test]
+    fn zoom_unchanged_distance_is_a_no_op() {
+        let target = Vec2::new(42.0, -7.0);
+        let out = zoom_toward_cursor(target, Vec2::new(1000.0, 1000.0), 1500.0, 1500.0);
+        assert_eq!(out, target);
+    }
+
+    #[test]
+    fn zoom_shift_is_clamped_against_a_violent_scroll() {
+        // A near-total collapse in distance would otherwise slam the target
+        // all the way onto the cursor in one frame; the clamp caps it.
+        let target = Vec2::new(0.0, 0.0);
+        let cursor = Vec2::new(1000.0, 0.0);
+        let out = zoom_toward_cursor(target, cursor, 1000.0, 1.0);
+        assert!(
+            (out.x - cursor.x * ZOOM_CURSOR_MAX_SHIFT).abs() < 0.001,
+            "expected clamp to {}, got {out:?}",
+            cursor.x * ZOOM_CURSOR_MAX_SHIFT
+        );
+    }
+
+    #[test]
+    fn zoom_toward_cursor_degenerate_zero_distance_is_safe() {
+        let target = Vec2::new(5.0, 5.0);
+        // old_dist == 0 must not divide-by-zero into NaN; returns target.
+        assert_eq!(
+            zoom_toward_cursor(target, Vec2::new(9.0, 9.0), 0.0, 100.0),
+            target
+        );
     }
 
     #[test]
