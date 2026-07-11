@@ -291,12 +291,43 @@ pub struct CrashNotice {
     pub visible: bool,
 }
 
+/// True when the process is running under an automated harness (CI smoke,
+/// soak, screenshot/promo capture, gallery) rather than an interactive player.
+/// These runs share the same OS data dir, so a marker left by an earlier real
+/// crash must not force them to boot into the crash dialog instead of the game.
+const HARNESS_VARS: &[&str] = &[
+    "CI",
+    "MF_AUTOSTART",
+    "MF_SOAK",
+    "MF_VERIFY_DIR",
+    "MF_PROMO_DIR",
+    "MF_ATMOSPHERE_DIR",
+    "MF_UI_GALLERY",
+    "MF_MENU_SCREEN",
+];
+
+fn harness_run() -> bool {
+    harness_run_with(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
+}
+
+/// Pure core of [`harness_run`]: true when any harness var reads as set.
+fn harness_run_with(present: impl Fn(&str) -> bool) -> bool {
+    HARNESS_VARS.iter().any(|k| present(k))
+}
+
 impl CrashNotice {
     /// Load from disk if the previous session left a notice marker.
     pub fn detect() -> Option<Self> {
         let dir = crashes_dir()?;
         let marker = notice_marker_path(&dir);
         if !marker.is_file() {
+            return None;
+        }
+        // A shared data dir means an earlier real crash can leave a marker that
+        // then poisons every later automated run. Under a harness, consume the
+        // stale marker (so it stops re-triggering) and never show the dialog.
+        if harness_run() {
+            let _ = std::fs::remove_file(&marker);
             return None;
         }
         let report_path = last_crash_path(&dir);
@@ -547,6 +578,20 @@ mod tests {
         let text = report.serialize();
         assert!(text.contains("gpu: (not yet detected)"));
         assert!(text.contains("=== last 0 log lines ==="));
+    }
+
+    #[test]
+    fn harness_run_detects_any_known_var() {
+        assert!(!harness_run_with(|_| false));
+        for var in HARNESS_VARS {
+            let target = *var;
+            assert!(
+                harness_run_with(|k| k == target),
+                "{target} should mark a harness run"
+            );
+        }
+        // An unrelated var must not trip the harness guard.
+        assert!(!harness_run_with(|k| k == "PATH"));
     }
 
     #[test]

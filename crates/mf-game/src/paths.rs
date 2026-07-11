@@ -8,7 +8,6 @@
 //! |---|---|
 //! | [`config_dir`] | `%AppData%\Roaming\<org>\MetroForge` |
 //! | [`data_dir`] | `%AppData%\Roaming\<org>\MetroForge` |
-//! | [`data_local_dir`] | `%AppData%\Local\<org>\MetroForge` |
 //!
 //! (`ProjectDirs::from` returns `None` only when the home/profile directory
 //! cannot be determined.) When that happens we fall back to a
@@ -51,24 +50,12 @@ pub fn data_dir() -> Option<PathBuf> {
     Some(exe_fallback_root()?.join("data"))
 }
 
-/// Local (non-roaming) data directory — crash reports on Windows.
-pub fn data_local_dir() -> Option<PathBuf> {
-    if let Some(dirs) = project_dirs() {
-        return Some(dirs.data_local_dir().to_path_buf());
-    }
-    Some(exe_fallback_root()?.join("local"))
-}
-
 pub fn config_toml_path() -> Option<PathBuf> {
     Some(config_dir()?.join("config.toml"))
 }
 
 pub fn saves_dir() -> Option<PathBuf> {
     Some(data_dir()?.join("saves"))
-}
-
-pub fn crash_reports_dir() -> Option<PathBuf> {
-    Some(data_local_dir()?.join("crash-reports"))
 }
 
 pub fn campaign_toml_path() -> Option<PathBuf> {
@@ -105,8 +92,6 @@ mod tests {
     fn saves_and_crash_dirs_nest_under_data_roots() {
         let saves = saves_dir().expect("saves_dir");
         assert!(saves.ends_with("saves"));
-        let crashes = crash_reports_dir().expect("crash_reports_dir");
-        assert!(crashes.ends_with("crash-reports"));
     }
 
     #[test]
