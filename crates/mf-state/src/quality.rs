@@ -80,6 +80,13 @@ pub struct QualityKnobs {
     /// Raymarch step count for [`bevy::pbr::VolumetricFog`] when atmosphere
     /// is active. Higher = less banding, more GPU.
     pub atmosphere_fog_steps: u32,
+    /// Stylized water shader tier (mf-render `water.rs`):
+    /// - `0` = flat vertex-color water baked into the terrain mesh (Potato;
+    ///   zero extra draw / fill — required for the llvmpipe release smoke)
+    /// - `1` = separate water mesh, single static ripple layer (Low)
+    /// - `2` = full dual-layer scrolling ripples + specular + fresnel + foam
+    ///   + night shimmer (Medium/High)
+    pub water_quality: u8,
     /// When `true`, Bevy `Bloom` is eligible on the camera (Medium/High).
     /// Intensity still ramps with `DayNightState.night_factor` and is fully
     /// off during day; Potato/Low keep this false so the bloom pass never
@@ -134,9 +141,10 @@ impl QualityTier {
                 // Dense-ish: shortest draw distance (3km) means the most
                 // pop-in to hide, so fog closes in early and finishes well
                 // inside the 3km cull.
-                fog: Some((1_200.0, 2_600.0)),
+                fog: Some((900.0, 2_600.0)),
                 atmosphere_enabled: false,
                 atmosphere_fog_steps: 0,
+                water_quality: 0,
                 bloom_enabled: false,
                 street_lamps_enabled: false,
                 // The one cheap thing that saves Potato from flat white mush:
@@ -170,6 +178,7 @@ impl QualityTier {
                 fog: Some((3_000.0, 5_500.0)),
                 atmosphere_enabled: false,
                 atmosphere_fog_steps: 0,
+                water_quality: 1,
                 bloom_enabled: false,
                 street_lamps_enabled: true,
                 // The headline Low fix: outlines give the unlit white massing
@@ -194,6 +203,7 @@ impl QualityTier {
                 fog: None,
                 atmosphere_enabled: true,
                 atmosphere_fog_steps: 32,
+                water_quality: 2,
                 bloom_enabled: true,
                 street_lamps_enabled: true,
                 // Medium reads via shadows already, but the cel outline is the
@@ -217,6 +227,7 @@ impl QualityTier {
                 fog: None,
                 atmosphere_enabled: true,
                 atmosphere_fog_steps: 56,
+                water_quality: 2,
                 bloom_enabled: true,
                 street_lamps_enabled: true,
                 outline_enabled: true,
@@ -311,6 +322,10 @@ mod tests {
             QualityTier::High.knobs().atmosphere_fog_steps
                 > QualityTier::Medium.knobs().atmosphere_fog_steps
         );
+        assert_eq!(QualityTier::Potato.knobs().water_quality, 0);
+        assert_eq!(QualityTier::Low.knobs().water_quality, 1);
+        assert_eq!(QualityTier::Medium.knobs().water_quality, 2);
+        assert_eq!(QualityTier::High.knobs().water_quality, 2);
         assert!(!QualityTier::Potato.knobs().bloom_enabled);
         assert!(!QualityTier::Low.knobs().bloom_enabled);
         assert!(QualityTier::Medium.knobs().bloom_enabled);

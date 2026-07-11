@@ -54,7 +54,7 @@ mod tests {
         // The resting state must be inert: no reveal system has run yet
         // (e.g. before the first InGame frame), and the shader must treat
         // that as "no effect" — strength 0 is what guarantees that (see
-        // `mf-render`'s reveal.wgsl: `mix(1.0, t_geom, strength)`).
+        // `mf-render`'s facade.wgsl: `mix(1.0, t_geom, strength)`).
         assert_eq!(RevealState::default().strength, 0.0);
     }
 }

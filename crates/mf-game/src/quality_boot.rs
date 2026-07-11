@@ -43,9 +43,9 @@ fn resolve_quality_system(
         return;
     }
 
-    // `MfConfig` is inserted by `state.rs`'s `boot_system` on `OnEnter(Boot)`,
-    // which should land before this system's first `Update` tick, but there
-    // is no hard guarantee of that ordering, so wait rather than assume.
+    // `MfConfig` is inserted in `main` before the window is created (so
+    // size/position/fullscreen apply on first frame). Still read as
+    // `Option` and retried in case plugin ordering ever shifts.
     let Some(config) = config else {
         return;
     };

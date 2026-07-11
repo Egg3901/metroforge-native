@@ -84,7 +84,8 @@ together automatically without additional setup.
 
 ### macOS
 1. Extract the archive
-2. Right-click metroforge and select "Open"
+2. Releases are ad-hoc signed (not Developer ID / notarized). Right-click
+   metroforge and select "Open" (plain double-click is blocked on first launch).
 3. If you see a Gatekeeper warning about unverified developer:
    - Click "Cancel" (do not click "Move to Trash")
    - Open System Settings > Privacy & Security
@@ -100,10 +101,12 @@ Note: Both metroforge and metroforge-sidecar binaries work together automaticall
 1. Extract the archive to your desired location
 2. Double-click metroforge.exe to launch the game
 
-Note: Windows Defender SmartScreen may warn about unverified software:
-- Click "More info" button in the SmartScreen dialog
+Note: Releases are not Authenticode-signed, so Windows Defender SmartScreen
+will usually warn on first run:
+- Click "More info" in the SmartScreen dialog
 - Click "Run anyway" to proceed
 - The game will launch normally
+- A second launch focuses the existing window (no second sidecar)
 
 ## System Requirements
 

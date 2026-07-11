@@ -198,7 +198,10 @@ fn tree_draw_distance_system(
     chunks: Query<(Entity, &TreeChunk)>,
     cameras: Query<&Transform, With<Camera3d>>,
     mut visibility: Query<&mut Visibility>,
+    counters: Res<crate::perf::PerfCounters>,
 ) {
+    let _span = tracing::info_span!("tree_draw_distance").entered();
+    let _timer = crate::perf::PerfSpan::start(&counters.tree_draw_distance_us);
     let Ok(cam) = cameras.single() else {
         return;
     };
@@ -212,17 +215,11 @@ fn tree_draw_distance_system(
             None => true,
             Some(limit) => cam_xz.distance(chunk.center) <= limit,
         };
-        let desired = if visible {
+        let next = if visible {
             Visibility::Visible
         } else {
             Visibility::Hidden
         };
-        // Skip the write when unchanged: an unconditional per-frame `*vis =`
-        // marks the component changed and forces Bevy to re-propagate/extract
-        // visibility every frame even for a still camera (see the matching
-        // note in `buildings.rs`'s `draw_distance_system`).
-        if *vis != desired {
-            *vis = desired;
-        }
+        crate::perf::set_visibility_if_changed(&mut vis, next, Some(&counters));
     }
 }
