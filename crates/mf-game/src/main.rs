@@ -35,6 +35,7 @@ mod report_ui;
 mod reveal_input;
 mod routes_panel;
 mod saves;
+mod shortcuts;
 mod sidecar_kill_test;
 mod single_instance;
 mod soak;
@@ -133,7 +134,11 @@ fn main() {
             egui_idle::MfEguiIdlePlugin,
         ))
         // Bevy's Plugins tuple caps at 15 elements; overflow lives here.
-        .add_plugins((photomode::MfPhotoModePlugin, MfGraphicsPerfPlugin));
+        .add_plugins((
+            photomode::MfPhotoModePlugin,
+            MfGraphicsPerfPlugin,
+            shortcuts::MfShortcutsPlugin,
+        ));
     // MF_PERF / MF_PERF_LOG: Bevy diagnostic plugins + spans. MF_PERF also
     // drives the 60s sample-then-exit harness in `perf.rs`.
     // (FrameTimeDiagnosticsPlugin is already registered by
