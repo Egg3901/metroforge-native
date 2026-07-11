@@ -857,17 +857,10 @@ fn command_feedback_listener_system(
     }
 }
 
-/// Mirrors `hud.rs`'s private `TOAST_LOG_CAP` (20) so this file's pushes
-/// can't grow the log unbounded either; duplicated rather than imported
-/// since the const isn't `pub` there.
-const TOAST_LOG_CAP: usize = 20;
-
+/// Mirrors the capped [`ToastLog::push`] helper so this file's command
+/// feedback can't grow the log unbounded either.
 fn push_toast(toasts: &mut ToastLog, message: String, tone: ToastTone) {
-    toasts.0.push((message, tone));
-    if toasts.0.len() > TOAST_LOG_CAP {
-        let excess = toasts.0.len() - TOAST_LOG_CAP;
-        toasts.0.drain(0..excess);
-    }
+    toasts.push(message, tone);
 }
 
 // ---------------------------------------------------------------------

@@ -18,6 +18,7 @@ use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, Theme};
 
 use crate::mesh_utils::{append_cuboid, hash01, MeshBuffers};
 use crate::palette;
+use crate::RenderCacheStats;
 
 const CHUNKS_PER_SIDE: usize = 8;
 /// One tree per park cell where the hash clears this density gate.
@@ -61,6 +62,7 @@ fn build_trees_system(
     mut state: ResMut<TreesState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut stats: ResMut<RenderCacheStats>,
 ) {
     let Some(cj) = &city.static_city else { return };
     let Some(f) = &fields.0 else { return };
@@ -75,6 +77,7 @@ fn build_trees_system(
     }
 
     if !knobs.tree_enabled {
+        stats.tree_chunks = 0;
         return;
     }
 
@@ -191,6 +194,7 @@ fn build_trees_system(
             .id();
         state.entities.push(e);
     }
+    stats.tree_chunks = state.entities.len();
 }
 
 fn tree_draw_distance_system(
