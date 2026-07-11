@@ -149,6 +149,8 @@ case "$OS" in
         cp "$CLIENT_BIN" "$STAGE_DIR/metroforge"
         cp "$SIDECAR_BIN" "$STAGE_DIR/metroforge-sidecar"
         cp "$PROJECT_ROOT/crates/mf-game/assets/fonts/OFL.txt" "$STAGE_DIR/OFL.txt"
+        cp "$PROJECT_ROOT/packaging/icon.png" "$STAGE_DIR/metroforge.png"
+        cp "$PROJECT_ROOT/packaging/linux/metroforge.desktop" "$STAGE_DIR/metroforge.desktop"
 
         # Make binaries executable
         make_executable "$STAGE_DIR/metroforge"
@@ -166,7 +168,9 @@ case "$OS" in
             metroforge \
             metroforge-sidecar \
             OFL.txt \
-            README-dist.txt
+            README-dist.txt \
+            metroforge.png \
+            metroforge.desktop
 
         echo "Successfully created: $ARTIFACT_PATH"
         echo "Archive contents:"
@@ -188,6 +192,8 @@ case "$OS" in
         cp "$SIDECAR_BIN" "$STAGE_DIR/metroforge-sidecar.exe"
         cp "$PROJECT_ROOT/crates/mf-game/assets/fonts/OFL.txt" "$STAGE_DIR/OFL.txt"
 
+        cp "$PROJECT_ROOT/packaging/icon.ico" "$STAGE_DIR/icon.ico"
+
         # Create README with Windows-specific notes
         write_readme "$STAGE_DIR/README-dist.txt" "windows" "$VERSION"
 
@@ -208,6 +214,20 @@ case "$OS" in
         fi
 
         echo "Successfully created: $ARTIFACT_PATH"
+
+        # NSIS installer (setup exe with Start Menu/desktop shortcuts and
+        # uninstaller). makensis runs fine on the Linux release runner.
+        if command -v makensis >/dev/null 2>&1; then
+            INSTALLER_PATH="$RELEASE_DIR/metroforge-${VERSION}-windows-x64-setup.exe"
+            makensis -V2 \
+                -DVERSION="$VERSION" \
+                -DSTAGEDIR="$STAGE_DIR" \
+                -DOUTFILE="$INSTALLER_PATH" \
+                "$PROJECT_ROOT/packaging/windows/installer.nsi"
+            echo "Successfully created: $INSTALLER_PATH"
+        else
+            echo "makensis not found; skipping Windows installer (zip only)"
+        fi
         ;;
 
     macos)
@@ -249,6 +269,33 @@ case "$OS" in
         fi
 
         echo "Successfully created: $ARTIFACT_PATH"
+
+        # .app bundle + .dmg installer. Client and sidecar stay siblings in
+        # Contents/MacOS (sidecar.rs resolves next to the running exe).
+        # hdiutil exists only on macOS; skip gracefully elsewhere.
+        if command -v hdiutil >/dev/null 2>&1; then
+            APP_DIR="$STAGE_DIR/dmg-root/MetroForge.app"
+            mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+            cp "$STAGE_DIR/metroforge" "$APP_DIR/Contents/MacOS/metroforge"
+            cp "$STAGE_DIR/metroforge-sidecar" "$APP_DIR/Contents/MacOS/metroforge-sidecar"
+            cp "$STAGE_DIR/OFL.txt" "$APP_DIR/Contents/Resources/OFL.txt"
+            cp "$PROJECT_ROOT/packaging/icon.icns" "$APP_DIR/Contents/Resources/icon.icns"
+            sed "s/__VERSION__/$VERSION/g" "$PROJECT_ROOT/packaging/macos/Info.plist" \
+                > "$APP_DIR/Contents/Info.plist"
+            make_executable "$APP_DIR/Contents/MacOS/metroforge"
+            make_executable "$APP_DIR/Contents/MacOS/metroforge-sidecar"
+            # Ad-hoc sign so Gatekeeper shows the standard right-click-Open
+            # flow instead of refusing outright on arm64 (unsigned binaries
+            # are killed on Apple Silicon).
+            codesign --force --deep -s - "$APP_DIR" || echo "codesign failed; continuing unsigned"
+            ln -sf /Applications "$STAGE_DIR/dmg-root/Applications"
+            DMG_PATH="$RELEASE_DIR/metroforge-${VERSION}-macos-arm64.dmg"
+            hdiutil create -volname "MetroForge $VERSION" -srcfolder "$STAGE_DIR/dmg-root" \
+                -ov -format UDZO "$DMG_PATH"
+            echo "Successfully created: $DMG_PATH"
+        else
+            echo "hdiutil not found; skipping macOS dmg (zip only)"
+        fi
         ;;
 esac
 
