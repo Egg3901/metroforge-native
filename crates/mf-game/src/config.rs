@@ -398,11 +398,8 @@ mod tests {
     #[test]
     fn autosave_interval_roundtrips_and_defaults() {
         let file = ConfigFile {
-            quality_override: None,
-            theme_override: None,
-            tutorial_completed: false,
-            weather_effects: true,
             autosave_interval_days: 5,
+            ..ConfigFile::default()
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("5"));
