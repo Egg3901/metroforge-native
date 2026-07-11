@@ -83,7 +83,7 @@ mod windows_impl {
         // SAFETY: FindWindowW with a valid title; HWND is only passed to
         // documented user32 focus/restore helpers.
         let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
-        if hwnd == 0 {
+        if hwnd.is_null() {
             tracing::warn!(
                 "mf-game: another instance holds the single-instance mutex but no '{WINDOW_TITLE}' window was found"
             );

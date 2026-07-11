@@ -93,12 +93,9 @@ mod tests {
             "config_dir must resolve via ProjectDirs or exe fallback"
         );
         let path = cfg.unwrap();
+        let hay = path.to_string_lossy().to_ascii_lowercase();
         assert!(
-            path.ends_with("MetroForge")
-                || path.ends_with("config")
-                || path.components().any(
-                    |c| c.as_os_str() == "MetroForge" || c.as_os_str() == "metroforge-userdata"
-                ),
+            hay.contains("metroforge") || hay.contains("metroforge-userdata"),
             "unexpected config path layout: {}",
             path.display()
         );

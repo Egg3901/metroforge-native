@@ -16,24 +16,27 @@ fn main() {
     }
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let icon = manifest_dir
-        .join("../../packaging/icon.ico")
-        .canonicalize()
-        .expect("packaging/icon.ico must exist for Windows resource embedding");
+    let icon_src = manifest_dir.join("../../packaging/icon.ico");
+    assert!(
+        icon_src.is_file(),
+        "packaging/icon.ico must exist for Windows resource embedding ({})",
+        icon_src.display()
+    );
 
     let version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
     let (major, minor, patch, build) = parse_version(&version);
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    // Copy into OUT_DIR so llvm-rc (cargo-xwin) resolves a simple relative
+    // name — absolute Unix paths get mangled when the RC preprocessor
+    // rewrites separators.
+    let icon_dst = out_dir.join("icon.ico");
+    fs::copy(&icon_src, &icon_dst).expect("copy packaging/icon.ico into OUT_DIR");
+
     let rc_path = out_dir.join("metroforge.rc");
-
-    // ICON paths in .rc files want backslashes; escape them for the RC
-    // string. VERSIONINFO numbers must be comma-separated integers.
-    let icon_rc = icon.display().to_string().replace(['\\', '/'], "\\\\");
-
     let rc = format!(
         r#"
-1 ICON "{icon_rc}"
+1 ICON "icon.ico"
 
 1 VERSIONINFO
 FILEVERSION {major},{minor},{patch},{build}
@@ -63,9 +66,11 @@ FILETYPE 0x1
     );
 
     fs::write(&rc_path, rc).expect("write metroforge.rc");
-    println!("cargo:rerun-if-changed={}", icon.display());
+    println!("cargo:rerun-if-changed={}", icon_src.display());
     println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION");
 
+    // OUT_DIR is already on embed-resource's include path, so "icon.ico"
+    // resolves next to the generated .rc.
     embed_resource::compile(&rc_path, embed_resource::NONE)
         .manifest_optional()
         .expect("embed Windows resources (icon + VERSIONINFO)");
