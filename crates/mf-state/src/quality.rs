@@ -80,6 +80,14 @@ pub struct QualityKnobs {
     /// Raymarch step count for [`bevy::pbr::VolumetricFog`] when atmosphere
     /// is active. Higher = less banding, more GPU.
     pub atmosphere_fog_steps: u32,
+    /// When `true`, Bevy `Bloom` is eligible on the camera (Medium/High).
+    /// Intensity still ramps with `DayNightState.night_factor` and is fully
+    /// off during day; Potato/Low keep this false so the bloom pass never
+    /// runs on weak GPUs / lavapipe.
+    pub bloom_enabled: bool,
+    /// When `true`, arterial street-lamp glow meshes are built (Low+).
+    /// Potato skips them with day/night disabled.
+    pub street_lamps_enabled: bool,
 }
 
 impl QualityTier {
@@ -115,6 +123,8 @@ impl QualityTier {
                 fog: Some((1_200.0, 2_600.0)),
                 atmosphere_enabled: false,
                 atmosphere_fog_steps: 0,
+                bloom_enabled: false,
+                street_lamps_enabled: false,
             },
             QualityTier::Low => QualityKnobs {
                 vsync: true,
@@ -133,6 +143,8 @@ impl QualityTier {
                 fog: Some((3_000.0, 5_500.0)),
                 atmosphere_enabled: false,
                 atmosphere_fog_steps: 0,
+                bloom_enabled: false,
+                street_lamps_enabled: true,
             },
             QualityTier::Medium => QualityKnobs {
                 vsync: true,
@@ -151,6 +163,8 @@ impl QualityTier {
                 fog: None,
                 atmosphere_enabled: true,
                 atmosphere_fog_steps: 32,
+                bloom_enabled: true,
+                street_lamps_enabled: true,
             },
             QualityTier::High => QualityKnobs {
                 vsync: true,
@@ -167,6 +181,8 @@ impl QualityTier {
                 fog: None,
                 atmosphere_enabled: true,
                 atmosphere_fog_steps: 56,
+                bloom_enabled: true,
+                street_lamps_enabled: true,
             },
         }
     }
@@ -258,6 +274,14 @@ mod tests {
             QualityTier::High.knobs().atmosphere_fog_steps
                 > QualityTier::Medium.knobs().atmosphere_fog_steps
         );
+        assert!(!QualityTier::Potato.knobs().bloom_enabled);
+        assert!(!QualityTier::Low.knobs().bloom_enabled);
+        assert!(QualityTier::Medium.knobs().bloom_enabled);
+        assert!(QualityTier::High.knobs().bloom_enabled);
+        assert!(!QualityTier::Potato.knobs().street_lamps_enabled);
+        assert!(QualityTier::Low.knobs().street_lamps_enabled);
+        assert!(QualityTier::Medium.knobs().street_lamps_enabled);
+        assert!(QualityTier::High.knobs().street_lamps_enabled);
     }
 
     /// Fog `end_m` must sit strictly inside `building_draw_distance_m`
