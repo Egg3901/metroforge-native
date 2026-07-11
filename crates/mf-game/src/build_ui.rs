@@ -542,24 +542,19 @@ fn route_panel_system(
                     // the row, colored green -> amber -> red. Only shown when
                     // the sidecar sends `liveCrowding` (old ones omit it).
                     if let Some(crowding) = route.live_crowding {
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                let (dot, dot_resp) = ui.allocate_exact_size(
-                                    egui::vec2(10.0, 10.0),
-                                    egui::Sense::hover(),
-                                );
-                                ui.painter().rect_filled(
-                                    dot,
-                                    egui::CornerRadius::same(5),
-                                    ds::crowding_color(crowding),
-                                );
-                                dot_resp.on_hover_text(format!(
-                                    "Live crowding {:.0}%",
-                                    crowding.clamp(0.0, 1.0) * 100.0
-                                ));
-                            },
-                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let (dot, dot_resp) = ui
+                                .allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                            ui.painter().rect_filled(
+                                dot,
+                                egui::CornerRadius::same(5),
+                                ds::crowding_color(crowding),
+                            );
+                            dot_resp.on_hover_text(format!(
+                                "Live crowding {:.0}%",
+                                crowding.clamp(0.0, 1.0) * 100.0
+                            ));
+                        });
                     }
                 });
                 ui.label(ds::label_small(format!(
@@ -657,10 +652,12 @@ fn route_editor(
     if let Some(crowding) = route.live_crowding {
         ui.horizontal(|ui| {
             ui.label(ds::label_muted("Live crowding"));
-            let (dot, _) =
-                ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-            ui.painter()
-                .rect_filled(dot, egui::CornerRadius::same(5), ds::crowding_color(crowding));
+            let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter().rect_filled(
+                dot,
+                egui::CornerRadius::same(5),
+                ds::crowding_color(crowding),
+            );
             ui.label(
                 ds::value_strong(format!("{:.0}%", crowding.clamp(0.0, 1.0) * 100.0))
                     .color(ds::crowding_color(crowding)),
@@ -688,8 +685,11 @@ fn route_editor(
         ui.horizontal(|ui| {
             ui.label(ds::label_muted("Net / day"));
             ui.label(
-                ds::value_strong(format!("{prefix}{}", format_cash(net.abs())))
-                    .color(if good { ds::GOOD } else { ds::BAD }),
+                ds::value_strong(format!("{prefix}{}", format_cash(net.abs()))).color(if good {
+                    ds::GOOD
+                } else {
+                    ds::BAD
+                }),
             );
         });
     }

@@ -403,7 +403,11 @@ fn draw_day_night_icon(painter: &egui::Painter, rect: egui::Rect, is_night: bool
         let moon = egui::Color32::from_rgb(0xc7, 0xcb, 0xd6);
         painter.circle_filled(center, r, moon);
         // Bite out an offset disc in the panel color to leave a crescent.
-        painter.circle_filled(center + egui::vec2(r * 0.55, -r * 0.2), r * 0.95, panel_bg());
+        painter.circle_filled(
+            center + egui::vec2(r * 0.55, -r * 0.2),
+            r * 0.95,
+            panel_bg(),
+        );
     } else {
         painter.circle_filled(center, r * 0.72, WARN);
         for i in 0..4 {
@@ -1547,8 +1551,8 @@ fn in_game_hud_system(
                     // consistent with the day/night rig, which now reads the
                     // same field. A small sun/moon glyph precedes the time.
                     let hour = state.display_hour();
-                    let (icon_rect, _) = ui
-                        .allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                    let (icon_rect, _) =
+                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
                     draw_day_night_icon(ui.painter(), icon_rect, is_night_hour(hour));
                     fixed_width_label(
                         ui,
@@ -1611,9 +1615,7 @@ fn in_game_hud_system(
                         )
                         .fill(WARN)
                         .corner_radius(crate::design_system::CORNER_RADIUS);
-                        let resp = ui
-                            .add(chip)
-                            .on_hover_text("Open the busiest crowded route");
+                        let resp = ui.add(chip).on_hover_text("Open the busiest crowded route");
                         hover_tick(&resp, &mut hovered, &mut sfx);
                         if resp.clicked() {
                             route_panel.open = true;
