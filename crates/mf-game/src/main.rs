@@ -107,8 +107,8 @@ fn main() {
             command_bus::MfCommandBusPlugin,
             tools::MfToolsPlugin,
             build_ui::MfBuildUiPlugin,
-            routes_panel::MfRoutesPanelPlugin,
         ))
+        .add_plugins(routes_panel::MfRoutesPanelPlugin)
         // Bevy's Plugins tuple impl caps at 15 elements; second batch.
         .add_plugins((
             overlays::MfOverlaysPlugin,

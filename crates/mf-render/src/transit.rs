@@ -1341,7 +1341,9 @@ fn apply_overlay_dim_system(
     }
     for (tube, handle) in &tunnel_bright {
         if let Some(mat) = materials.get_mut(&handle.0) {
-            paint(mat, tube.color, 0.85);
+            // Tunnel ribbons are shared infrastructure like tracks: dim only
+            // under a demand overlay, not under route focus.
+            paint(mat, tube.color, 0.85, overlay_dim);
         }
     }
     for (ring, handle) in &rings {
