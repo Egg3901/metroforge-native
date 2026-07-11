@@ -25,8 +25,8 @@ pub enum AppState {
 }
 
 /// Which screen `hud.rs`'s `AppState::MainMenu` systems are showing right
-/// now. Not a second `States` machine (that's overkill for three egui
-/// panels) — a plain resource `hud.rs` reads/writes directly, since
+/// now. Not a second `States` machine (that's overkill for a handful of
+/// egui panels) — a plain resource `hud.rs` reads/writes directly, since
 /// nothing outside the menu (net status, sim init, etc.) reacts to it.
 ///
 /// Owner feedback ("takes me right to city select"): the player must land
@@ -36,6 +36,8 @@ pub enum MenuScreen {
     #[default]
     Title,
     CitySelect,
+    /// Save browser: per-slot metadata for continue/load from the title screen.
+    LoadGame,
     Settings,
 }
 
@@ -172,6 +174,7 @@ fn menu_screen_override() -> Option<MenuScreen> {
     match std::env::var("MF_MENU_SCREEN").ok()?.trim() {
         "title" => Some(MenuScreen::Title),
         "city" => Some(MenuScreen::CitySelect),
+        "load" => Some(MenuScreen::LoadGame),
         "settings" => Some(MenuScreen::Settings),
         _ => None,
     }

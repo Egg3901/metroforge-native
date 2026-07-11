@@ -15,6 +15,9 @@ sibling `metroforge` repo and reach releases via the pinned sidecar SHA in
   with Open report location / Continue / Safe mode; `--safe-mode` forces
   Potato and disables weather (bloom/outlines follow Potato); sidecar stderr
   captured to a rotating log
+- Hardened save/load: versioned wrapper schema with migration registry,
+  atomic writes + backup recovery, autosave ring of 3 (interval in
+  Settings), and a title-screen Load Game browser with per-slot metadata
 - Main menu overhaul and app icon (#47)
 - Release installers: Windows NSIS setup.exe, macOS .dmg, Linux tarball with
   desktop integration (#52)
