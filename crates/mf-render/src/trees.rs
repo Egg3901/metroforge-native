@@ -5,20 +5,23 @@
 //! per 8x8 world chunk (same culling story as buildings), rebuilt on the
 //! fields version like every other static layer.
 //!
+//! Colors come from [`crate::palette`] (theme-aware) rather than hardcoded
+//! RGB, and the rebuild key includes `Theme` so a Settings theme switch
+//! repaints trunks/canopies.
+//!
 //! Quality knobs (perf audit): Potato disables trees entirely; Low/Medium
 //! cull chunks by camera distance the same way buildings do.
 
 use bevy::prelude::*;
 
-use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier};
+use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, Theme};
 
 use crate::mesh_utils::{append_cuboid, hash01, MeshBuffers};
+use crate::palette;
 
 const CHUNKS_PER_SIDE: usize = 8;
 /// One tree per park cell where the hash clears this density gate.
 const TREE_DENSITY: f32 = 0.45;
-const TRUNK_COLOR: Color = Color::srgb(0.52, 0.47, 0.42);
-const CANOPY_COLOR: Color = Color::srgb(0.36, 0.62, 0.40);
 
 pub struct MfTreesPlugin;
 
@@ -36,9 +39,9 @@ impl Plugin for MfTreesPlugin {
 
 #[derive(Resource, Default)]
 struct TreesState {
-    /// `(fields version, tree_enabled)` — rebuild when fields bump or the
-    /// Potato toggle flips.
-    key: Option<(u32, bool)>,
+    /// `(fields version, theme, tree_enabled)` — rebuild on fields bump,
+    /// theme switch, or the Potato toggle flipping.
+    key: Option<(u32, Theme, bool)>,
     entities: Vec<Entity>,
 }
 
@@ -54,6 +57,7 @@ fn build_trees_system(
     fields: Res<LatestFields>,
     height_at: Res<HeightAt>,
     quality: Res<QualityTier>,
+    theme: Res<Theme>,
     mut state: ResMut<TreesState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -61,7 +65,7 @@ fn build_trees_system(
     let Some(cj) = &city.static_city else { return };
     let Some(f) = &fields.0 else { return };
     let knobs = quality.knobs();
-    let key = (f.version, knobs.tree_enabled);
+    let key = (f.version, *theme, knobs.tree_enabled);
     if state.key == Some(key) {
         return;
     }
@@ -93,6 +97,18 @@ fn build_trees_system(
         }
     }
 
+    // Trunk: muted building-base tone (white-city wood, not brown clutter).
+    // Canopy: theme park green with per-tree jitter.
+    let trunk = {
+        let c = palette::building_base().to_srgba();
+        Color::srgb(
+            (c.red * 0.9).clamp(0.0, 1.0),
+            (c.green * 0.9).clamp(0.0, 1.0),
+            (c.blue * 0.9).clamp(0.0, 1.0),
+        )
+    };
+    let canopy_base = palette::park();
+
     for gy in 0..h {
         for gx in 0..w {
             let idx = (gy * w + gx) as usize;
@@ -114,7 +130,7 @@ fn build_trees_system(
             let canopy = 3.6 * scale;
             let tint = 1.0 + (hash01(gx.wrapping_add(9), gy.wrapping_sub(4)) - 0.5) * 0.24;
             let canopy_col = {
-                let c = CANOPY_COLOR.to_srgba();
+                let c = canopy_base.to_srgba();
                 Color::srgb(
                     (c.red * tint).clamp(0.0, 1.0),
                     (c.green * tint).clamp(0.0, 1.0),
@@ -134,9 +150,9 @@ fn build_trees_system(
                 0.35 * scale,
                 0.35 * scale,
                 trunk_h,
-                TRUNK_COLOR,
-                TRUNK_COLOR,
-                TRUNK_COLOR,
+                trunk,
+                trunk,
+                trunk,
             );
             append_cuboid(
                 buf,

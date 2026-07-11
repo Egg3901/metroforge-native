@@ -71,9 +71,29 @@ pub struct QualityKnobs {
     /// off on Medium/High where draw distance is unlimited or generous
     /// enough that fog would just look like a boring haze over open sky.
     pub fog: Option<(f32, f32)>,
+    /// When `true`, scrolling volumetric fog/cloud + distance haze are
+    /// eligible (Medium/High). Potato/Low keep this off — volumetric fog
+    /// needs shadow maps, which those tiers disable. The player can still
+    /// turn the effect off via [`crate::WeatherEffects`] even when this is
+    /// `true`.
+    pub atmosphere_enabled: bool,
+    /// Raymarch step count for [`bevy::pbr::VolumetricFog`] when atmosphere
+    /// is active. Higher = less banding, more GPU.
+    pub atmosphere_fog_steps: u32,
 }
 
 impl QualityTier {
+    /// Player-facing label for combo boxes (not `Debug` — "Potato" is fine,
+    /// but this keeps HUD copy intentional if variants are renamed later).
+    pub fn label(self) -> &'static str {
+        match self {
+            QualityTier::Potato => "Potato",
+            QualityTier::Low => "Low",
+            QualityTier::Medium => "Medium",
+            QualityTier::High => "High",
+        }
+    }
+
     /// The full knob table (spec §4), one method call per tier.
     pub fn knobs(self) -> QualityKnobs {
         match self {
@@ -93,6 +113,8 @@ impl QualityTier {
                 // pop-in to hide, so fog closes in early and finishes well
                 // inside the 3km cull.
                 fog: Some((1_200.0, 2_600.0)),
+                atmosphere_enabled: false,
+                atmosphere_fog_steps: 0,
             },
             QualityTier::Low => QualityKnobs {
                 vsync: true,
@@ -109,6 +131,8 @@ impl QualityTier {
                 // Lighter than Potato: draw distance doubled to 6km, so fog
                 // can start further out and still finish inside the cull.
                 fog: Some((3_000.0, 5_500.0)),
+                atmosphere_enabled: false,
+                atmosphere_fog_steps: 0,
             },
             QualityTier::Medium => QualityKnobs {
                 vsync: true,
@@ -125,6 +149,8 @@ impl QualityTier {
                 // Draw distance generous enough (12km) that fog would just
                 // haze open sky rather than mask any real pop-in.
                 fog: None,
+                atmosphere_enabled: true,
+                atmosphere_fog_steps: 32,
             },
             QualityTier::High => QualityKnobs {
                 vsync: true,
@@ -139,6 +165,8 @@ impl QualityTier {
                 tree_enabled: true,
                 tree_draw_distance_m: None,
                 fog: None,
+                atmosphere_enabled: true,
+                atmosphere_fog_steps: 56,
             },
         }
     }
@@ -221,6 +249,14 @@ mod tests {
         assert!(
             QualityTier::Potato.knobs().ribbon_densify_step_m
                 > QualityTier::High.knobs().ribbon_densify_step_m
+        );
+        assert!(!QualityTier::Potato.knobs().atmosphere_enabled);
+        assert!(!QualityTier::Low.knobs().atmosphere_enabled);
+        assert!(QualityTier::Medium.knobs().atmosphere_enabled);
+        assert!(QualityTier::High.knobs().atmosphere_enabled);
+        assert!(
+            QualityTier::High.knobs().atmosphere_fog_steps
+                > QualityTier::Medium.knobs().atmosphere_fog_steps
         );
     }
 

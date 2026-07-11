@@ -17,6 +17,7 @@ use crate::reveal::RevealState;
 use crate::subway::SubwayView;
 use crate::theme::Theme;
 use crate::ui::LatestUi;
+use crate::weather::WeatherEffects;
 
 pub struct MfStatePlugin;
 
@@ -33,6 +34,7 @@ impl Plugin for MfStatePlugin {
             .init_resource::<RevealState>()
             .init_resource::<LatestDemand>()
             .init_resource::<OverlayState>()
+            .init_resource::<WeatherEffects>()
             // `add_event` is idempotent (it's an `init_resource` under the
             // hood), so it's safe whether or not `MfNetPlugin` was added
             // first; declared explicitly here since `mf-state` reads it.

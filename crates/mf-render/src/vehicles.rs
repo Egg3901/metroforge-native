@@ -110,6 +110,7 @@ fn update_vehicles_system(
     ui: Res<LatestUi>,
     height_at: Res<HeightAt>,
     quality: Res<QualityTier>,
+    theme: Res<mf_state::Theme>,
     overlay: Res<mf_state::OverlayState>,
     mut pool: ResMut<VehiclePool>,
     mut commands: Commands,
@@ -126,18 +127,26 @@ fn update_vehicles_system(
     >,
 ) {
     // `LatestFrame` arrives at the sim's ~20Hz tick while this system runs
-    // every render frame (60+ Hz); `QualityTier` changes independently and
-    // flips `unlit`. Neither changing means nothing about a vehicle's
-    // position, mesh choice or paint could possibly be different from what's
-    // already applied, so skip the whole pass.
+    // every render frame (60+ Hz); `QualityTier` / `Theme` / overlay change
+    // independently and flip paint. None changing means nothing about a
+    // vehicle's position, mesh choice or paint could possibly be different
+    // from what's already applied, so skip the whole pass.
     let frame_changed = frame.is_changed();
-    if !frame_changed && !quality.is_changed() && !overlay.is_changed() {
+    if !frame_changed && !quality.is_changed() && !theme.is_changed() && !overlay.is_changed() {
         return;
     }
     let Some(f) = &frame.0 else {
         return;
     };
     let unlit = quality.knobs().unlit_material;
+    // Theme switches change `vivid_route_color` for the same color_idx —
+    // drop the paint cache so vehicles pick up the new palette immediately.
+    if theme.is_changed() {
+        pool.material_cache.clear();
+        for slot in &mut pool.applied_paint {
+            *slot = None;
+        }
+    }
     let box_mesh = pool
         .box_mesh
         .get_or_insert_with(|| {

@@ -39,6 +39,17 @@ pub enum Difficulty {
     Hard,
 }
 
+impl Difficulty {
+    /// Player-facing label for menu combo boxes (avoids `Debug` formatting).
+    pub fn label(self) -> &'static str {
+        match self {
+            Difficulty::Easy => "Easy",
+            Difficulty::Normal => "Normal",
+            Difficulty::Hard => "Hard",
+        }
+    }
+}
+
 /// The `size?` field on `init`/`ReplayPayload` — metroforge/src/host/protocol.ts:122.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

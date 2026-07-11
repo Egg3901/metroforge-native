@@ -174,7 +174,27 @@ fn spawn_camera(mut commands: Commands, existing: Query<Entity, With<CameraRig>>
     }
     commands.spawn((
         Camera3d::default(),
+        // Default `PerspectiveProjection::far` is 1000m -- far too tight for
+        // this camera, which can dolly out to `MAX_DOLLY` (20km) from its
+        // target. Widened so distant geometry (and the sky dome, see
+        // `mf-render`'s `sky.rs`, which needs headroom inside this plane to
+        // stay fully behind the world at any camera position) isn't clipped.
+        Projection::Perspective(PerspectiveProjection {
+            far: 60_000.0,
+            ..default()
+        }),
         Transform::from_xyz(0.0, 1200.0, 1200.0).looking_at(Vec3::ZERO, Vec3::Y),
+        // Horizon distance fog (mf-render's sky.rs keeps the color in sync
+        // with the theme/day-night sky gradient); start/end tuned to the
+        // city scale this camera actually operates at.
+        DistanceFog {
+            color: Color::WHITE,
+            falloff: FogFalloff::Linear {
+                start: 8_000.0,
+                end: 55_000.0,
+            },
+            ..default()
+        },
         CameraRig::default(),
         RigLastOutput::default(),
     ));

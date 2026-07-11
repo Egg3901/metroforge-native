@@ -129,7 +129,7 @@ The 3D renderer, composed as `MfRenderPlugin` from one sub-plugin per visual lay
 ordered by a `MfRenderSet` system-set chain: `Terrain` (must run first and own any
 `HeightAt` rebuild) then `Statics` (roads/buildings/transit: cache-checked every
 frame against a version counter, only rebuilt on change) then `Dynamic`
-(vehicles/agents/day-night/subway-view: run unconditionally every frame).
+(vehicles/agents/day-night/atmosphere/subway-view: run unconditionally every frame).
 
 Buildings are the layer worth calling out specifically: 20 to 60 thousand static
 cuboids per city are baked into **merged per-chunk meshes** (an 8x8 grid of world
