@@ -261,6 +261,31 @@ pub struct Strings {
     // --- Minimap --------------------------------------------------------
     pub minimap: &'static str,
     pub no_city_loaded: &'static str,
+
+    // --- City select ----------------------------------------------------
+    pub city_select_hint: &'static str,
+
+    // --- Routes panel ---------------------------------------------------
+    pub sort: &'static str,
+    pub sort_crowding: &'static str,
+    pub sort_riders: &'static str,
+    pub sort_net_income: &'static str,
+    pub close: &'static str,
+    pub no_routes_panel_hint: &'static str,
+    pub multi_select_hint: &'static str,
+    pub stops: &'static str,
+    pub stops_edit_hint: &'static str,
+    pub apply_stop_order: &'static str,
+    pub revert: &'static str,
+    pub edit_stops_in_world: &'static str,
+    pub pause: &'static str,
+    pub next_color: &'static str,
+    pub delete_route: &'static str,
+    pub route_row_stops_mid: &'static str,
+    pub route_row_riders_mid: &'static str,
+    pub route_paused_suffix: &'static str,
+    pub crowding_prefix: &'static str,
+    pub route_update_failed_prefix: &'static str,
 }
 
 /// Default English table. Future locales swap via [`set_current`].
@@ -493,6 +518,29 @@ pub static EN: Strings = Strings {
 
     minimap: "Minimap",
     no_city_loaded: "No city loaded",
+
+    city_select_hint: "Arrows move. Enter plays. Hover for the accent edge.",
+
+    sort: "Sort",
+    sort_crowding: "Crowding",
+    sort_riders: "Riders",
+    sort_net_income: "Net income",
+    close: "Close",
+    no_routes_panel_hint: "No routes yet. Place two stations and press R.",
+    multi_select_hint: "Shift click stations to multi select, then Enter to connect.",
+    stops: "Stops",
+    stops_edit_hint: "Click a station in the world to add or remove. Drag rows to reorder.",
+    apply_stop_order: "Apply stop order",
+    revert: "Revert",
+    edit_stops_in_world: "Edit stops in world",
+    pause: "Pause",
+    next_color: "Next color",
+    delete_route: "Delete route",
+    route_row_stops_mid: " stops · ",
+    route_row_riders_mid: " riders/day · ",
+    route_paused_suffix: " · paused",
+    crowding_prefix: "Crowding ",
+    route_update_failed_prefix: "Route update failed: ",
 };
 
 static CURRENT: AtomicPtr<Strings> = AtomicPtr::new(std::ptr::null_mut());
@@ -754,6 +802,28 @@ impl Strings {
             self.star_net_positive_prefix, self.star_net_positive_suffix
         )
     }
+
+    pub fn route_row_subtitle(
+        &self,
+        stops: usize,
+        riders: &str,
+        mode: &str,
+        paused: bool,
+    ) -> String {
+        let paused_suffix = if paused { self.route_paused_suffix } else { "" };
+        format!(
+            "{stops}{}{riders}{}{mode}{paused_suffix}",
+            self.route_row_stops_mid, self.route_row_riders_mid
+        )
+    }
+
+    pub fn crowding_pct(&self, pct: f64) -> String {
+        format!("{}{pct:.0}%", self.crowding_prefix)
+    }
+
+    pub fn route_update_failed(&self, detail: &str) -> String {
+        format!("{}{detail}", self.route_update_failed_prefix)
+    }
 }
 
 /// Walk every `&'static str` field on the active table (used by the dash
@@ -973,6 +1043,27 @@ pub fn all_static_strings(s: &Strings) -> Vec<&'static str> {
         s.star_net_positive_suffix,
         s.minimap,
         s.no_city_loaded,
+        s.city_select_hint,
+        s.sort,
+        s.sort_crowding,
+        s.sort_riders,
+        s.sort_net_income,
+        s.close,
+        s.no_routes_panel_hint,
+        s.multi_select_hint,
+        s.stops,
+        s.stops_edit_hint,
+        s.apply_stop_order,
+        s.revert,
+        s.edit_stops_in_world,
+        s.pause,
+        s.next_color,
+        s.delete_route,
+        s.route_row_stops_mid,
+        s.route_row_riders_mid,
+        s.route_paused_suffix,
+        s.crowding_prefix,
+        s.route_update_failed_prefix,
     ]
 }
 
