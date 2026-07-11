@@ -482,8 +482,8 @@ mod tests {
                 Vec2::new(-world_half, world_half),
                 Vec2::new(world_half * 0.37, world_half * -0.91),
             ] {
-                let p = world_to_minimap(world, world_half, map_rect);
-                let back = minimap_to_world(p, world_half, map_rect);
+                let p = world_to_map(world, world_half, map_rect);
+                let back = map_to_world(p, world_half, map_rect);
                 assert!(
                     (back - world).length() < 0.05,
                     "aspect {w}x{h}: {back:?} vs {world:?}"
@@ -493,7 +493,7 @@ mod tests {
             // wide outer rect the square is inset on X; under a tall one it
             // is inset on Y — never claim the outer corner on the letterboxed
             // axis.
-            let ne = world_to_minimap(Vec2::new(world_half, world_half), world_half, map_rect);
+            let ne = world_to_map(Vec2::new(world_half, world_half), world_half, map_rect);
             assert!((ne.x - map_rect.right()).abs() < 0.05);
             assert!((ne.y - map_rect.top()).abs() < 0.05);
             if w > h + 1.0 {
