@@ -181,7 +181,7 @@ fn env_f64(key: &str, default: f64) -> f64 {
 #[allow(clippy::too_many_arguments)]
 fn perf_harness_system(
     mut harness: ResMut<PerfHarness>,
-    mut counters: ResMut<PerfCounters>,
+    counters: Res<PerfCounters>,
     mut egui_timer: ResMut<EguiPerfTimer>,
     diagnostics: Res<DiagnosticsStore>,
     time: Res<Time>,
@@ -220,7 +220,7 @@ fn perf_harness_system(
             if harness.frame.saturating_sub(harness.stage_start_frame) >= SETTLE_FRAMES {
                 harness.stage = Stage::Sampling;
                 harness.sample_started_at = Some(Instant::now());
-                *counters = PerfCounters::default();
+                counters.reset();
                 egui_timer.0 = 0;
                 bevy::log::info!(
                     "MF_PERF: sampling for {}s (override with MF_PERF_SECONDS)",
@@ -280,18 +280,18 @@ fn perf_harness_system(
             }
             harness.layer_counts = layers;
 
-            harness.system_us.building_draw_distance += counters.building_draw_distance_us;
-            harness.system_us.tree_draw_distance += counters.tree_draw_distance_us;
-            harness.system_us.street_lamp_visibility += counters.street_lamp_visibility_us;
-            harness.system_us.road_lod += counters.road_lod_us;
-            harness.system_us.transit_update += counters.transit_update_us;
-            harness.system_us.buildings_rebuild += counters.buildings_rebuild_us;
-            harness.system_us.roads_rebuild += counters.roads_rebuild_us;
+            harness.system_us.building_draw_distance += counters.building_draw_distance_us.load(std::sync::atomic::Ordering::Relaxed);
+            harness.system_us.tree_draw_distance += counters.tree_draw_distance_us.load(std::sync::atomic::Ordering::Relaxed);
+            harness.system_us.street_lamp_visibility += counters.street_lamp_visibility_us.load(std::sync::atomic::Ordering::Relaxed);
+            harness.system_us.road_lod += counters.road_lod_us.load(std::sync::atomic::Ordering::Relaxed);
+            harness.system_us.transit_update += counters.transit_update_us.load(std::sync::atomic::Ordering::Relaxed);
+            harness.system_us.buildings_rebuild += counters.buildings_rebuild_us.load(std::sync::atomic::Ordering::Relaxed);
+            harness.system_us.roads_rebuild += counters.roads_rebuild_us.load(std::sync::atomic::Ordering::Relaxed);
             harness.system_us.egui_pass += egui_timer.0;
-            harness.system_us.visibility_mutations += u64::from(counters.visibility_mutations);
-            harness.system_us.visibility_skips += u64::from(counters.visibility_skips);
+            harness.system_us.visibility_mutations += u64::from(counters.visibility_mutations.load(std::sync::atomic::Ordering::Relaxed));
+            harness.system_us.visibility_skips += u64::from(counters.visibility_skips.load(std::sync::atomic::Ordering::Relaxed));
             harness.system_us.frames += 1;
-            *counters = PerfCounters::default();
+            counters.reset();
             egui_timer.0 = 0;
 
             let elapsed = harness

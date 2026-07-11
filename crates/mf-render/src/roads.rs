@@ -103,7 +103,7 @@ fn build_roads_system(
     mut materials: ResMut<Assets<StandardMaterial>>,
     quality: Res<QualityTier>,
     theme: Res<Theme>,
-    mut counters: ResMut<crate::perf::PerfCounters>,
+    counters: Res<crate::perf::PerfCounters>,
 ) {
     let Some(city_json) = &city.static_city else {
         return;
@@ -129,7 +129,7 @@ fn build_roads_system(
         return;
     }
     let _span = tracing::info_span!("roads_rebuild").entered();
-    let _timer = crate::perf::PerfSpan::start(&mut counters.roads_rebuild_us);
+    let _timer = crate::perf::PerfSpan::start(&counters.roads_rebuild_us);
     state.signature = Some(signature);
 
     for e in state.entities.drain(..) {
@@ -318,10 +318,10 @@ fn road_lod_system(
     state: Res<RoadsState>,
     cameras: Query<&Transform, With<Camera3d>>,
     mut visibility: Query<&mut Visibility>,
-    mut counters: ResMut<crate::perf::PerfCounters>,
+    counters: Res<crate::perf::PerfCounters>,
 ) {
     let _span = tracing::info_span!("road_lod").entered();
-    let _timer = crate::perf::PerfSpan::start(&mut counters.road_lod_us);
+    let _timer = crate::perf::PerfSpan::start(&counters.road_lod_us);
     let Ok(cam_transform) = cameras.single() else {
         return;
     };
@@ -334,10 +334,9 @@ fn road_lod_system(
                 Visibility::Visible
             };
             if *vis == next {
-                counters.visibility_skips = counters.visibility_skips.saturating_add(1);
+                counters.visibility_skips.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             } else {
-                counters.visibility_mutations =
-                    counters.visibility_mutations.saturating_add(1);
+                counters.visibility_mutations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             *vis = next;
         }
@@ -350,10 +349,9 @@ fn road_lod_system(
                 Visibility::Visible
             };
             if *vis == next {
-                counters.visibility_skips = counters.visibility_skips.saturating_add(1);
+                counters.visibility_skips.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             } else {
-                counters.visibility_mutations =
-                    counters.visibility_mutations.saturating_add(1);
+                counters.visibility_mutations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             *vis = next;
         }

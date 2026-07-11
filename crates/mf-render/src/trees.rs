@@ -198,10 +198,10 @@ fn tree_draw_distance_system(
     chunks: Query<(Entity, &TreeChunk)>,
     cameras: Query<&Transform, With<Camera3d>>,
     mut visibility: Query<&mut Visibility>,
-    mut counters: ResMut<crate::perf::PerfCounters>,
+    counters: Res<crate::perf::PerfCounters>,
 ) {
     let _span = tracing::info_span!("tree_draw_distance").entered();
-    let _timer = crate::perf::PerfSpan::start(&mut counters.tree_draw_distance_us);
+    let _timer = crate::perf::PerfSpan::start(&counters.tree_draw_distance_us);
     let Ok(cam) = cameras.single() else {
         return;
     };
@@ -221,10 +221,9 @@ fn tree_draw_distance_system(
             Visibility::Hidden
         };
         if *vis == next {
-            counters.visibility_skips = counters.visibility_skips.saturating_add(1);
+            counters.visibility_skips.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         } else {
-            counters.visibility_mutations =
-                counters.visibility_mutations.saturating_add(1);
+            counters.visibility_mutations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         *vis = next;
     }

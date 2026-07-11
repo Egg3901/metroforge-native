@@ -206,17 +206,16 @@ fn street_lamp_visibility_system(
     chunks: Query<(Entity, &StreetLampChunk)>,
     cameras: Query<&Transform, With<Camera3d>>,
     mut visibility: Query<&mut Visibility>,
-    mut counters: ResMut<crate::perf::PerfCounters>,
+    counters: Res<crate::perf::PerfCounters>,
 ) {
     let _span = tracing::info_span!("street_lamp_visibility").entered();
-    let _timer = crate::perf::PerfSpan::start(&mut counters.street_lamp_visibility_us);
+    let _timer = crate::perf::PerfSpan::start(&counters.street_lamp_visibility_us);
     let night_on = day_night.night_factor >= LAMP_VISIBLE_NIGHT;
     let Ok(cam) = cameras.single() else {
         for (entity, _) in &chunks {
             if let Ok(mut vis) = visibility.get_mut(entity) {
                 *vis = Visibility::Hidden;
-                counters.visibility_mutations =
-                    counters.visibility_mutations.saturating_add(1);
+                counters.visibility_mutations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
         return;
@@ -244,10 +243,9 @@ fn street_lamp_visibility_system(
         // so change-detection cost is visible in MF_PERF before the transition-
         // only fix lands.
         if *vis == next {
-            counters.visibility_skips = counters.visibility_skips.saturating_add(1);
+            counters.visibility_skips.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         } else {
-            counters.visibility_mutations =
-                counters.visibility_mutations.saturating_add(1);
+            counters.visibility_mutations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         *vis = next;
     }

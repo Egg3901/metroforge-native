@@ -3267,6 +3267,7 @@ dependencies = [
  "bevy",
  "mf-protocol",
  "mf-state",
+ "tracing",
 ]
 
 [[package]]
