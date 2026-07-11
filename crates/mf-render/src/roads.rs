@@ -18,12 +18,12 @@ use crate::palette;
 /// framings; found on the flattened real-city relief). 2m is still
 /// imperceptible as elevation at street zoom and keeps the ribbons winning
 /// depth at distance.
-const ROAD_Y_OFFSET: f32 = 2.0;
+pub(crate) const ROAD_Y_OFFSET: f32 = 2.0;
 /// Water-crossing segments ride a fixed deck height instead of hugging
 /// `WATER_LEVEL_Y` — a road at water level renders as a barely-visible black
 /// sliver mid-river (owner-flagged on the East River bridges). A flat
 /// causeway a few meters up reads as a bridge at city zoom.
-const BRIDGE_DECK_Y: f32 = 8.0;
+pub(crate) const BRIDGE_DECK_Y: f32 = 8.0;
 /// Widths per spec §3.3 (already includes `roadScale` multiplication).
 // Widened ~1.5x from real-world-ish 40/24/13: at overview zoom the true
 // widths are a few pixels and vanish into the bright ground (the oldest
@@ -346,21 +346,26 @@ fn road_lod_system(
         e.min(COLLECTOR_ROAD_LOD_HEIGHT)
     });
 
-    let set_vis = |entity: Option<Entity>, hide_above: Option<f32>, vis: &mut Query<&mut Visibility>| {
-        let Some(entity) = entity else {
-            return;
+    let set_vis =
+        |entity: Option<Entity>, hide_above: Option<f32>, vis: &mut Query<&mut Visibility>| {
+            let Some(entity) = entity else {
+                return;
+            };
+            let Ok(mut v) = vis.get_mut(entity) else {
+                return;
+            };
+            *v = match hide_above {
+                Some(h) if y > h => Visibility::Hidden,
+                _ => Visibility::Visible,
+            };
         };
-        let Ok(mut v) = vis.get_mut(entity) else {
-            return;
-        };
-        *v = match hide_above {
-            Some(h) if y > h => Visibility::Hidden,
-            _ => Visibility::Visible,
-        };
-    };
 
     set_vis(state.local_entity, Some(local_hide), &mut visibility);
-    set_vis(state.collector_entity, Some(collector_hide), &mut visibility);
+    set_vis(
+        state.collector_entity,
+        Some(collector_hide),
+        &mut visibility,
+    );
     // Arterials: only cull on the fog tiers (above the fog `end` height);
     // otherwise they stay for skyline structure.
     set_vis(state.arterial_entity, fog_end, &mut visibility);

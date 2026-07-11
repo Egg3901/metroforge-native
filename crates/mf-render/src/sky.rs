@@ -79,9 +79,13 @@ struct SkyMaterial {
     horizon: Vec4,
     #[uniform(0)]
     zenith: Vec4,
-    /// (dome_radius, gradient curve power, reserved, reserved).
+    /// (dome_radius, gradient curve power, city_glow_strength, reserved).
     #[uniform(0)]
     params: Vec4,
+    /// Soft light-pollution dome color (rgb) + unused w. Mixed into the
+    /// horizon band at night; strength lives in `params.z`.
+    #[uniform(0)]
+    city_glow: Vec4,
 }
 
 impl Material for SkyMaterial {
@@ -126,6 +130,7 @@ fn spawn_sky_dome_system(
         horizon: color_to_vec4(palette::sky_day()),
         zenith: color_to_vec4(palette::sky_day()),
         params: Vec4::new(DOME_RADIUS, 1.6, 0.0, 0.0),
+        city_glow: Vec4::new(1.0, 0.55, 0.22, 0.0),
     });
     commands.spawn((
         Mesh3d(mesh),
@@ -175,10 +180,17 @@ fn update_sky_colors_system(
     }
     let zenith = palette::sky_day().mix(&palette::sky_night(), day_night.night_factor);
     let horizon = zenith.mix(&Color::WHITE, 0.35);
+    // Soft sodium/amber city glow — real light-pollution dome. Strength
+    // tracks night_factor; color stays warm regardless of theme so the
+    // night money-shot reads the same across Light/Dark/Purple.
+    let glow_strength = (day_night.night_factor * 0.55).clamp(0.0, 1.0);
+    let glow = Color::srgb(1.0, 0.55, 0.22);
     for mat in &domes {
         if let Some(m) = materials.get_mut(&mat.0) {
             m.zenith = color_to_vec4(zenith);
             m.horizon = color_to_vec4(horizon);
+            m.params.z = glow_strength;
+            m.city_glow = color_to_vec4(glow);
         }
     }
     // Horizon distance fog (nice-to-have per the sky task): tints the far
