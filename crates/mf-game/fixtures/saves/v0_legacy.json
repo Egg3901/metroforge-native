@@ -1,0 +1,15 @@
+{
+  "meta": {
+    "city_label": "nyc",
+    "day": 10,
+    "cash": 500000.0,
+    "saved_at_epoch_secs": 1700000000
+  },
+  "sim": {
+    "version": 2,
+    "bankruptDays": 0,
+    "state": {
+      "tick": 100
+    }
+  }
+}

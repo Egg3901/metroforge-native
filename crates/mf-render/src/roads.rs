@@ -18,12 +18,12 @@ use crate::palette;
 /// framings; found on the flattened real-city relief). 2m is still
 /// imperceptible as elevation at street zoom and keeps the ribbons winning
 /// depth at distance.
-const ROAD_Y_OFFSET: f32 = 2.0;
+pub(crate) const ROAD_Y_OFFSET: f32 = 2.0;
 /// Water-crossing segments ride a fixed deck height instead of hugging
 /// `WATER_LEVEL_Y` — a road at water level renders as a barely-visible black
 /// sliver mid-river (owner-flagged on the East River bridges). A flat
 /// causeway a few meters up reads as a bridge at city zoom.
-const BRIDGE_DECK_Y: f32 = 8.0;
+pub(crate) const BRIDGE_DECK_Y: f32 = 8.0;
 /// Widths per spec §3.3 (already includes `roadScale` multiplication).
 // Widened ~1.5x from real-world-ish 40/24/13: at overview zoom the true
 // widths are a few pixels and vanish into the bright ground (the oldest
@@ -71,6 +71,12 @@ struct RoadsState {
     entities: Vec<Entity>,
     local_entity: Option<Entity>,
     collector_entity: Option<Entity>,
+    /// Tracked so `road_lod_system` can hide the arterial mesh once the
+    /// camera climbs above the active tier's fog `end` — above that height the
+    /// whole network is fully fogged to the sky color anyway, so hiding it is
+    /// free and removes the aliased sub-pixel scribbles it would otherwise
+    /// draw at the horizon on the no-MSAA fog tiers (Potato/Low).
+    arterial_entity: Option<Entity>,
 }
 
 #[derive(Component)]
@@ -134,6 +140,7 @@ fn build_roads_system(
     }
     state.local_entity = None;
     state.collector_entity = None;
+    state.arterial_entity = None;
 
     let road_scale = city_json.road_scale as f32;
     let road_color = palette::road();
@@ -266,6 +273,8 @@ fn build_roads_system(
         } else if names[i] == "collector" {
             entity_commands.insert(CollectorRoadMarker);
             state.collector_entity = Some(entity_commands.id());
+        } else if names[i] == "arterial" {
+            state.arterial_entity = Some(entity_commands.id());
         }
         state.entities.push(entity_commands.id());
     }
@@ -313,6 +322,7 @@ fn build_roads_system(
 /// `mf-game` (the dependency runs the other way).
 fn road_lod_system(
     state: Res<RoadsState>,
+    effective: Res<EffectiveKnobs>,
     cameras: Query<&Transform, With<Camera3d>>,
     mut visibility: Query<&mut Visibility>,
 ) {
@@ -320,24 +330,45 @@ fn road_lod_system(
         return;
     };
     let y = cam_transform.translation.y;
-    if let Some(entity) = state.local_entity {
-        if let Ok(mut vis) = visibility.get_mut(entity) {
-            *vis = if y > LOCAL_ROAD_LOD_HEIGHT {
-                Visibility::Hidden
-            } else {
-                Visibility::Visible
+
+    // On the fog tiers (Potato/Low) everything past the fog `end` distance is
+    // fully blended to the sky color, so any road mesh whose nearest point is
+    // beyond that is invisible regardless — but with no MSAA those distant
+    // sub-pixel ribbons still alias into the black "scribbles" the horizon
+    // showed. Clamp each class's hide-height to the fog `end` so it drops out
+    // as soon as it's fully fogged, and give arterials (which otherwise never
+    // hide, to hold skyline structure on the un-fogged tiers) a hide-height at
+    // all. Off the fog tiers the original height-only LOD is unchanged and
+    // arterials never hide.
+    let fog_end = effective.0.fog.map(|(_, end)| end);
+    let local_hide = fog_end.map_or(LOCAL_ROAD_LOD_HEIGHT, |e| e.min(LOCAL_ROAD_LOD_HEIGHT));
+    let collector_hide = fog_end.map_or(COLLECTOR_ROAD_LOD_HEIGHT, |e| {
+        e.min(COLLECTOR_ROAD_LOD_HEIGHT)
+    });
+
+    let set_vis =
+        |entity: Option<Entity>, hide_above: Option<f32>, vis: &mut Query<&mut Visibility>| {
+            let Some(entity) = entity else {
+                return;
             };
-        }
-    }
-    if let Some(entity) = state.collector_entity {
-        if let Ok(mut vis) = visibility.get_mut(entity) {
-            *vis = if y > COLLECTOR_ROAD_LOD_HEIGHT {
-                Visibility::Hidden
-            } else {
-                Visibility::Visible
+            let Ok(mut v) = vis.get_mut(entity) else {
+                return;
             };
-        }
-    }
+            *v = match hide_above {
+                Some(h) if y > h => Visibility::Hidden,
+                _ => Visibility::Visible,
+            };
+        };
+
+    set_vis(state.local_entity, Some(local_hide), &mut visibility);
+    set_vis(
+        state.collector_entity,
+        Some(collector_hide),
+        &mut visibility,
+    );
+    // Arterials: only cull on the fog tiers (above the fog `end` height);
+    // otherwise they stay for skyline structure.
+    set_vis(state.arterial_entity, fog_end, &mut visibility);
 }
 
 /// Flip the 3 road-class materials' `unlit` flag when the quality tier

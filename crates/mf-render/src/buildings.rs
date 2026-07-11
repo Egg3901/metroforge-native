@@ -6,6 +6,11 @@
 //! `renderer.ts`'s `setFields -> drawBuildings` gate, extended for the
 //! native-only vector footprint data `renderer.ts` has no equivalent of.
 //!
+//! Procedural facade detail (Medium/High): `facade.wgsl` paints window grids
+//! from world-position; this module generates parapet + occasional AC-box
+//! rooftop massing at mesh-build time and pushes `DayNightState.night_factor`
+//! into the shared material uniform. Potato/Low keep flat cel masses.
+//!
 //! Three paths, tried in this priority order:
 //! - **Real-footprint path** (`CurrentCity.buildings` present and
 //!   non-empty): extrudes the actual per-building polygon (`BuildingFootprint`,
@@ -40,7 +45,9 @@ use bevy::prelude::*;
 use mf_protocol::BuildingFootprint;
 use mf_state::{CurrentCity, EffectiveKnobs, HeightAt, LatestFields, RevealState, Theme};
 
-use crate::mesh_utils::{append_cuboid_cel, append_prism, hash01, polygon_area, MeshBuffers};
+use crate::mesh_utils::{
+    append_cuboid_cel, append_prism, append_rooftop_detail, hash01, polygon_area, MeshBuffers,
+};
 use crate::palette;
 use crate::reveal::{BuildingMaterial, RevealExtension};
 
@@ -90,6 +97,7 @@ impl Plugin for MfBuildingsPlugin {
                     draw_distance_system.in_set(crate::MfRenderSet::Dynamic),
                     apply_quality_to_buildings_material_system.in_set(crate::MfRenderSet::Dynamic),
                     apply_night_dim_system.in_set(crate::MfRenderSet::Dynamic),
+                    apply_facade_uniforms_system.in_set(crate::MfRenderSet::Dynamic),
                     apply_reveal_system.in_set(crate::MfRenderSet::Dynamic),
                 ),
             );
@@ -131,6 +139,10 @@ struct BuildingsState {
     /// instead of relying on `RevealState` itself having moved since the
     /// last rebuild.
     applied_reveal_bucket: Option<(i32, i32, i32, i32, i32)>,
+    /// Last `(night_factor_bucket, facade_enabled)` written into
+    /// `material.extension.facade` — same no-churn discipline as the reveal
+    /// / night-dim buckets.
+    applied_facade_bucket: Option<(i32, bool)>,
 }
 
 impl BuildingsState {
@@ -334,7 +346,8 @@ fn build_buildings_system(
             .map(|bd| {
                 let vc = bd.verts.len();
                 if vc >= 3 {
-                    4 * vc + 3 * (vc - 2)
+                    // Walls + roof cap + parapet (one quad per edge).
+                    4 * vc + 3 * (vc - 2) + 4 * vc
                 } else {
                     0
                 }
@@ -446,8 +459,8 @@ fn build_buildings_system(
             // own built slab (height - min), not its absolute top height, so
             // a tall building's upper stacked parts don't get double-counted
             // as if each also included the podium below it.
-            chunk_lot_counts[cz * CHUNKS_PER_SIDE + cx] +=
-                polygon_area(&ring).max(1.0) * (height - min_m);
+            let area = polygon_area(&ring).max(1.0);
+            chunk_lot_counts[cz * CHUNKS_PER_SIDE + cx] += area * (height - min_m);
 
             let (v, _i) = emit_building_prism(
                 &mut chunk_bufs[cz * CHUNKS_PER_SIDE + cx],
@@ -460,6 +473,17 @@ fn build_buildings_system(
                 tint(side_sunlit),
                 tint(side_shaded),
                 tint(base),
+            );
+            // Parapet + occasional AC boxes on the roof deck (mesh-time
+            // detail; shader facades handle the walls).
+            append_rooftop_detail(
+                &mut chunk_bufs[cz * CHUNKS_PER_SIDE + cx],
+                &ring,
+                ground_y + height,
+                area,
+                jitter_key,
+                tint(top),
+                tint(side),
             );
             prism_vertex_total += v;
         }
@@ -503,9 +527,11 @@ fn build_buildings_system(
             };
             let ground_y = height_at.sample(x, z);
             let (cx, cz) = chunk_index(Vec2::new(x, z), world_size);
+            let area = (half_x * 2.0) * (half_z * 2.0);
             chunk_lot_counts[cz * CHUNKS_PER_SIDE + cx] += (half_x * half_z).max(1.0) * height;
+            let buf = &mut chunk_bufs[cz * CHUNKS_PER_SIDE + cx];
             append_cuboid_cel(
-                &mut chunk_bufs[cz * CHUNKS_PER_SIDE + cx],
+                buf,
                 Vec2::new(x, z),
                 ground_y,
                 half_x,
@@ -516,6 +542,21 @@ fn build_buildings_system(
                 tint(side_sunlit),
                 tint(side_shaded),
                 tint(base),
+            );
+            let ring = [
+                Vec2::new(x - half_x, z - half_z),
+                Vec2::new(x - half_x, z + half_z),
+                Vec2::new(x + half_x, z + half_z),
+                Vec2::new(x + half_x, z - half_z),
+            ];
+            append_rooftop_detail(
+                buf,
+                &ring,
+                ground_y + height,
+                area,
+                jitter_key,
+                tint(top),
+                tint(side),
             );
         };
 
@@ -656,8 +697,9 @@ fn build_buildings_system(
                         let ground_y = height_at.sample(c.x, c.y);
                         let (cx, cz) = chunk_index(c, world_size);
                         chunk_lot_counts[cz * CHUNKS_PER_SIDE + cx] += 1.0;
+                        let buf = &mut chunk_bufs[cz * CHUNKS_PER_SIDE + cx];
                         append_cuboid_cel(
-                            &mut chunk_bufs[cz * CHUNKS_PER_SIDE + cx],
+                            buf,
                             c,
                             ground_y,
                             half_extent,
@@ -668,6 +710,21 @@ fn build_buildings_system(
                             tint(side_sunlit),
                             tint(side_shaded),
                             tint(base),
+                        );
+                        let ring = [
+                            Vec2::new(c.x - half_extent, c.y - half_extent),
+                            Vec2::new(c.x - half_extent, c.y + half_extent),
+                            Vec2::new(c.x + half_extent, c.y + half_extent),
+                            Vec2::new(c.x + half_extent, c.y - half_extent),
+                        ];
+                        append_rooftop_detail(
+                            buf,
+                            &ring,
+                            ground_y + height,
+                            (half_extent * 2.0).powi(2),
+                            ((p.x * side_sign) as i32, (p.y + side_sign) as i32),
+                            tint(top),
+                            tint(side),
                         );
                     }
                     d += 34.0;
@@ -693,6 +750,9 @@ fn build_buildings_system(
     }
 
     let unlit = effective.0.unlit_material;
+    // Facade window grids are Medium/High only (`!unlit_material` is exactly
+    // those two tiers in the knob table). Potato/Low keep flat cel masses.
+    let facade_enabled = !unlit;
     // Night-dim only applies on unlit tiers (see `apply_night_dim_system`);
     // bake the *current* dim in at creation time so a mid-night rebuild
     // doesn't flash back to flat white until the next dim pass happens to
@@ -718,11 +778,18 @@ fn build_buildings_system(
             reflectance: 0.0,
             ..default()
         },
-        // Fresh material always starts fully off (see `RevealExtension::
-        // default`'s doc); `apply_reveal_system` picks up the live
-        // `RevealState` on its next tick since `applied_reveal_bucket` is
-        // reset below.
-        extension: RevealExtension::default(),
+        // Fresh material starts with reveal off; facade night/enable are
+        // baked from the live day-night + tier so a mid-night Medium rebuild
+        // doesn't flash unlit windows for a frame.
+        extension: RevealExtension {
+            facade: Vec4::new(
+                day_night.night_factor,
+                if facade_enabled { 1.0 } else { 0.0 },
+                0.0,
+                0.0,
+            ),
+            ..default()
+        },
     });
     state.material = Some(material.clone());
     state.applied_night_factor_bucket = if unlit {
@@ -731,6 +798,10 @@ fn build_buildings_system(
         None
     };
     state.applied_reveal_bucket = None;
+    state.applied_facade_bucket = Some((
+        quantize_night_factor(day_night.night_factor),
+        facade_enabled,
+    ));
 
     let non_empty_chunks = chunk_bufs.iter().filter(|b| !b.is_empty()).count();
     info!(
@@ -798,7 +869,8 @@ fn draw_distance_system(
 
 fn apply_quality_to_buildings_material_system(
     effective: Res<EffectiveKnobs>,
-    state: Res<BuildingsState>,
+    day_night: Res<crate::daynight::DayNightState>,
+    mut state: ResMut<BuildingsState>,
     mut materials: ResMut<Assets<BuildingMaterial>>,
 ) {
     if !effective.is_changed() {
@@ -807,9 +879,21 @@ fn apply_quality_to_buildings_material_system(
     let Some(handle) = &state.material else {
         return;
     };
+    let unlit = effective.0.unlit_material;
+    let facade_enabled = !unlit;
     if let Some(mat) = materials.get_mut(handle) {
-        mat.base.unlit = effective.0.unlit_material;
+        mat.base.unlit = unlit;
+        mat.extension.facade = Vec4::new(
+            day_night.night_factor,
+            if facade_enabled { 1.0 } else { 0.0 },
+            0.0,
+            0.0,
+        );
     }
+    state.applied_facade_bucket = Some((
+        quantize_night_factor(day_night.night_factor),
+        facade_enabled,
+    ));
 }
 
 /// Quantize `night_factor` to 1/256 steps: continuous drift during dusk/dawn
@@ -850,6 +934,38 @@ fn apply_night_dim_system(
         mat.base.base_color = Color::WHITE.mix(&palette::building_night(), day_night.night_factor);
     }
     state.applied_night_factor_bucket = Some(bucket);
+}
+
+/// Pushes `DayNightState.night_factor` + Medium/High facade enable into the
+/// shared building material's `facade` uniform (read by `facade.wgsl`).
+/// Does not touch `daynight.rs`. Quantized so dusk/dawn drift doesn't
+/// re-upload the uniform every frame.
+fn apply_facade_uniforms_system(
+    effective: Res<EffectiveKnobs>,
+    day_night: Res<crate::daynight::DayNightState>,
+    mut state: ResMut<BuildingsState>,
+    mut materials: ResMut<Assets<BuildingMaterial>>,
+) {
+    let facade_enabled = !effective.0.unlit_material;
+    let bucket = (
+        quantize_night_factor(day_night.night_factor),
+        facade_enabled,
+    );
+    if state.applied_facade_bucket == Some(bucket) {
+        return;
+    }
+    let Some(handle) = state.material.clone() else {
+        return;
+    };
+    if let Some(mat) = materials.get_mut(&handle) {
+        mat.extension.facade = Vec4::new(
+            day_night.night_factor,
+            if facade_enabled { 1.0 } else { 0.0 },
+            0.0,
+            0.0,
+        );
+    }
+    state.applied_facade_bucket = Some(bucket);
 }
 
 /// Quantization steps for `RevealState` so a merely-jittering cursor or
