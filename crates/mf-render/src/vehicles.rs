@@ -111,6 +111,10 @@ struct VehiclePool {
     /// Shared light materials: `(kind, night_bucket, unlit)`.
     light_material_cache: HashMap<(LightKind, i32, bool), Handle<StandardMaterial>>,
     applied_light_paint: Vec<[Option<(LightKind, i32, bool)>; 2]>,
+    /// Last night bucket this pass ran for. `DayNightState` is written every
+    /// frame by the smoothing system, so `is_changed()` is always true and
+    /// would defeat the 20 Hz skip-gate below; only a bucket step matters.
+    last_night_bucket: Option<i32>,
 }
 
 fn material_for_paint(
@@ -204,7 +208,8 @@ fn update_vehicles_system(
     // vehicle's position, mesh choice or paint could possibly be different
     // from what's already applied, so skip the whole pass.
     let frame_changed = frame.is_changed();
-    let night_changed = day_night.is_changed();
+    let night_bucket = (day_night.night_factor.clamp(0.0, 1.0) * 64.0).round() as i32;
+    let night_changed = pool.last_night_bucket != Some(night_bucket);
     if !frame_changed
         && !quality.is_changed()
         && !theme.is_changed()
@@ -213,6 +218,7 @@ fn update_vehicles_system(
     {
         return;
     }
+    pool.last_night_bucket = Some(night_bucket);
     let Some(f) = &frame.0 else {
         return;
     };
@@ -277,7 +283,6 @@ fn update_vehicles_system(
     let vehicle_count = f.vehicle_count as usize;
     let night_factor = day_night.night_factor.clamp(0.0, 1.0);
     let lights_on = night_factor >= LIGHT_VISIBLE_NIGHT;
-    let night_bucket = (night_factor * 64.0).round() as i32;
     // Grow the entity pool (rare; only when this session has never had this
     // many vehicles on screen at once before). Only meaningful when a new
     // frame actually arrived — `vehicle_count` can't move on a
