@@ -1105,6 +1105,23 @@ fn settings_screen_ui(
                 sfx.write(PlaySfx(Sfx::Confirm));
             }
 
+            field_label(ui, s.camera_sensitivity);
+            let mut cam = settings.config.camera_sensitivity;
+            let cam_text = format!("{cam:.2}x");
+            if ui
+                .add(
+                    egui::Slider::new(
+                        &mut cam,
+                        crate::config::CAMERA_SENS_MIN..=crate::config::CAMERA_SENS_MAX,
+                    )
+                    .text(cam_text),
+                )
+                .changed()
+            {
+                settings.config.set_camera_sensitivity(cam);
+                sfx.write(PlaySfx(Sfx::Confirm));
+            }
+
             ui.add_space(14.0);
             field_label(ui, s.colorblind);
             let cur_mode = *settings.colorblind;

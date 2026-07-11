@@ -228,11 +228,16 @@ fn camera_input_system(
     cameras: Query<(&Camera, &GlobalTransform)>,
     height_at: Res<HeightAt>,
     city: Res<CurrentCity>,
+    config: Res<crate::config::MfConfig>,
 ) {
+    // Player camera-speed multiplier (Settings). Scales mouse drag/orbit and
+    // wheel-zoom deltas here; the keyboard WASD/edge pan speed and Q/E orbit
+    // rate are scaled at their own sites below by the same factor.
+    let sens = config.camera_sensitivity;
     // Drain input events every frame regardless of whether egui is eating
     // them, so they don't pile up and get replayed later.
-    let motion_delta: Vec2 = motion.read().map(|m| m.delta).sum();
-    let wheel_delta: f32 = wheel.read().map(|w| w.y).sum();
+    let motion_delta: Vec2 = motion.read().map(|m| m.delta).sum::<Vec2>() * sens;
+    let wheel_delta: f32 = wheel.read().map(|w| w.y).sum::<f32>() * sens;
 
     let over_egui = egui_contexts
         .ctx_mut()
@@ -358,7 +363,7 @@ fn camera_input_system(
         }
     }
     if pan_dir != Vec2::ZERO {
-        let speed = rig.distance * 0.6; // faster pan when zoomed out
+        let speed = rig.distance * 0.6 * sens; // faster pan when zoomed out
         let yaw_cos = rig.yaw.cos();
         let yaw_sin = rig.yaw.sin();
         let right = Vec2::new(yaw_cos, -yaw_sin);
@@ -388,7 +393,7 @@ fn camera_input_system(
         yaw_dir -= 1.0;
     }
     if yaw_dir != 0.0 {
-        rig.yaw_goal += yaw_dir * KEY_ORBIT_SPEED * dt;
+        rig.yaw_goal += yaw_dir * KEY_ORBIT_SPEED * sens * dt;
     }
 
     // World-bounds clamp on BOTH the value and the goal: if only the goal
