@@ -73,25 +73,27 @@ struct VehiclePool {
     box_mesh: Option<Handle<Mesh>>,
     tram_mesh: Option<Handle<Mesh>>,
     /// Shared materials keyed by quantized paint. Finite set: ~8 route
-    /// colors × ~65 brightness buckets × 2 unlit states (plus overlay-dim
-    /// variants that still collapse into the same color_idx after mix).
-    material_cache: HashMap<(usize, i32, bool), Handle<StandardMaterial>>,
+    /// colors × ~65 brightness buckets × 2 unlit states × 2 overlay-dim
+    /// states. Overlay dimming changes the mixed color, so it must be part
+    /// of the key or a material minted while an overlay is open serves the
+    /// washed-out color forever.
+    material_cache: HashMap<(usize, i32, bool, bool), Handle<StandardMaterial>>,
     /// Last-applied paint key per slot, parallel to `entities`.
-    applied_paint: Vec<Option<(usize, i32, bool)>>,
+    applied_paint: Vec<Option<(usize, i32, bool, bool)>>,
 }
 
 fn material_for_paint(
-    cache: &mut HashMap<(usize, i32, bool), Handle<StandardMaterial>>,
+    cache: &mut HashMap<(usize, i32, bool, bool), Handle<StandardMaterial>>,
     materials: &mut Assets<StandardMaterial>,
-    paint_key: (usize, i32, bool),
+    paint_key: (usize, i32, bool, bool),
     color: Color,
     brightness: f32,
 ) -> Handle<StandardMaterial> {
     cache
         .entry(paint_key)
         .or_insert_with(|| {
-            let (color_idx, brightness_bucket, unlit) = paint_key;
-            let _ = (color_idx, brightness_bucket); // key already encodes these
+            let (color_idx, brightness_bucket, unlit, overlay_dimmed) = paint_key;
+            let _ = (color_idx, brightness_bucket, overlay_dimmed); // key already encodes these
             materials.add(StandardMaterial {
                 base_color: color,
                 emissive: palette::emissive(color, (if unlit { 1.0 } else { 0.4 }) * brightness),
@@ -244,7 +246,8 @@ fn update_vehicles_system(
         // this cache on essentially every changed frame for a difference no
         // player could see.
         let brightness_bucket = (brightness * 64.0).round() as i32;
-        let paint_key = (color_idx, brightness_bucket, unlit);
+        let overlay_dimmed = overlay.mode != mf_state::OverlayMode::Off;
+        let paint_key = (color_idx, brightness_bucket, unlit, overlay_dimmed);
         if pool.applied_paint.get(i).copied().flatten() != Some(paint_key) {
             let handle = material_for_paint(
                 &mut pool.material_cache,
