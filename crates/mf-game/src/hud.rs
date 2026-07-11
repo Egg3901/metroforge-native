@@ -17,7 +17,7 @@ use crate::audio::{PlaySfx, Sfx};
 use crate::campaign::{self, CampaignProgress};
 use crate::config::MfConfig;
 use crate::goals::GoalsPanelOpen;
-use crate::saves::{self, SaveManager, SaveSlot};
+use crate::saves::{self, PlaytimeTracker, SaveManager, SaveMeta, SaveSlot};
 use crate::state::{toggle_pause, AppState, MenuScreen, PauseState, PendingInit, SimHello};
 
 // Art-direction §1/§8 palette. `GOOD`/`WARN`/`BAD` are fixed semantic
@@ -433,6 +433,16 @@ fn format_relative_time(saved_at_epoch_secs: u64) -> String {
     }
 }
 
+fn format_playtime(secs: u64) -> String {
+    let hours = secs / 3600;
+    let mins = (secs % 3600) / 60;
+    if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else {
+        format!("{mins}m")
+    }
+}
+
 /// Fallback display label for a `CITY_ORDER` key that isn't (yet) present
 /// in the sidecar's `hello.city_list` — capitalizes the raw key ("dc" ->
 /// "Dc") rather than showing the wire-protocol identifier verbatim.
@@ -540,10 +550,10 @@ fn city_card(
     )
 }
 
-/// One row in the main menu's "Continue" section: an autosave or numbered
-/// slot, showing its city/day/cash/timestamp if occupied or "Empty"
-/// otherwise. Returns whether an occupied row was clicked (locked/empty
-/// rows are hover-only, same convention as [`city_card`]).
+/// One row in the save browser / Continue section: an autosave or numbered
+/// slot, showing city / sim day / network size / playtime / timestamp when
+/// occupied, or "Empty" otherwise. Returns whether an occupied row was
+/// clicked.
 fn continue_slot_row(
     ui: &mut egui::Ui,
     width: f32,
@@ -552,17 +562,15 @@ fn continue_slot_row(
     hovered: &mut Option<egui::Id>,
     sfx: &mut EventWriter<PlaySfx>,
 ) -> bool {
-    let title = match slot {
-        SaveSlot::Autosave => "Autosave".to_string(),
-        SaveSlot::Slot(n) => format!("Slot {n}"),
-    };
+    let title = slot.label();
     let occupied = meta.is_some();
     let sense = if occupied {
         egui::Sense::click()
     } else {
         egui::Sense::hover()
     };
-    let size = egui::vec2(width, 40.0);
+    let row_height = if occupied { 56.0 } else { 40.0 };
+    let size = egui::vec2(width, row_height);
     let (rect, response) = ui.allocate_exact_size(size, sense);
     if occupied {
         hover_tick(&response, hovered, sfx);
@@ -582,7 +590,34 @@ fn continue_slot_row(
         egui::StrokeKind::Inside,
     );
 
-    let content_rect = rect.shrink2(egui::vec2(12.0, 6.0));
+    // Cheap thumbnail affordance: a small color chip when a PNG is present,
+    // otherwise a muted placeholder block so the layout stays stable.
+    let thumb_size = egui::vec2(28.0, 28.0);
+    let thumb_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.left() + 10.0, rect.center().y - thumb_size.y * 0.5),
+        thumb_size,
+    );
+    if let Some(meta) = meta {
+        if meta.thumbnail_png_base64.is_some() {
+            painter.rect_filled(thumb_rect, egui::CornerRadius::same(2), accent());
+        } else {
+            painter.rect_filled(
+                thumb_rect,
+                egui::CornerRadius::same(2),
+                card_border().gamma_multiply(0.45),
+            );
+        }
+    }
+
+    let content_left = if occupied {
+        thumb_rect.right() + 10.0
+    } else {
+        rect.left() + 12.0
+    };
+    let content_rect = egui::Rect::from_min_max(
+        egui::pos2(content_left, rect.top() + 6.0),
+        egui::pos2(rect.right() - 12.0, rect.bottom() - 6.0),
+    );
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(content_rect)
@@ -609,11 +644,23 @@ fn continue_slot_row(
                 .city_label
                 .clone()
                 .unwrap_or_else(|| "Unknown city".to_string());
-            format!("{city} - Day {} - {}", meta.day, format_cash(meta.cash))
+            format!(
+                "{city} · Day {} · {} stops · {}",
+                meta.day,
+                meta.network_size,
+                format_playtime(meta.playtime_secs)
+            )
         }
         None => "Empty".to_string(),
     };
     child.label(egui::RichText::new(subtitle).size(11.0).color(muted_text()));
+    if let Some(meta) = meta {
+        child.label(
+            egui::RichText::new(format_cash(meta.cash))
+                .size(11.0)
+                .color(muted_text()),
+        );
+    }
 
     occupied && response.clicked()
 }
@@ -632,6 +679,7 @@ fn main_menu_hud_system(
     screen: ResMut<MenuScreen>,
     sfx: EventWriter<PlaySfx>,
     exit: EventWriter<AppExit>,
+    playtime: ResMut<PlaytimeTracker>,
     hovered: Local<Option<egui::Id>>,
     slots_cache: Local<Option<Vec<saves::SlotEntry>>>,
 ) -> Result {
@@ -645,6 +693,17 @@ fn main_menu_hud_system(
             save_manager,
             toasts,
             state,
+            next_state,
+            screen,
+            sfx,
+            playtime,
+            hovered,
+            slots_cache,
+        )?,
+        MenuScreen::LoadGame => load_game_screen_ui(
+            contexts,
+            save_manager,
+            toasts,
             next_state,
             screen,
             sfx,
@@ -717,8 +776,8 @@ fn draw_logo(ui: &mut egui::Ui, size: f32) {
 
 /// Title screen (owner feedback: menu must not "take me right to city
 /// select" — this is what the player sees first, every time `MainMenu` is
-/// entered). Logo + tagline + Play/Settings/Quit, nothing else: city
-/// picking and options both live one click away on their own screens.
+/// entered). Logo + tagline + Play / Load Game / Settings / Quit: city
+/// picking, the save browser, and options each live one click away.
 fn title_screen_ui(
     mut contexts: EguiContexts,
     mut screen: ResMut<MenuScreen>,
@@ -784,6 +843,18 @@ fn title_screen_ui(
                 }
 
                 ui.add_space(crate::design_system::SPACE_XS + 2.0);
+                let load = ui.add_sized(
+                    [240.0, 40.0],
+                    egui::Button::new(egui::RichText::new("Load Game").size(14.0))
+                        .corner_radius(crate::design_system::CORNER_RADIUS),
+                );
+                hover_tick(&load, &mut hovered, &mut sfx);
+                if load.clicked() {
+                    sfx.write(PlaySfx(Sfx::Confirm));
+                    *screen = MenuScreen::LoadGame;
+                }
+
+                ui.add_space(crate::design_system::SPACE_XS + 2.0);
                 let settings = ui.add_sized(
                     [240.0, 40.0],
                     egui::Button::new(egui::RichText::new("Settings").size(14.0))
@@ -837,6 +908,7 @@ fn city_select_screen_ui(
     mut next_state: ResMut<NextState<AppState>>,
     mut screen: ResMut<MenuScreen>,
     mut sfx: EventWriter<PlaySfx>,
+    mut playtime: ResMut<PlaytimeTracker>,
     mut hovered: Local<Option<egui::Id>>,
     mut slots_cache: Local<Option<Vec<saves::SlotEntry>>>,
 ) -> Result {
@@ -1068,6 +1140,7 @@ fn city_select_screen_ui(
 
     if start_pressed {
         sfx.write(PlaySfx(Sfx::Confirm));
+        saves::reset_playtime(&mut playtime);
         next_state.set(AppState::Loading);
     }
     if go_back {
@@ -1077,13 +1150,136 @@ fn city_select_screen_ui(
     Ok(())
 }
 
-/// Settings screen: quality tier + theme, the two overrides `config.rs`
-/// actually persists to `config.toml` (there's nothing else in that file
-/// to expose yet). Shared verbatim by the title screen's Settings button
-/// and the in-game pause menu's Settings button — both call sites own
-/// what "Back" means for them (return to `MenuScreen::Title` vs. close
-/// the pause-menu settings panel) via this function's `bool` return
-/// (true == Back was clicked this frame).
+/// Title-screen save browser: every autosave ring entry + numbered slot
+/// with city / sim day / network size / playtime / relative timestamp.
+#[allow(clippy::too_many_arguments)]
+fn load_game_screen_ui(
+    mut contexts: EguiContexts,
+    mut save_manager: ResMut<SaveManager>,
+    mut toasts: ResMut<ToastLog>,
+    mut next_state: ResMut<NextState<AppState>>,
+    mut screen: ResMut<MenuScreen>,
+    mut sfx: EventWriter<PlaySfx>,
+    mut hovered: Local<Option<egui::Id>>,
+    mut slots_cache: Local<Option<Vec<saves::SlotEntry>>>,
+) -> Result {
+    if slots_cache.is_none() {
+        *slots_cache = Some(saves::list());
+    }
+    // Refresh when re-entering this screen from Title.
+    if screen.is_changed() {
+        *slots_cache = Some(saves::list());
+    }
+    let slots = slots_cache.as_ref().expect("populated just above");
+
+    let ctx = contexts.ctx_mut()?;
+    let fade = ctx.animate_value_with_time(egui::Id::new("load_game_fade"), 1.0, 0.2);
+    let mut go_back = false;
+    let mut load_slot: Option<SaveSlot> = None;
+
+    egui::TopBottomPanel::bottom("load_game_back")
+        .frame(
+            egui::Frame::default()
+                .fill(panel_bg())
+                .inner_margin(egui::Margin::symmetric(16, 14)),
+        )
+        .show_separator_line(false)
+        .show(ctx, |ui| {
+            ui.set_opacity(fade);
+            ui.vertical_centered(|ui| {
+                let back = ui.add_sized(
+                    [220.0, 40.0],
+                    egui::Button::new(egui::RichText::new("Back").size(14.0))
+                        .corner_radius(crate::design_system::CORNER_RADIUS),
+                );
+                hover_tick(&back, &mut hovered, &mut sfx);
+                if back.clicked() {
+                    go_back = true;
+                }
+            });
+        });
+
+    egui::CentralPanel::default()
+        .frame(egui::Frame::default().fill(crate::design_system::menu_wash()))
+        .show(ctx, |ui| {
+            ui.set_opacity(fade);
+            ui.vertical_centered(|ui| {
+                ui.add_space(crate::design_system::SPACE_LG);
+                draw_logo(ui, 48.0);
+                ui.add_space(crate::design_system::SPACE_SM);
+                ui.label(crate::design_system::heading("Load Game").color(text_color()));
+                ui.add_space(crate::design_system::SPACE_XS);
+                ui.label(
+                    egui::RichText::new("Pick a slot to continue")
+                        .size(crate::design_system::TEXT_SM)
+                        .color(muted_text()),
+                );
+                ui.add_space(crate::design_system::SPACE_MD);
+
+                egui::ScrollArea::vertical()
+                    .max_height(ui.available_height() - 24.0)
+                    .show(ui, |ui| {
+                        ui.set_width(480.0);
+                        field_label(ui, "Autosaves");
+                        ui.add_space(4.0);
+                        for entry in slots
+                            .iter()
+                            .filter(|e| matches!(e.slot, SaveSlot::Autosave(_)))
+                        {
+                            let clicked = continue_slot_row(
+                                ui,
+                                460.0,
+                                entry.slot,
+                                entry.meta.as_ref(),
+                                &mut hovered,
+                                &mut sfx,
+                            );
+                            ui.add_space(6.0);
+                            if clicked {
+                                load_slot = Some(entry.slot);
+                            }
+                        }
+                        ui.add_space(12.0);
+                        field_label(ui, "Manual slots");
+                        ui.add_space(4.0);
+                        for entry in slots.iter().filter(|e| matches!(e.slot, SaveSlot::Slot(_))) {
+                            let clicked = continue_slot_row(
+                                ui,
+                                460.0,
+                                entry.slot,
+                                entry.meta.as_ref(),
+                                &mut hovered,
+                                &mut sfx,
+                            );
+                            ui.add_space(6.0);
+                            if clicked {
+                                load_slot = Some(entry.slot);
+                            }
+                        }
+                        ui.add_space(20.0);
+                    });
+            });
+        });
+
+    if let Some(slot) = load_slot {
+        if save_manager.load(slot, &mut toasts, &mut sfx).is_some() {
+            next_state.set(AppState::Loading);
+        }
+    }
+    if go_back {
+        sfx.write(PlaySfx(Sfx::Cancel));
+        *slots_cache = None;
+        *screen = MenuScreen::Title;
+    }
+    Ok(())
+}
+
+/// Settings screen: quality, theme, weather, autosave cadence — the
+/// overrides `config.rs` persists to `config.toml`. Shared verbatim by the
+/// title screen's Settings button and the in-game pause menu's Settings
+/// button — both call sites own what "Back" means for them (return to
+/// `MenuScreen::Title` vs. close the pause-menu settings panel) via this
+/// function's `bool` return (true == Back was clicked this frame).
 #[allow(clippy::too_many_arguments)]
 fn settings_screen_ui(
     mut contexts: EguiContexts,
@@ -1173,6 +1369,37 @@ fn settings_screen_ui(
                                 sfx.write(PlaySfx(Sfx::Confirm));
                             }
                         });
+
+                        ui.add_space(14.0);
+                        field_label(ui, "Autosave");
+                        let interval_label = match settings.config.autosave_interval_days {
+                            0 => "Off".to_string(),
+                            n => format!("Every {n} sim-days"),
+                        };
+                        egui::ComboBox::from_id_salt("settings_autosave")
+                            .selected_text(interval_label)
+                            .width(300.0)
+                            .show_ui(ui, |ui| {
+                                for days in [0_u32, 5, 10, 20, 30] {
+                                    let label = if days == 0 {
+                                        "Off".to_string()
+                                    } else {
+                                        format!("Every {days} sim-days")
+                                    };
+                                    let selected = settings.config.autosave_interval_days == days;
+                                    if ui.selectable_label(selected, label).clicked()
+                                        && settings.config.autosave_interval_days != days
+                                    {
+                                        settings.config.set_autosave_interval_days(days);
+                                        sfx.write(PlaySfx(Sfx::Confirm));
+                                    }
+                                }
+                            });
+                        ui.label(
+                            egui::RichText::new("Keeps a ring of 3 autosaves")
+                                .size(crate::design_system::TEXT_XS)
+                                .color(muted_text()),
+                        );
 
                         ui.add_space(28.0);
                         let replay = ui.add_sized(
@@ -1434,6 +1661,7 @@ fn pause_overlay_system(
     mut save_manager: ResMut<SaveManager>,
     mut toasts: ResMut<ToastLog>,
     pending: Res<PendingInit>,
+    playtime: Res<PlaytimeTracker>,
     mut exit: EventWriter<AppExit>,
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
@@ -1550,11 +1778,14 @@ fn pause_overlay_system(
                                 hover_tick(&btn, &mut hovered, &mut sfx);
                                 if btn.clicked() {
                                     if let (Some(link), Some(state)) = (&link, &ui_state.0) {
+                                        let meta = SaveMeta::from_ui(
+                                            Some(pending.preset_key.clone()),
+                                            state,
+                                            playtime.whole_secs(),
+                                        );
                                         save_manager.request_save(
                                             SaveSlot::Slot(n),
-                                            Some(pending.preset_key.clone()),
-                                            state.day,
-                                            state.cash,
+                                            meta,
                                             link,
                                             &mut toasts,
                                             &mut sfx,
