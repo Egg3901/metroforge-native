@@ -25,10 +25,13 @@
 }
 
 // Identical layout to reveal.wgsl's `RevealUniform` — same binding, same
-// buffer, both shaders just read it.
+// buffer, both shaders just read it. `cloud` is unused here (shadows are a
+// main-pass color multiply only) but must stay in the struct so the uniform
+// buffer layout matches the Rust `RevealExtension` / main-pass shader.
 struct RevealUniform {
     reveal: vec4<f32>,
     params: vec4<f32>,
+    cloud: vec4<f32>,
 }
 
 @group(2) @binding(100)

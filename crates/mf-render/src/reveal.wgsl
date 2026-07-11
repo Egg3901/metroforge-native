@@ -8,6 +8,9 @@
 // just an early discard test spliced in before lighting) — see
 // `reveal_prepass.wgsl` for the depth-prepass/shadow-pass counterpart that
 // keeps those passes agreeing with this one.
+//
+// Also applies scrolling cloud-shadow darkening from atmosphere's 2D noise
+// (projected on world XZ), gated by `cloud.z` strength.
 
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
@@ -16,18 +19,25 @@
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
 }
 
-// Packed into ONE bind-group-100 uniform buffer (two `Vec4` fields at the
-// same Rust-side `#[uniform(100)]` binding get merged by `AsBindGroup` into
-// this exact layout — see `RevealExtension` in reveal.rs):
+// Packed into ONE bind-group-100 uniform buffer (three `Vec4` fields at the
+// same Rust-side `#[uniform(100)]` binding get merged by `AsBindGroup`):
 //   reveal = (center_x, center_z, inner_radius, outer_radius) world space
 //   params = (strength 0..1, reserved, reserved, reserved)
+//   cloud  = (offset_u, offset_v, strength, inv_scale)
 struct RevealUniform {
     reveal: vec4<f32>,
     params: vec4<f32>,
+    cloud: vec4<f32>,
 }
 
 @group(2) @binding(100)
 var<uniform> reveal_uniform: RevealUniform;
+
+@group(2) @binding(101)
+var cloud_noise_texture: texture_2d<f32>;
+
+@group(2) @binding(102)
+var cloud_noise_sampler: sampler;
 
 // Classic 4x4 ordered (Bayer) dither matrix, normalized to steps of 1/16.
 // Indexed by the fragment's screen pixel coordinate mod 4 — a fixed,
@@ -60,6 +70,17 @@ fn reveal_should_discard(world_xz: vec2<f32>, frag_xy: vec2<f32>) -> bool {
     return reveal_bayer_threshold(frag_xy) >= t;
 }
 
+fn cloud_shadow_factor(world_xz: vec2<f32>) -> f32 {
+    let strength = reveal_uniform.cloud.z;
+    if strength < 0.001 {
+        return 1.0;
+    }
+    let uv = world_xz * reveal_uniform.cloud.w + reveal_uniform.cloud.xy;
+    let n = textureSample(cloud_noise_texture, cloud_noise_sampler, uv).r;
+    // Soft multiply — never crush to black; city must stay readable.
+    return 1.0 - n * strength;
+}
+
 @fragment
 fn fragment(
     in: VertexOutput,
@@ -87,5 +108,7 @@ fn fragment(
         out.color = pbr_input.material.base_color;
     }
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+    let shadow = cloud_shadow_factor(in.world_position.xz);
+    out.color = vec4(out.color.rgb * shadow, out.color.a);
     return out;
 }

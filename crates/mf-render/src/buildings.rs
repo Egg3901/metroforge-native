@@ -40,6 +40,7 @@ use bevy::prelude::*;
 use mf_protocol::BuildingFootprint;
 use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, RevealState, Theme};
 
+use crate::atmosphere::CloudShadowParams;
 use crate::mesh_utils::{append_cuboid_cel, append_prism, hash01, polygon_area, MeshBuffers};
 use crate::palette;
 use crate::reveal::{BuildingMaterial, RevealExtension};
@@ -91,6 +92,9 @@ impl Plugin for MfBuildingsPlugin {
                     apply_quality_to_buildings_material_system.in_set(crate::MfRenderSet::Dynamic),
                     apply_night_dim_system.in_set(crate::MfRenderSet::Dynamic),
                     apply_reveal_system.in_set(crate::MfRenderSet::Dynamic),
+                    apply_cloud_shadow_to_buildings_system
+                        .in_set(crate::MfRenderSet::Dynamic)
+                        .after(crate::atmosphere::AtmosphereReady),
                 ),
             );
     }
@@ -291,6 +295,7 @@ fn build_buildings_system(
     quality: Res<QualityTier>,
     theme: Res<Theme>,
     day_night: Res<crate::daynight::DayNightState>,
+    cloud_shadows: Res<CloudShadowParams>,
     mut state: ResMut<BuildingsState>,
     mut dense_center: ResMut<BuildingsDenseCenter>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -721,8 +726,12 @@ fn build_buildings_system(
         // Fresh material always starts fully off (see `RevealExtension::
         // default`'s doc); `apply_reveal_system` picks up the live
         // `RevealState` on its next tick since `applied_reveal_bucket` is
-        // reset below.
-        extension: RevealExtension::default(),
+        // reset below. Cloud-shadow texture is wired from
+        // `CloudShadowParams` (may still be default Handle at first build).
+        extension: RevealExtension {
+            cloud_noise: Some(cloud_shadows.texture.clone()),
+            ..default()
+        },
     });
     state.material = Some(material.clone());
     state.applied_night_factor_bucket = if unlit {
@@ -903,6 +912,27 @@ fn apply_reveal_system(
         mat.extension.params = Vec4::new(reveal_state.strength, 0.0, 0.0, 0.0);
     }
     state.applied_reveal_bucket = Some(bucket);
+}
+
+fn apply_cloud_shadow_to_buildings_system(
+    shadows: Res<CloudShadowParams>,
+    state: Res<BuildingsState>,
+    mut materials: ResMut<Assets<BuildingMaterial>>,
+) {
+    let Some(handle) = &state.material else {
+        return;
+    };
+    if let Some(mat) = materials.get_mut(handle) {
+        mat.extension.cloud = Vec4::new(
+            shadows.offset.x,
+            shadows.offset.y,
+            shadows.strength,
+            shadows.inv_scale,
+        );
+        if mat.extension.cloud_noise.is_none() && shadows.texture != Handle::default() {
+            mat.extension.cloud_noise = Some(shadows.texture.clone());
+        }
+    }
 }
 
 #[cfg(test)]

@@ -24,6 +24,7 @@ mod sky;
 mod street_lamps;
 mod subway;
 mod terrain;
+mod terrain_material;
 mod transit;
 mod trees;
 mod vehicles;
@@ -75,6 +76,7 @@ impl Plugin for MfRenderPlugin {
         .insert_resource(DirectionalLightShadowMap { size: 2048 })
         .add_plugins((
             reveal::MfRevealPlugin,
+            terrain_material::MfTerrainMaterialPlugin,
             sky::MfSkyPlugin,
             terrain::MfTerrainPlugin,
             roads::MfRoadsPlugin,
