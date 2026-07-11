@@ -7,8 +7,9 @@
 //! Resources: [`CurrentCity`], [`LatestFields`], [`LatestUi`],
 //! [`LatestFrame`], [`QualityTier`], [`SubwayView`], [`HeightAt`],
 //! [`RevealState`], [`LatestDemand`], [`OverlayState`], [`RouteFocus`],
-//! [`WeatherEffects`].
+//! [`WeatherEffects`], [`AttractLighting`].
 
+pub mod attract;
 pub mod city;
 pub mod demand;
 pub mod fields;
@@ -24,6 +25,7 @@ pub mod theme;
 pub mod ui;
 pub mod weather;
 
+pub use attract::AttractLighting;
 pub use city::CurrentCity;
 pub use demand::LatestDemand;
 pub use fields::LatestFields;

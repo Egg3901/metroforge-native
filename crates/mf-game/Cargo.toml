@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "MetroForge Native game shell (binary `metroforge`): Boot -> ConnectingSim -> MainMenu -> Loading -> InGame."
+build = "build.rs"
 
 [[bin]]
 name = "metroforge"
@@ -22,7 +23,25 @@ toml = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 winit = { workspace = true }
+# Device probe only (`default_output_device`) so headless CI/servers can skip
+# playback without panicking. Version matches bevy_audio → rodio → cpal.
+cpal = "0.15"
 
 [dependencies.bevy]
 workspace = true
+# Default features include `bevy_audio` (required for procedural SFX/ambience).
+# We synthesize PCM at runtime and never load vorbis/ogg assets, but leaving
+# the default feature set intact keeps the rest of the engine (render, winit,
+# etc.) working; vorbis being present is unused, not harmful.
 default-features = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+embed-resource = "3.0"

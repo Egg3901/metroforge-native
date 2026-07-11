@@ -597,7 +597,7 @@ fn confirm_route(tool: &mut ToolState, ui: &UiState, link: &SimLink, bus: &mut C
 // Feedback: CommandBus results -> SFX, TrackCost replies -> the quote.
 // ---------------------------------------------------------------------
 
-/// Confirm/Error chime for any `CommandFeedback` this module itself
+/// Confirm/Error/Placement chime for any `CommandFeedback` this module itself
 /// requested (see `ToolState::pending_seqs`'s doc). On failure the active
 /// tool is deliberately left as-is (spec: "keep tool active on failure") so
 /// a bad click can just be retried without re-selecting the tool.
@@ -610,7 +610,15 @@ fn command_feedback_system(
         if !tool.pending_seqs.remove(&fb.seq) {
             continue; // Not ours: some other CommandBus caller's action.
         }
-        sfx.write(PlaySfx(if fb.ok { Sfx::Confirm } else { Sfx::Error }));
+        let kind = if fb.ok {
+            match fb.meta {
+                CmdMeta::BuildStation { .. } => Sfx::Placement,
+                _ => Sfx::Confirm,
+            }
+        } else {
+            Sfx::Error
+        };
+        sfx.write(PlaySfx(kind));
     }
 }
 

@@ -6,6 +6,7 @@ use bevy_ecs::prelude::*;
 use mf_net::{NetSet, SimEvent};
 use mf_protocol::{FromSimJson, FromSimMsg};
 
+use crate::attract::AttractLighting;
 use crate::city::CurrentCity;
 use crate::demand::LatestDemand;
 use crate::fields::LatestFields;
@@ -37,6 +38,7 @@ impl Plugin for MfStatePlugin {
             .init_resource::<OverlayState>()
             .init_resource::<RouteFocus>()
             .init_resource::<WeatherEffects>()
+            .init_resource::<AttractLighting>()
             // `add_event` is idempotent (it's an `init_resource` under the
             // hood), so it's safe whether or not `MfNetPlugin` was added
             // first; declared explicitly here since `mf-state` reads it.
