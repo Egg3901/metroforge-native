@@ -57,6 +57,109 @@ jobs:
           manifest-path: metroforge-native/Cargo.toml
           command: check advisories bans licenses sources
 
+  # PR-time boot smoke (#126). The `rust` job runs clippy + unit tests but
+  # NEVER boots the client, so a whole class of release-breakers reached
+  # master invisibly: a schedule-init panic that crashed the binary on boot
+  # (#121), a protocol regression that stuck the game on the loading screen,
+  # and render voids. This job builds the sidecar + the release binary and
+  # runs it headless exactly as a player would, failing if the window is a
+  # near-solid void (never rendered a menu) or the in-city view never leaves
+  # the loading screen. Mirrors release.yml's cold-run gate, at PR time.
+  # NOTE: this catches BOOT + RENDER regressions; it does not yet exercise
+  # egui pointer input (the #123 dead-click class) — that needs synthetic
+  # click injection, tracked as a follow-up.
+  boot-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout metroforge-native
+        uses: actions/checkout@v4
+        with:
+          path: metroforge-native
+
+      # Sidecar source lives in the sibling repo; pin to the same merge SHA
+      # release.yml uses so an unrelated upstream change can't break the gate.
+      - name: Checkout metroforge (sidecar source)
+        uses: actions/checkout@v4
+        with:
+          repository: Egg3901/metroforge
+          ref: 5ec720a80ae29027805b2abced6a3ce833bf2177
+          path: metroforge
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: metroforge-native
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3
+
+      - name: Install Bevy + smoke runtime deps (xvfb, software vulkan, imagemagick, winit X11 libs)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev pkg-config libwayland-dev xvfb mesa-vulkan-drivers libvulkan1 imagemagick libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2
+
+      - name: Compile sidecar (linux-x64)
+        working-directory: metroforge
+        run: |
+          bun install
+          bun build --compile --target=bun-linux-x64 ./sidecar/index.ts --outfile ../metroforge-native/dist-sidecar/metroforge-sidecar
+
+      - name: Build release client
+        working-directory: metroforge-native
+        run: cargo build --release -p mf-game -j 4
+
+      - name: Boot smoke — cold menu + in-city (fail on solid void)
+        working-directory: metroforge-native
+        env:
+          MF_SIDECAR_PATH: ${{ github.workspace }}/metroforge-native/dist-sidecar/metroforge-sidecar
+        run: |
+          set -uo pipefail
+          BIN=./target/release/metroforge
+          # 1) Cold menu boot — a schedule-init panic (#121) leaves a solid void.
+          Xvfb :99 -screen 0 1280x800x24 & echo $! > xvfb.pid
+          sleep 3
+          DISPLAY=:99 "$BIN" > menu.log 2>&1 & echo $! > menu.pid
+          sleep 60
+          DISPLAY=:99 import -window root shot-menu.png || true
+          kill "$(cat menu.pid)" 2>/dev/null || true
+          kill "$(cat xvfb.pid)" 2>/dev/null || true
+          MU=$(identify -format %k shot-menu.png 2>/dev/null || echo 0)
+          echo "menu unique colors: $MU"; tail -30 menu.log || true
+          if [ "$MU" -lt 50 ]; then
+            echo "::error::Boot smoke FAILED (menu): $MU unique colors — the binary never rendered a menu (boot panic / invisible UI)."
+            exit 1
+          fi
+          # 2) In-city autostart — a stuck loading screen or protocol regression
+          #    leaves a near-empty frame; a rendered city has many colors.
+          Xvfb :98 -screen 0 1280x800x24 & echo $! > xvfb2.pid
+          sleep 3
+          DISPLAY=:98 MF_AUTOSTART=nyc "$BIN" > city.log 2>&1 & echo $! > city.pid
+          sleep 100
+          DISPLAY=:98 import -window root shot-city.png || true
+          kill "$(cat city.pid)" 2>/dev/null || true
+          kill "$(cat xvfb2.pid)" 2>/dev/null || true
+          CU=$(identify -format %k shot-city.png 2>/dev/null || echo 0)
+          echo "in-city unique colors: $CU"; tail -30 city.log || true
+          if [ "$CU" -lt 1000 ]; then
+            echo "::error::Boot smoke FAILED (in-city): $CU unique colors — the game likely never left the loading screen."
+            exit 1
+          fi
+
+      - name: Upload smoke screenshots (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-smoke-screenshots
+          path: |
+            metroforge-native/shot-menu.png
+            metroforge-native/shot-city.png
+          if-no-files-found: ignore
+
   # PR-time Windows cross-compile CHECK (#107). The host `rust` job is
   # Linux-only, so `#[cfg(windows)]` paths (e.g. the JobHandle Send/Sync
   # break in #100) only ever compiled in release.yml on tag and reached
