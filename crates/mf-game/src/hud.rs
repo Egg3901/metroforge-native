@@ -81,10 +81,17 @@ impl Plugin for MfHudPlugin {
             .init_resource::<ToastLog>()
             .init_resource::<EguiStyleApplied>()
             .add_systems(Update, collect_toasts_system)
+            // Font/visuals install runs ungated every pass; it flips
+            // `EguiStyleApplied::ready` only once the custom display family
+            // has actually gone live (bevy_egui applies `set_fonts` on the
+            // *next* frame, so painting a `FontFamily::Name("mf_display")`
+            // heading on the install frame would panic). The HUD paint chain
+            // below is gated on that readiness so the first rendered frame
+            // never touches an unbound font family.
+            .add_systems(EguiPrimaryContextPass, setup_egui_style_system)
             .add_systems(
                 EguiPrimaryContextPass,
                 (
-                    setup_egui_style_system,
                     ui_gallery_system.run_if(ds::ui_gallery_enabled),
                     connecting_hud_system
                         .run_if(in_state(AppState::ConnectingSim))
@@ -112,9 +119,18 @@ impl Plugin for MfHudPlugin {
                     fatal_banner_system.run_if(|| !ds::ui_gallery_enabled()),
                 )
                     .chain()
-                    .run_if(|| !ds::hud_hidden()),
+                    .after(setup_egui_style_system)
+                    .run_if(|| !ds::hud_hidden())
+                    .run_if(chrome_ready),
             );
     }
+}
+
+/// True once [`setup_egui_style_system`] has installed the custom fonts and
+/// they have gone live (one frame after the install). Gates the HUD paint
+/// chain so no menu frame lays out text with an unbound font family.
+fn chrome_ready(applied: Res<EguiStyleApplied>) -> bool {
+    applied.ready
 }
 
 /// Guards [`setup_egui_style_system`]'s (cheap but non-trivial) font/visuals
@@ -130,21 +146,30 @@ impl Plugin for MfHudPlugin {
 /// live `Theme` resource, so a HUD theme pick takes effect on the very next
 /// frame instead of needing a restart.
 #[derive(Resource, Default)]
-struct EguiStyleApplied(Option<Theme>);
+struct EguiStyleApplied {
+    theme: Option<Theme>,
+    /// Set true the first frame *after* the fonts were installed, when the
+    /// custom display family is actually bound and safe to lay out.
+    ready: bool,
+}
 
 fn setup_egui_style_system(
     mut contexts: EguiContexts,
     theme: Res<Theme>,
     mut applied: ResMut<EguiStyleApplied>,
 ) {
-    if applied.0 == Some(*theme) {
+    if applied.theme == Some(*theme) {
+        // Fonts installed on an earlier frame are now live. Once ready, it
+        // stays ready across theme changes (the family remains bound), so a
+        // later re-install never blacks out or panics the HUD.
+        applied.ready = true;
         return;
     }
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
     ds::install_fonts_and_visuals(ctx, *theme);
-    applied.0 = Some(*theme);
+    applied.theme = Some(*theme);
 }
 
 fn ui_gallery_system(mut contexts: EguiContexts) -> Result {
@@ -734,7 +759,9 @@ fn title_screen_ui(
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
                 ui.add_space(ds::SPACE_XXL);
                 ui.vertical(|ui| {
-                    ui.set_width(320.0);
+                    // Wide enough that the 72px Oswald wordmark stays on one
+                    // line instead of wrapping ("MetroForg" / "e").
+                    ui.set_width(460.0);
                     ui.add_space(ui.available_height() * 0.18);
                     ui.horizontal(|ui| {
                         draw_logo(ui, 56.0);
