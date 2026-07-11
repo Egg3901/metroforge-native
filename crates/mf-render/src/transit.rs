@@ -514,13 +514,7 @@ fn track_deck_heights(
     (heights, cum, water)
 }
 
-fn append_portal_mouth(
-    buf: &mut MeshBuffers,
-    pos: Vec2,
-    dir: Vec2,
-    ground_y: f32,
-    color: Color,
-) {
+fn append_portal_mouth(buf: &mut MeshBuffers, pos: Vec2, dir: Vec2, ground_y: f32, color: Color) {
     let dir = dir.normalize_or_zero();
     if dir == Vec2::ZERO {
         return;
@@ -741,15 +735,8 @@ fn rebuild_tracks(
                             as usize;
                         let pbuf = &mut pier_bufs[cz * PIER_CHUNKS_PER_SIDE + cx];
                         append_cuboid(
-                            pbuf,
-                            pos,
-                            ground,
-                            PIER_HALF,
-                            PIER_HALF,
-                            pier_h,
-                            pier_color,
-                            pier_color,
-                            pier_color,
+                            pbuf, pos, ground, PIER_HALF, PIER_HALF, pier_h, pier_color,
+                            pier_color, pier_color,
                         );
                     }
                     d += PIER_SPACING_M;
@@ -998,18 +985,15 @@ fn rebuild_routes(
         let mut pair_segs: Vec<(usize, Vec<Vec2>, String)> = Vec::new();
         for (pi, w) in r.station_ids.windows(2).enumerate() {
             let (a, b) = (w[0], w[1]);
-            let (mut seg, grade) = track_by_pair
-                .get(&(a, b))
-                .cloned()
-                .unwrap_or_else(|| {
-                    let pts = match (station_by_id.get(&a), station_by_id.get(&b)) {
-                        (Some(&sa), Some(&sb)) => {
-                            vec![Vec2::new(sa.0, sa.1), Vec2::new(sb.0, sb.1)]
-                        }
-                        _ => Vec::new(),
-                    };
-                    (pts, String::from("surface"))
-                });
+            let (mut seg, grade) = track_by_pair.get(&(a, b)).cloned().unwrap_or_else(|| {
+                let pts = match (station_by_id.get(&a), station_by_id.get(&b)) {
+                    (Some(&sa), Some(&sb)) => {
+                        vec![Vec2::new(sa.0, sa.1), Vec2::new(sb.0, sb.1)]
+                    }
+                    _ => Vec::new(),
+                };
+                (pts, String::from("surface"))
+            });
             if seg.len() < 2 {
                 continue;
             }
@@ -1210,7 +1194,7 @@ fn rebuild_routes(
 /// turns off. Writes are gated on overlay-mode changes and fresh spawns
 /// (statics rebuild mid-overlay must inherit the dim) per the no-churn
 /// discipline.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn apply_overlay_dim_system(
     overlay: Res<mf_state::OverlayState>,
     mut materials: ResMut<Assets<StandardMaterial>>,

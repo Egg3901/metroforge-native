@@ -835,6 +835,7 @@ pub fn append_ribbon_at_heights(
 /// Dashed variant of [`append_ribbon_at_heights`]: emits ribbon quads only
 /// while the running arc length is inside a `dash_m` on / `gap_m` off cycle
 /// (tunnel infrastructure in the normal overview).
+#[allow(clippy::too_many_arguments)]
 pub fn append_dashed_ribbon_at_heights(
     buf: &mut MeshBuffers,
     points: &[Vec2],
