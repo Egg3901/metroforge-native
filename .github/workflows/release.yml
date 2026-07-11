@@ -36,7 +36,7 @@ jobs:
           workspaces: metroforge-native
 
       - name: Install Bevy Linux system deps
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev pkg-config libwayland-dev
 
       - name: cargo clippy --workspace -D warnings
         working-directory: metroforge-native
@@ -64,7 +64,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Egg3901/metroforge
-          ref: e576cc90712cb6a19fc58a348bb18ae9d3388f46
+          ref: 5ec720a80ae29027805b2abced6a3ce833bf2177
           path: metroforge
 
       - name: Derive version from tag
@@ -118,7 +118,7 @@ jobs:
             ubuntu-cargo-xwin-v1-
 
       - name: Install cross-compile toolchain and Bevy Linux system deps
-        run: sudo apt-get update && sudo apt-get install -y clang llvm lld libasound2-dev libudev-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y clang llvm lld libasound2-dev libudev-dev pkg-config libwayland-dev
 
       # makensis builds the Windows setup exe cross-platform; no Windows
       # runner needed (packaging/windows/installer.nsi).
@@ -244,7 +244,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Egg3901/metroforge
-          ref: e576cc90712cb6a19fc58a348bb18ae9d3388f46
+          ref: 5ec720a80ae29027805b2abced6a3ce833bf2177
           path: metroforge
 
       - name: Derive version from tag

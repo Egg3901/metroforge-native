@@ -8,6 +8,7 @@ use mf_protocol::{FromSimJson, FromSimMsg};
 
 use crate::attract::AttractLighting;
 use crate::city::CurrentCity;
+use crate::colorblind::ColorblindMode;
 use crate::demand::LatestDemand;
 use crate::fields::LatestFields;
 use crate::frame::LatestFrame;
@@ -37,6 +38,7 @@ impl Plugin for MfStatePlugin {
             .init_resource::<EffectiveKnobs>()
             .init_resource::<DetectedQuality>()
             .init_resource::<Theme>()
+            .init_resource::<ColorblindMode>()
             .init_resource::<SubwayView>()
             .init_resource::<HeightAt>()
             .init_resource::<RevealState>()

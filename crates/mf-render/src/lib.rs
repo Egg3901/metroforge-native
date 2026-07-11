@@ -39,7 +39,7 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::pbr::{DirectionalLightShadowMap, DistanceFog, FogFalloff};
 use bevy::prelude::*;
 
-use mf_state::{EffectiveKnobs, QualityTier, Theme};
+use mf_state::{ColorblindMode, EffectiveKnobs, QualityTier, Theme};
 
 use crate::daynight::DayNightState;
 
@@ -113,6 +113,7 @@ impl Plugin for MfRenderPlugin {
                 // matters for ordering here).
                 mf_state::quality::sync_effective_knobs_system.before(MfRenderSet::Terrain),
                 sync_theme_system.before(MfRenderSet::Terrain),
+                sync_colorblind_system.before(MfRenderSet::Terrain),
                 // Runs before daynight's apply system (same `Dynamic` set)
                 // so a freshly-inserted `DistanceFog` gets its real
                 // day/night-matched color the same frame it's spawned,
@@ -143,6 +144,16 @@ fn sync_theme_system(theme: Res<Theme>) {
         return;
     }
     palette::set_theme(*theme);
+}
+
+/// Publishes `Res<ColorblindMode>` into `palette.rs` (same process-global
+/// pattern as [`sync_theme_system`]) so route/accent remaps take effect the
+/// same frame Settings changes the mode.
+fn sync_colorblind_system(mode: Res<ColorblindMode>) {
+    if !mode.is_changed() {
+        return;
+    }
+    palette::set_colorblind_mode(*mode);
 }
 
 /// Spec §4 knob table, the render-global settings that don't belong to any

@@ -195,6 +195,7 @@ fn transit_update_system(
     height_at: Res<HeightAt>,
     effective: Res<EffectiveKnobs>,
     theme: Res<Theme>,
+    colorblind: Res<mf_state::ColorblindMode>,
     mut state: ResMut<TransitState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -204,10 +205,15 @@ fn transit_update_system(
 ) {
     let _span = tracing::info_span!("transit_update").entered();
     let _timer = crate::perf::PerfSpan::start(&counters.transit_update_us);
-    // Theme/quality changes recolor stations, tracks, and stripes — force a
-    // structural rebuild even when UiState is unchanged (issue #32 gap).
+    // Theme/colorblind/quality changes recolor stations, tracks, and stripes —
+    // force a structural rebuild even when UiState is unchanged (issue #32 gap).
     // City arrival updates world_size for viaduct pier chunking.
-    if !ui.is_changed() && !theme.is_changed() && !effective.is_changed() && !city.is_changed() {
+    if !ui.is_changed()
+        && !theme.is_changed()
+        && !colorblind.is_changed()
+        && !effective.is_changed()
+        && !city.is_changed()
+    {
         return;
     }
     let Some(u) = &ui.0 else {
@@ -221,8 +227,10 @@ fn transit_update_system(
         .map(|c| c.world_size as f32)
         .unwrap_or(8_000.0);
     let mut sig = signature_of(u) ^ (u64::from(densify_step.to_bits()) << 1);
-    // Fold theme + unlit into the gate so Settings switches repaint transit.
+    // Fold theme + colorblind + unlit into the gate so Settings switches
+    // repaint transit.
     sig ^= (*theme as u64) << 48;
+    sig ^= (*colorblind as u64) << 52;
     if effective.0.unlit_material {
         sig ^= 1 << 47;
     }

@@ -72,11 +72,12 @@ fn hover_tick(resp: &egui::Response, last: &mut Option<egui::Id>, sfx: &mut Even
 }
 
 fn mode_word(mode: TransitMode) -> &'static str {
+    let s = crate::strings::current();
     match mode {
-        TransitMode::Bus => "bus",
-        TransitMode::Tram => "tram",
-        TransitMode::Metro => "metro",
-        TransitMode::Rail => "rail",
+        TransitMode::Bus => s.mode_bus,
+        TransitMode::Tram => s.mode_tram,
+        TransitMode::Metro => s.mode_metro,
+        TransitMode::Rail => s.mode_rail,
     }
 }
 
@@ -201,6 +202,7 @@ fn build_toolbar_system(
     mut hovered: Local<Option<egui::Id>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
+    let s = crate::strings::current();
     let tram_ok = tram_unlocked(&ui_state);
     // Copied out once so the click-branches below can freely write
     // `tools.active` without fighting a live borrow from the comparisons
@@ -228,7 +230,7 @@ fn build_toolbar_system(
                     current_tool == ActiveTool::None,
                     true,
                     false,
-                    "Select",
+                    s.tool_select,
                     &mut hovered,
                     &mut sfx,
                 ) {
@@ -242,7 +244,7 @@ fn build_toolbar_system(
                     current_tool == ActiveTool::PlaceStation(TransitMode::Bus),
                     true,
                     false,
-                    "Bus station (1)",
+                    s.tool_bus_station,
                     &mut hovered,
                     &mut sfx,
                 ) {
@@ -251,9 +253,9 @@ fn build_toolbar_system(
                 }
 
                 let tram_tooltip = if tram_ok {
-                    "Tram station (2)"
+                    s.tool_tram_station
                 } else {
-                    "Tram station (2). Locked until Tram unlocks."
+                    s.tool_tram_station_locked
                 };
                 if icon_button(
                     ui,
@@ -275,7 +277,7 @@ fn build_toolbar_system(
                     current_tool == ActiveTool::Route,
                     true,
                     false,
-                    "Route (3)",
+                    s.tool_route,
                     &mut hovered,
                     &mut sfx,
                 ) {
@@ -289,7 +291,7 @@ fn build_toolbar_system(
                     current_tool == ActiveTool::Bulldoze,
                     true,
                     false,
-                    "Bulldoze (4)",
+                    s.tool_bulldoze,
                     &mut hovered,
                     &mut sfx,
                 ) {
@@ -307,7 +309,7 @@ fn build_toolbar_system(
                     false,
                     bus.can_undo(),
                     false,
-                    "Undo",
+                    s.tool_undo,
                     &mut hovered,
                     &mut sfx,
                 ) {
@@ -319,7 +321,7 @@ fn build_toolbar_system(
                 ui.add(egui::Separator::default().vertical().shrink(6.0));
                 ui.add_space(ds::SPACE_SM);
 
-                let routes_button = ds::button(ui, "Routes", ds::ButtonKind::Toggle(panel.open));
+                let routes_button = ds::button(ui, s.routes, ds::ButtonKind::Toggle(panel.open));
                 hover_tick(&routes_button, &mut hovered, &mut sfx);
                 if routes_button.clicked() {
                     panel.open = !panel.open;
@@ -359,6 +361,7 @@ fn contextual_strip_text(
     tools: &ToolState,
     ui_state: &LatestUi,
 ) -> Option<(String, egui::Color32)> {
+    let s = crate::strings::current();
     match tools.active {
         ActiveTool::None => {
             let count = tools.route_draft.len();
@@ -374,13 +377,9 @@ fn contextual_strip_text(
             }
         }
         ActiveTool::PlaceStation(mode) => {
-            let cash = ui_state.0.as_ref().map(|s| s.cash).unwrap_or(0.0);
+            let cash = ui_state.0.as_ref().map(|st| st.cash).unwrap_or(0.0);
             Some((
-                format!(
-                    "Click to place a {} station. Cash on hand: {}",
-                    mode_word(mode),
-                    format_cash(cash)
-                ),
+                s.place_station_context(mode_word(mode), &format_cash(cash)),
                 ds::text(),
             ))
         }
@@ -389,7 +388,7 @@ fn contextual_strip_text(
             let quote = tools
                 .last_cost_quote
                 .map(format_cash)
-                .unwrap_or_else(|| "not quoted yet".to_string());
+                .unwrap_or_else(|| s.not_quoted_yet.to_string());
             Some((
                 format!(
                     "Click stations to add (Shift click toggles). Enter confirms, Esc cancels. {count} station(s) selected. Estimated cost: {quote}."
@@ -397,10 +396,7 @@ fn contextual_strip_text(
                 ds::text(),
             ))
         }
-        ActiveTool::Bulldoze => Some((
-            "Click a station or track to demolish.".to_string(),
-            ds::WARN,
-        )),
+        ActiveTool::Bulldoze => Some((s.bulldoze_context.to_string(), ds::WARN)),
     }
 }
 
@@ -422,12 +418,9 @@ fn command_feedback_listener_system(
 ) {
     for fb in feedback.read() {
         if !fb.ok {
-            let detail = fb.error.as_deref().unwrap_or("unknown error");
-            push_toast(
-                &mut toasts,
-                format!("Cannot build there: {detail}"),
-                ToastTone::Warn,
-            );
+            let s = crate::strings::current();
+            let detail = fb.error.as_deref().unwrap_or(s.unknown_error);
+            push_toast(&mut toasts, s.cannot_build(detail), ToastTone::Warn);
             sfx.write(PlaySfx(Sfx::Error));
         } else if matches!(fb.meta, CmdMeta::CreateRoute { .. }) {
             sfx.write(PlaySfx(Sfx::Confirm));
