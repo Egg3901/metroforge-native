@@ -14,7 +14,6 @@ mod city_select;
 mod command_bus;
 mod config;
 mod crash;
-mod crash_report;
 mod debug_overlay;
 mod design_system;
 mod egui_idle;
@@ -70,12 +69,11 @@ fn main() {
     if !single_instance::ensure_single_instance() {
         return;
     }
-    // Panic hooks before any Bevy/plugin work so boot-time panics still leave
-    // reports. `crash` (safe-mode/log-ring report) installs first; the simpler
-    // `crash_report` OS-native writer chains to it, so both run on a panic. The
-    // log ring attaches via `LogPlugin::custom_layer` in the WindowPlugin set.
+    // Panic hook before any Bevy/plugin work so boot-time panics still leave a
+    // report. `crash` writes the safe-mode/log-ring report (a timestamped copy
+    // plus `last_session.txt`) and arms the next-launch notice. The log ring
+    // attaches via `LogPlugin::custom_layer` in the WindowPlugin set.
     crash::install_panic_hook();
-    crash_report::install_panic_hook();
     let cli = crash::parse_cli(std::env::args());
 
     // Load config before the window is created so size/position/fullscreen
