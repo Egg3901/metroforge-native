@@ -10,6 +10,7 @@ mod camera;
 mod campaign;
 mod command_bus;
 mod config;
+mod debug_overlay;
 mod design_system;
 mod goals;
 mod hud;
@@ -22,6 +23,7 @@ mod quality_boot;
 mod report_ui;
 mod reveal_input;
 mod saves;
+mod soak;
 mod state;
 mod theme_boot;
 mod tools;
@@ -93,6 +95,8 @@ fn main() {
             promo::MfPromoPlugin,
             tutorial::MfTutorialPlugin,
             goals::MfGoalsPlugin,
+            debug_overlay::MfDebugOverlayPlugin,
+            soak::MfSoakPlugin,
         ));
     // MF_PERF_LOG=1: log frame-time diagnostics (avg/FPS) once per second.
     // Costs nothing when unset; gives players and CI a zero-setup way to

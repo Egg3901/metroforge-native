@@ -74,7 +74,21 @@ const SAVE_SLOT_COUNT: usize = saves::SLOT_COUNT as usize;
 #[derive(Resource, Default)]
 pub struct ToastLog(pub Vec<(String, ToastTone)>);
 
-const TOAST_LOG_CAP: usize = 20;
+/// Hard cap on [`ToastLog`] length. Every push path must trim to this —
+/// use [`ToastLog::push`] rather than writing `toasts.0` directly.
+pub const TOAST_LOG_CAP: usize = 20;
+
+impl ToastLog {
+    /// Append a toast and drain from the front so the log never exceeds
+    /// [`TOAST_LOG_CAP`]. The single entry point for every toast producer.
+    pub fn push(&mut self, message: String, tone: ToastTone) {
+        self.0.push((message, tone));
+        if self.0.len() > TOAST_LOG_CAP {
+            let excess = self.0.len() - TOAST_LOG_CAP;
+            self.0.drain(0..excess);
+        }
+    }
+}
 
 pub struct MfHudPlugin;
 
@@ -179,11 +193,7 @@ fn setup_egui_style_system(
 fn collect_toasts_system(mut events: EventReader<SimEvent>, mut log: ResMut<ToastLog>) {
     for SimEvent(msg) in events.read() {
         if let FromSimMsg::Json(FromSimJson::Toast(toast)) = msg {
-            log.0.push((toast.message.clone(), toast.tone));
-            if log.0.len() > TOAST_LOG_CAP {
-                let excess = log.0.len() - TOAST_LOG_CAP;
-                log.0.drain(0..excess);
-            }
+            log.push(toast.message.clone(), toast.tone);
         }
     }
 }

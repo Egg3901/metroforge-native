@@ -17,6 +17,7 @@ use crate::mesh_utils::{
 };
 use crate::palette;
 use crate::roads::{ARTERIAL_WIDTH, BRIDGE_DECK_Y, ROAD_Y_OFFSET};
+use crate::RenderCacheStats;
 
 const CHUNKS_PER_SIDE: usize = 8;
 /// Spacing between lamp glow dots along arterial centerlines.
@@ -66,6 +67,7 @@ fn build_street_lamps_system(
     mut state: ResMut<StreetLampsState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut stats: ResMut<RenderCacheStats>,
 ) {
     let Some(cj) = &city.static_city else {
         return;
@@ -92,6 +94,7 @@ fn build_street_lamps_system(
     }
 
     if !knobs.street_lamps_enabled {
+        stats.street_lamp_chunks = 0;
         return;
     }
 
@@ -198,6 +201,7 @@ fn build_street_lamps_system(
             .id();
         state.entities.push(e);
     }
+    stats.street_lamp_chunks = state.entities.len();
 }
 
 fn street_lamp_visibility_system(

@@ -11,6 +11,7 @@ use mf_state::{CurrentCity, HeightAt, QualityTier, Theme};
 
 use crate::mesh_utils::{append_ribbon, MeshBuffers};
 use crate::palette;
+use crate::RenderCacheStats;
 
 /// Road surface lift above ground. The spec said 0.5, but at overview zoom
 /// on near-flat terrain a 0.5m offset loses the depth fight against the
@@ -103,6 +104,7 @@ fn build_roads_system(
     mut materials: ResMut<Assets<StandardMaterial>>,
     quality: Res<QualityTier>,
     theme: Res<Theme>,
+    mut stats: ResMut<RenderCacheStats>,
 ) {
     let Some(city_json) = &city.static_city else {
         return;
@@ -303,6 +305,7 @@ fn build_roads_system(
             .id();
         state.entities.push(e);
     }
+    stats.road_entities = state.entities.len();
 }
 
 /// Hide local/collector road meshes once the camera climbs above their LOD

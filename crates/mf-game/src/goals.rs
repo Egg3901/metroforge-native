@@ -272,14 +272,7 @@ fn goals_eval_system(
     for id in newly {
         goals.completed.insert(id);
         let title = goal_def(id).title;
-        toasts
-            .0
-            .push((format!("Goal complete: {title}"), ToastTone::Good));
-        const TOAST_LOG_CAP: usize = 20;
-        if toasts.0.len() > TOAST_LOG_CAP {
-            let overflow = toasts.0.len() - TOAST_LOG_CAP;
-            toasts.0.drain(0..overflow);
-        }
+        toasts.push(format!("Goal complete: {title}"), ToastTone::Good);
     }
     goals.save();
 }

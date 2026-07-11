@@ -21,12 +21,15 @@ pub mod palette;
 mod reveal;
 mod roads;
 mod sky;
+mod stats;
 mod street_lamps;
 mod subway;
 mod terrain;
 mod transit;
 mod trees;
 mod vehicles;
+
+pub use stats::RenderCacheStats;
 
 use bevy::core_pipeline::bloom::{Bloom, BloomCompositeMode, BloomPrefilter};
 use bevy::core_pipeline::tonemapping::Tonemapping;
@@ -73,6 +76,7 @@ impl Plugin for MfRenderPlugin {
                 .chain(),
         )
         .insert_resource(DirectionalLightShadowMap { size: 2048 })
+        .init_resource::<RenderCacheStats>()
         .add_plugins((
             reveal::MfRevealPlugin,
             sky::MfSkyPlugin,

@@ -17,6 +17,7 @@ use bevy::render::render_asset::RenderAssetUsages;
 use mf_state::{HeightAt, LatestFrame, QualityTier};
 
 use crate::mesh_utils::MeshBuffers;
+use crate::RenderCacheStats;
 
 const AGENT_SIZE: f32 = 2.2;
 const AGENT_Y_OFFSET: f32 = 0.8;
@@ -89,6 +90,7 @@ fn update_agents_system(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut visibility: Query<&mut Visibility>,
+    mut stats: ResMut<RenderCacheStats>,
 ) {
     let cap = quality.knobs().agent_cap as usize;
     let entity = if let Some(e) = state.entity {
@@ -119,6 +121,7 @@ fn update_agents_system(
         if let Ok(mut vis) = visibility.get_mut(entity) {
             *vis = Visibility::Hidden;
         }
+        stats.agent_entities = 0;
         return;
     }
 
@@ -193,4 +196,5 @@ fn update_agents_system(
     if let Ok(mut vis) = visibility.get_mut(entity) {
         *vis = Visibility::Visible;
     }
+    stats.agent_entities = if state.entity.is_some() { 1 } else { 0 };
 }

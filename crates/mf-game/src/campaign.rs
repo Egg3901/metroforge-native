@@ -417,11 +417,6 @@ fn compute_outcome(ui: &UiState, all_three_stars_earned: bool) -> ScenarioOutcom
     }
 }
 
-/// Same cap `hud.rs`'s `ToastLog` trims to (kept in sync by convention, not
-/// by a shared constant — `TOAST_LOG_CAP` there is private and this file
-/// must not touch `hud.rs`).
-const TOAST_LOG_CAP: usize = 20;
-
 /// ~1Hz evaluation: checks the active city's stars against [`LatestUi`],
 /// toasts + persists any newly-earned ones, and updates [`ScenarioOutcome`].
 /// The active city is [`PendingInit::preset_key`] — it's set once at
@@ -452,14 +447,10 @@ fn evaluate_progress_system(
         let earned = evaluate_earned_stars(objectives, state);
         if earned > previous {
             for goal in &objectives.stars[previous as usize..earned as usize] {
-                toasts.0.push((
+                toasts.push(
                     format!("Star earned: {}", describe_goal(*goal)),
                     ToastTone::Good,
-                ));
-            }
-            if toasts.0.len() > TOAST_LOG_CAP {
-                let excess = toasts.0.len() - TOAST_LOG_CAP;
-                toasts.0.drain(0..excess);
+                );
             }
             sfx.write(PlaySfx(Sfx::Confirm));
             progress.record_stars(&pending.preset_key, earned);
