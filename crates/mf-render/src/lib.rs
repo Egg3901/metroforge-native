@@ -268,15 +268,15 @@ fn bloom_settings(intensity: f32, tier: QualityTier) -> Bloom {
 
 /// Ramps `Bloom.intensity` with `night_factor` on bloom-enabled tiers.
 /// Intensity 0 skips the bloom node entirely (day / dusk start).
+/// Runs every frame (cheap f32 compare) so a late-spawned camera that just
+/// received its Bloom backfill picks up the current night intensity without
+/// waiting for the next day/night change tick.
 fn sync_bloom_system(
     quality: Res<QualityTier>,
     day_night: Res<DayNightState>,
     mut blooms: Query<&mut Bloom, With<Camera3d>>,
 ) {
     if !quality.knobs().bloom_enabled {
-        return;
-    }
-    if !day_night.is_changed() && !quality.is_changed() {
         return;
     }
     let intensity = BLOOM_INTENSITY_NIGHT * day_night.night_factor.clamp(0.0, 1.0);

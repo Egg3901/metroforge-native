@@ -12,7 +12,9 @@ use bevy::prelude::*;
 use mf_state::{CurrentCity, HeightAt, QualityTier, Theme};
 
 use crate::daynight::DayNightState;
-use crate::mesh_utils::{append_cuboid, arc_length_table, densify_polyline, point_along, MeshBuffers};
+use crate::mesh_utils::{
+    append_cuboid, arc_length_table, densify_polyline, point_along, MeshBuffers,
+};
 use crate::palette;
 use crate::roads::{ARTERIAL_WIDTH, BRIDGE_DECK_Y, ROAD_Y_OFFSET};
 
