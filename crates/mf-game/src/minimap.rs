@@ -515,4 +515,56 @@ mod tests {
         let dy = (map_rect.center().y - py.y).abs();
         assert!((dx - dy).abs() < 0.01, "dx={dx} dy={dy}");
     }
+
+    #[test]
+    fn square_map_rect_letterboxes_a_tall_rect() {
+        let tall = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(220.0, 400.0));
+        let squared = square_map_rect(tall);
+        assert!((squared.width() - 220.0).abs() < 0.001);
+        assert!((squared.height() - 220.0).abs() < 0.001);
+        assert!((squared.center() - tall.center()).length() < 0.001);
+    }
+
+    #[test]
+    fn round_trips_through_extreme_aspect_letterboxes() {
+        // Wide (ultrawide HUD) and tall (portrait) outer rects both feed a
+        // square map_rect into the mapping; world corners must round-trip
+        // and land on the *square* edges, not the letterboxed outer edges.
+        for (w, h) in [(800.0_f32, 200.0), (200.0, 800.0), (16.0, 9.0), (9.0, 16.0)] {
+            let outer = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(w, h));
+            let map_rect = square_map_rect(outer);
+            let world_half = 12_000.0;
+            for world in [
+                Vec2::ZERO,
+                Vec2::new(world_half, -world_half),
+                Vec2::new(-world_half, world_half),
+                Vec2::new(world_half * 0.37, world_half * -0.91),
+            ] {
+                let p = world_to_minimap(world, world_half, map_rect);
+                let back = minimap_to_world(p, world_half, map_rect);
+                assert!(
+                    (back - world).length() < 0.05,
+                    "aspect {w}x{h}: {back:?} vs {world:?}"
+                );
+            }
+            // World NE corner must sit on the square's top-right. Under a
+            // wide outer rect the square is inset on X; under a tall one it
+            // is inset on Y — never claim the outer corner on the letterboxed
+            // axis.
+            let ne = world_to_minimap(Vec2::new(world_half, world_half), world_half, map_rect);
+            assert!((ne.x - map_rect.right()).abs() < 0.05);
+            assert!((ne.y - map_rect.top()).abs() < 0.05);
+            if w > h + 1.0 {
+                assert!(
+                    (ne.x - outer.right()).abs() > 1.0,
+                    "wide {w}x{h}: NE.x must be inset from outer.right"
+                );
+            } else if h > w + 1.0 {
+                assert!(
+                    (ne.y - outer.top()).abs() > 1.0,
+                    "tall {w}x{h}: NE.y must be inset from outer.top"
+                );
+            }
+        }
+    }
 }

@@ -195,9 +195,8 @@ pub(crate) fn apply_day_night_system(
     let dt = time.delta_secs();
     // Ease displayed hour toward the sim target along the shortest wrap
     // around midnight so a 23.9 → 0.1 step doesn't spin the long way.
-    let hour_delta = shortest_hour_delta(state.hour, state.target_hour);
     let hour_t = 1.0 - (-HOUR_SMOOTH_RATE * dt).exp();
-    state.hour = (state.hour + hour_delta * hour_t).rem_euclid(24.0);
+    state.hour = advance_hour(state.hour, state.target_hour, hour_t);
     state.night_factor += (state.target_night_factor - state.night_factor) * hour_t;
 
     let azimuth = (state.hour / 24.0) * std::f32::consts::TAU;
@@ -216,8 +215,8 @@ pub(crate) fn apply_day_night_system(
     state.sun_direction = sun_dir;
     state.sun_elevation = elev_sin.max(0.0).clamp(0.0, 1.0);
 
-    let night_bucket = (state.night_factor * 255.0).round() as u8;
-    let hour_bucket = (state.hour / 24.0 * 1024.0).round() as u16;
+    let night_bucket = quantize_night_bucket(state.night_factor);
+    let hour_bucket = quantize_hour_bucket(state.hour);
     let quality_or_theme_changed = quality.is_changed() || theme.is_changed();
     let night_dirty = state.applied_night_bucket != Some(night_bucket) || quality_or_theme_changed;
     let hour_dirty = state.applied_hour_bucket != Some(hour_bucket) || quality_or_theme_changed;
@@ -380,6 +379,24 @@ fn shortest_hour_delta(from: f32, to: f32) -> f32 {
     d
 }
 
+/// One smoothing step of displayed hour toward `target`, wrapping into
+/// `[0, 24)`. `t` is the exponential blend factor in `[0, 1]`.
+fn advance_hour(hour: f32, target: f32, t: f32) -> f32 {
+    let hour_delta = shortest_hour_delta(hour, target);
+    (hour + hour_delta * t).rem_euclid(24.0)
+}
+
+/// Night-factor dirty bucket: 256 levels across `[0, 1]`.
+fn quantize_night_bucket(night_factor: f32) -> u8 {
+    (night_factor.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Hour dirty bucket: 1024 levels across a day (~1.4 simulated minutes).
+fn quantize_hour_bucket(hour: f32) -> u16 {
+    let wrapped = hour.rem_euclid(24.0);
+    (wrapped / 24.0 * 1024.0).round() as u16 % 1024
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +407,84 @@ mod tests {
         assert!((d - 1.0).abs() < 1e-4);
         let d2 = shortest_hour_delta(0.5, 23.5);
         assert!((d2 + 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn shortest_hour_delta_is_antisymmetric() {
+        // For every pair, delta(a,b) == -delta(b,a) — the property that
+        // keeps dusk→dawn and dawn→dusk smoothing from picking opposite
+        // directions inconsistently.
+        for &(a, b) in &[
+            (0.0, 0.0),
+            (23.5, 0.5),
+            (0.5, 23.5),
+            (6.0, 18.0),
+            (18.0, 6.0),
+            (1.0, 13.0),
+            (12.0, 0.0),
+            (0.0, 12.0),
+            (23.9, 0.1),
+        ] {
+            let ab = shortest_hour_delta(a, b);
+            let ba = shortest_hour_delta(b, a);
+            assert!(
+                (ab + ba).abs() < 1e-4,
+                "delta({a},{b})={ab} is not antisymmetric of {ba}"
+            );
+            assert!(ab.abs() <= 12.0 + 1e-4, "delta longer than half-day: {ab}");
+        }
+    }
+
+    #[test]
+    fn advance_hour_wraps_into_day_and_takes_short_path() {
+        // 23.9 → 0.1 must step forward (~+0.2), never the long way back.
+        let stepped = advance_hour(23.9, 0.1, 1.0);
+        assert!((stepped - 0.1).abs() < 1e-4, "got {stepped}");
+        // Partial step stays in [0, 24).
+        let partial = advance_hour(23.9, 0.1, 0.5);
+        assert!((0.0..24.0).contains(&partial), "got {partial}");
+        assert!(
+            !(0.1..=23.9).contains(&partial),
+            "should move toward midnight wrap, got {partial}"
+        );
+    }
+
+    #[test]
+    fn advance_hour_identity_when_already_at_target() {
+        for h in [0.0, 6.0, 12.0, 18.0, 23.999] {
+            let out = advance_hour(h, h, 0.5);
+            assert!((out - h.rem_euclid(24.0)).abs() < 1e-4, "h={h} out={out}");
+        }
+    }
+
+    #[test]
+    fn night_bucket_quantization_is_stable_near_boundaries() {
+        assert_eq!(quantize_night_bucket(0.0), 0);
+        assert_eq!(quantize_night_bucket(1.0), 255);
+        assert_eq!(quantize_night_bucket(0.5), 128);
+        // Probe the interior of bucket 128: values whose `*255` lands in
+        // (127.5, 128.5) must all quantize identically. 0.5 itself sits
+        // exactly on the 127.5 half-up boundary, so nudge from the center.
+        let center = 128.0 / 255.0;
+        let base = quantize_night_bucket(center);
+        assert_eq!(base, 128);
+        let half_bucket = 0.4 / 255.0;
+        assert_eq!(quantize_night_bucket(center + half_bucket), base);
+        assert_eq!(quantize_night_bucket(center - half_bucket), base);
+    }
+
+    #[test]
+    fn hour_bucket_quantization_wraps_and_is_stable() {
+        assert_eq!(quantize_hour_bucket(0.0), 0);
+        assert_eq!(quantize_hour_bucket(12.0), 512);
+        // Exactly 24.0 wraps to the same bucket as 0.0.
+        assert_eq!(quantize_hour_bucket(24.0), quantize_hour_bucket(0.0));
+        assert_eq!(quantize_hour_bucket(-0.001), quantize_hour_bucket(23.999));
+        // Stability: a sub-bucket nudge must not change the bucket.
+        let noon = quantize_hour_bucket(12.0);
+        let step = 24.0 / 1024.0;
+        assert_eq!(quantize_hour_bucket(12.0 + step * 0.2), noon);
+        assert_eq!(quantize_hour_bucket(12.0 - step * 0.2), noon);
     }
 
     #[test]

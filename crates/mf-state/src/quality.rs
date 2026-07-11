@@ -329,4 +329,58 @@ mod tests {
         assert!(QualityTier::Potato.knobs().fog.is_some());
         assert!(QualityTier::Low.knobs().fog.is_some());
     }
+
+    /// Property: every numeric knob is monotone across Potato → Low →
+    /// Medium → High (non-decreasing for "more is better", non-increasing
+    /// for "coarser is cheaper"). Catches a future tier-table edit that
+    /// accidentally makes Medium worse than Low on some axis.
+    #[test]
+    fn numeric_knobs_are_monotone_across_tiers() {
+        let tiers = [
+            QualityTier::Potato,
+            QualityTier::Low,
+            QualityTier::Medium,
+            QualityTier::High,
+        ];
+        let knobs: Vec<QualityKnobs> = tiers.iter().map(|t| t.knobs()).collect();
+
+        // "More is better" (or equal): non-decreasing.
+        for w in knobs.windows(2) {
+            assert!(w[0].msaa_samples <= w[1].msaa_samples);
+            assert!(w[0].agent_cap <= w[1].agent_cap);
+            assert!(w[0].atmosphere_fog_steps <= w[1].atmosphere_fog_steps);
+            assert!(w[0].water_quality <= w[1].water_quality);
+        }
+
+        // Draw distances: None = unlimited = greatest. Treat as +∞.
+        let draw = |d: Option<f32>| d.unwrap_or(f32::INFINITY);
+        for w in knobs.windows(2) {
+            assert!(draw(w[0].building_draw_distance_m) <= draw(w[1].building_draw_distance_m));
+            assert!(draw(w[0].tree_draw_distance_m) <= draw(w[1].tree_draw_distance_m));
+        }
+
+        // Shadow map: None < Some(n), and sizes non-decreasing when present.
+        let shadow_rank = |s: Option<u32>| s.map(|n| n as i64).unwrap_or(-1);
+        for w in knobs.windows(2) {
+            assert!(shadow_rank(w[0].shadow_map_size) <= shadow_rank(w[1].shadow_map_size));
+        }
+
+        // "Coarser is cheaper": non-increasing.
+        for w in knobs.windows(2) {
+            assert!(w[0].terrain_subdiv_divisor >= w[1].terrain_subdiv_divisor);
+            assert!(w[0].ribbon_densify_step_m >= w[1].ribbon_densify_step_m);
+        }
+
+        // Bool knobs that flip false→true (or stay) as tier rises.
+        for w in knobs.windows(2) {
+            assert!(!w[0].vsync || w[1].vsync);
+            assert!(!w[0].day_night_enabled || w[1].day_night_enabled);
+            assert!(!w[0].tree_enabled || w[1].tree_enabled);
+            assert!(!w[0].atmosphere_enabled || w[1].atmosphere_enabled);
+            assert!(!w[0].bloom_enabled || w[1].bloom_enabled);
+            assert!(!w[0].street_lamps_enabled || w[1].street_lamps_enabled);
+            // unlit is the inverse: true on weak tiers, false on strong.
+            assert!(!w[1].unlit_material || w[0].unlit_material);
+        }
+    }
 }
