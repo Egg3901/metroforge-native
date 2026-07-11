@@ -66,6 +66,17 @@ pub struct QualityKnobs {
 }
 
 impl QualityTier {
+    /// Player-facing label for combo boxes (not `Debug` — "Potato" is fine,
+    /// but this keeps HUD copy intentional if variants are renamed later).
+    pub fn label(self) -> &'static str {
+        match self {
+            QualityTier::Potato => "Potato",
+            QualityTier::Low => "Low",
+            QualityTier::Medium => "Medium",
+            QualityTier::High => "High",
+        }
+    }
+
     /// The full knob table (spec §4), one method call per tier.
     pub fn knobs(self) -> QualityKnobs {
         match self {
