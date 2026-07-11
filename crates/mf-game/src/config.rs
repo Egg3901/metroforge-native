@@ -1,28 +1,19 @@
 //! Persistent client config (spec §3.4 `config.rs`): a `config.toml` under
 //! the OS config dir (see [`crate::paths`]), holding a quality-tier
 //! override, a theme override (issue #32), the weather-effects toggle,
-<<<<<<< HEAD
-//! window chrome (size/position/borderless-fullscreen), graphics deltas,
-//! and HUD prefs. Auto-detection (spec §4) is used whenever no quality
-//! override is set; `Theme::Light` is used whenever no theme override is
-//! set. Either override always wins over its default.
+//! window chrome (size/position/borderless-fullscreen), audio
+//! (volume/mute), accessibility prefs (UI scale / colorblind /
+//! reduce-motion), graphics deltas, and HUD prefs. Auto-detection (spec §4)
+//! is used whenever no quality override is set; `Theme::Light` is used
+//! whenever no theme override is set. Either override always wins over its
+//! default.
 //!
 //! Advanced graphics controls persist as **deltas** under `[graphics]`:
 //! omitted keys mean "use the selected preset". Old config.toml files
 //! without `[graphics]` keep parsing via serde defaults.
 
 use bevy::prelude::*;
-use mf_state::{QualityOverrides, QualityTier, ShadowQuality, Theme};
-=======
-//! window chrome (size/position/borderless-fullscreen), audio
-//! (volume/mute), accessibility prefs (UI scale / colorblind /
-//! reduce-motion), and HUD prefs. Auto-detection (spec §4) is used whenever
-//! no quality override is set; `Theme::Light` is used whenever no theme
-//! override is set. Either override always wins over its default.
-
-use bevy::prelude::*;
-use mf_state::{ColorblindMode, QualityTier, Theme};
->>>>>>> origin/master
+use mf_state::{ColorblindMode, QualityOverrides, QualityTier, ShadowQuality, Theme};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -92,22 +83,6 @@ impl From<Theme> for ConfigTheme {
     }
 }
 
-<<<<<<< HEAD
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum ConfigShadowQuality {
-    Off,
-    Medium,
-    High,
-}
-
-impl From<ConfigShadowQuality> for ShadowQuality {
-    fn from(s: ConfigShadowQuality) -> Self {
-        match s {
-            ConfigShadowQuality::Off => ShadowQuality::Off,
-            ConfigShadowQuality::Medium => ShadowQuality::Medium,
-            ConfigShadowQuality::High => ShadowQuality::High,
-=======
 /// TOML-serializable mirror of [`ColorblindMode`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -126,19 +101,10 @@ impl From<ConfigColorblind> for ColorblindMode {
             ConfigColorblind::Deuteranopia => ColorblindMode::Deuteranopia,
             ConfigColorblind::Protanopia => ColorblindMode::Protanopia,
             ConfigColorblind::Tritanopia => ColorblindMode::Tritanopia,
->>>>>>> origin/master
         }
     }
 }
 
-<<<<<<< HEAD
-impl From<ShadowQuality> for ConfigShadowQuality {
-    fn from(s: ShadowQuality) -> Self {
-        match s {
-            ShadowQuality::Off => ConfigShadowQuality::Off,
-            ShadowQuality::Medium => ConfigShadowQuality::Medium,
-            ShadowQuality::High => ConfigShadowQuality::High,
-=======
 impl From<ColorblindMode> for ConfigColorblind {
     fn from(c: ColorblindMode) -> Self {
         match c {
@@ -146,12 +112,38 @@ impl From<ColorblindMode> for ConfigColorblind {
             ColorblindMode::Deuteranopia => ConfigColorblind::Deuteranopia,
             ColorblindMode::Protanopia => ConfigColorblind::Protanopia,
             ColorblindMode::Tritanopia => ConfigColorblind::Tritanopia,
->>>>>>> origin/master
         }
     }
 }
 
-<<<<<<< HEAD
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ConfigShadowQuality {
+    Off,
+    Medium,
+    High,
+}
+
+impl From<ConfigShadowQuality> for ShadowQuality {
+    fn from(s: ConfigShadowQuality) -> Self {
+        match s {
+            ConfigShadowQuality::Off => ShadowQuality::Off,
+            ConfigShadowQuality::Medium => ShadowQuality::Medium,
+            ConfigShadowQuality::High => ShadowQuality::High,
+        }
+    }
+}
+
+impl From<ShadowQuality> for ConfigShadowQuality {
+    fn from(s: ShadowQuality) -> Self {
+        match s {
+            ShadowQuality::Off => ConfigShadowQuality::Off,
+            ShadowQuality::Medium => ConfigShadowQuality::Medium,
+            ShadowQuality::High => ConfigShadowQuality::High,
+        }
+    }
+}
+
 /// Persisted Advanced graphics deltas. Every field is optional so old
 /// configs and "use preset" both serialize as omitted keys.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -200,7 +192,8 @@ impl GraphicsOverridesFile {
             vsync: o.vsync,
         }
     }
-=======
+}
+
 /// Inclusive UI-scale range applied via egui `pixels_per_point` /
 /// `EguiContextSettings::scale_factor`.
 pub const UI_SCALE_MIN: f32 = 0.85;
@@ -209,7 +202,6 @@ pub const UI_SCALE_DEFAULT: f32 = 1.0;
 
 pub fn clamp_ui_scale(scale: f32) -> f32 {
     scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX)
->>>>>>> origin/master
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,11 +320,7 @@ impl Default for ConfigFile {
 }
 
 /// Loaded/persisted client config. A Bevy `Resource` so `hud.rs`'s quality,
-<<<<<<< HEAD
-/// theme, and graphics selectors can read/write it directly.
-=======
-/// theme, and accessibility selectors can read/write it directly.
->>>>>>> origin/master
+/// theme, graphics, and accessibility selectors can read/write it directly.
 #[derive(Resource, Debug, Clone)]
 pub struct MfConfig {
     pub quality_override: Option<QualityTier>,
@@ -734,7 +722,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
     fn graphics_overrides_roundtrip_as_deltas() {
         let file = ConfigFile {
             quality_override: Some(ConfigQuality::Medium),
@@ -793,7 +780,9 @@ tutorial_completed = true
         assert!(back.tutorial_completed);
         assert!(back.graphics.is_empty());
         assert!(!back.show_fps);
-=======
+    }
+
+    #[test]
     fn colorblind_conversion_roundtrips_every_variant() {
         for mode in ColorblindMode::ALL {
             let cfg: ConfigColorblind = mode.into();
@@ -820,7 +809,6 @@ tutorial_completed = true
         assert!((clamp_ui_scale(0.5) - UI_SCALE_MIN).abs() < f32::EPSILON);
         assert!((clamp_ui_scale(2.0) - UI_SCALE_MAX).abs() < f32::EPSILON);
         assert!((clamp_ui_scale(1.1) - 1.1).abs() < f32::EPSILON);
->>>>>>> origin/master
     }
 
     #[test]

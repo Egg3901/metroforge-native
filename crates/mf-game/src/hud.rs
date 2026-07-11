@@ -10,14 +10,11 @@ use bevy_egui::{egui, EguiContextSettings, EguiContexts, EguiPlugin, EguiPrimary
 use mf_net::{NetStatus, ReconnectPhase, ReconnectState, SimEvent, SimLink, MAX_ATTEMPTS};
 use mf_protocol::envelope::FromSimJson;
 use mf_protocol::{FromSimMsg, ToSim, ToastTone};
-<<<<<<< HEAD
 use mf_state::{
-    DetectedQuality, EffectiveKnobs, LatestUi, QualityOverrides, QualityTier, ShadowQuality,
-    SubwayView, Theme, WeatherEffects, DRAW_DISTANCE_MIN_M, DRAW_DISTANCE_UNLIMITED_M,
+    ColorblindMode, DetectedQuality, EffectiveKnobs, LatestUi, QualityOverrides, QualityTier,
+    ShadowQuality, SubwayView, Theme, WeatherEffects, DRAW_DISTANCE_MIN_M,
+    DRAW_DISTANCE_UNLIMITED_M,
 };
-=======
-use mf_state::{ColorblindMode, LatestUi, QualityTier, SubwayView, Theme, WeatherEffects};
->>>>>>> origin/master
 
 use crate::audio::{PlaySfx, Sfx};
 use crate::camera::CameraRig;
@@ -332,11 +329,7 @@ fn quality_options(
         QualityTier::High,
     ] {
         if ui
-<<<<<<< HEAD
-            .selectable_label(!auto_selected && *quality == tier, tier.label())
-=======
-            .selectable_label(*quality == tier, quality_label(tier))
->>>>>>> origin/master
+            .selectable_label(!auto_selected && *quality == tier, quality_label(tier))
             .clicked()
         {
             *quality = tier;
@@ -385,15 +378,12 @@ struct SettingsControls<'w> {
     theme: ResMut<'w, Theme>,
     weather: ResMut<'w, WeatherEffects>,
     config: ResMut<'w, MfConfig>,
-<<<<<<< HEAD
     overrides: ResMut<'w, QualityOverrides>,
     effective: Res<'w, EffectiveKnobs>,
     detected: Res<'w, DetectedQuality>,
     show_fps: ResMut<'w, ShowFps>,
     benchmark: ResMut<'w, GraphicsBenchmark>,
-=======
     colorblind: ResMut<'w, ColorblindMode>,
->>>>>>> origin/master
 }
 
 /// ConnectingSim previously registered NO ui system at all, so a player whose
