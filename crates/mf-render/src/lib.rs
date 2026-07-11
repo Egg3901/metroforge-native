@@ -26,6 +26,7 @@ mod stats;
 mod street_lamps;
 mod subway;
 mod terrain;
+mod terrain_material;
 mod transit;
 mod trees;
 mod vehicles;
@@ -84,6 +85,7 @@ impl Plugin for MfRenderPlugin {
             (
                 perf::MfPerfCountersPlugin,
                 reveal::MfRevealPlugin,
+                terrain_material::MfTerrainMaterialPlugin,
                 sky::MfSkyPlugin,
                 terrain::MfTerrainPlugin,
                 water::MfWaterPlugin,
@@ -239,6 +241,14 @@ fn apply_quality_render_settings_system(
                 },
                 Tonemapping::None,
             ));
+        }
+    } else {
+        // Medium/High want no fog: strip leftover startup DistanceFog that
+        // `camera.rs` inserted at spawn. If that spawn lands after the tier's
+        // first change tick the `is_changed` sweep below never removes it,
+        // leaving a milky wash on lit tiers — so strip it every frame here.
+        for camera in &cameras {
+            commands.entity(camera).remove::<DistanceFog>();
         }
     }
     // Bloom backfill for Medium/High: camera may spawn after the tier's
