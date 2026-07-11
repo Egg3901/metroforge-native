@@ -512,6 +512,24 @@ fn envelope_hello_and_init_roundtrip() {
 }
 
 #[test]
+fn envelope_hello_accepts_enriched_city_list_fields() {
+    let hello_json = r#"{"t":"hello","p":{"protocolVersion":1,"gameVersion":"0.5.0","cityList":[{"key":"cleveland","label":"Cleveland","country":"USA","population":372000,"buildingCount":33553,"sizeKm":12.0}],"defaultWorldSize":12000.0}}"#;
+    let env: Envelope = serde_json::from_str(hello_json).unwrap();
+    let msg = FromSimJson::from_envelope(env).unwrap();
+    match msg {
+        FromSimJson::Hello(h) => {
+            let c = &h.city_list[0];
+            assert_eq!(c.key, "cleveland");
+            assert_eq!(c.country.as_deref(), Some("USA"));
+            assert_eq!(c.population, Some(372_000.0));
+            assert_eq!(c.building_count, Some(33_553));
+            assert_eq!(c.size_km, Some(12.0));
+        }
+        other => panic!("expected Hello, got {other:?}"),
+    }
+}
+
+#[test]
 fn envelope_ready_hello_and_toast_roundtrip() {
     let hello_json = r#"{"t":"hello","p":{"protocolVersion":1,"gameVersion":"0.1.0","cityList":[{"key":"nyc","label":"New York City"}],"defaultWorldSize":24000.0}}"#;
     let env: Envelope = serde_json::from_str(hello_json).unwrap();
@@ -520,6 +538,7 @@ fn envelope_ready_hello_and_toast_roundtrip() {
         FromSimJson::Hello(h) => {
             assert_eq!(h.protocol_version, 1);
             assert_eq!(h.city_list[0].key, "nyc");
+            assert!(h.city_list[0].population.is_none());
         }
         other => panic!("expected Hello, got {other:?}"),
     }
