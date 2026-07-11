@@ -3223,6 +3223,7 @@ dependencies = [
  "anyhow",
  "bevy",
  "bevy_egui",
+ "cpal",
  "directories",
  "mf-net",
  "mf-protocol",

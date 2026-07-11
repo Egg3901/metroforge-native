@@ -13,12 +13,13 @@
 mod synth;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bevy::audio::{AddAudioSource, AudioSink, AudioSinkPlayback, Source, Volume};
 use bevy::prelude::*;
+use cpal::traits::HostTrait;
 
 use mf_net::SimEvent;
 use mf_protocol::{FromSimJson, FromSimMsg};

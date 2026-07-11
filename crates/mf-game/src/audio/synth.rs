@@ -91,37 +91,16 @@ fn adsr(
     }
 }
 
-fn render_sine_note(
-    start_hz: f32,
-    end_hz: f32,
-    duration_s: f32,
-    attack_s: f32,
-    decay_s: f32,
-    sustain_level: f32,
-    release_s: f32,
-    gain: f32,
-) -> Vec<f32> {
-    let n = sample_count(duration_s);
-    let sr = SAMPLE_RATE as f32;
-    let mut out = Vec::with_capacity(n);
-    let mut phase = 0.0_f32;
-    for i in 0..n {
-        let t = i as f32 / sr;
-        let env = adsr(t, duration_s, attack_s, decay_s, sustain_level, release_s);
-        let frac = if duration_s > 0.0 {
-            (t / duration_s).min(1.0)
-        } else {
-            0.0
-        };
-        let freq = start_hz + (end_hz - start_hz) * frac;
-        phase = (phase + freq / sr).fract();
-        let sample = (phase * std::f32::consts::TAU).sin();
-        out.push(soft_clip(sample * env * gain));
-    }
-    out
+#[derive(Clone, Copy)]
+enum Wave {
+    Sine,
+    Square,
+    Triangle,
 }
 
-fn render_square_note(
+#[derive(Clone, Copy)]
+struct NoteSpec {
+    wave: Wave,
     start_hz: f32,
     end_hz: f32,
     duration_s: f32,
@@ -130,53 +109,42 @@ fn render_square_note(
     sustain_level: f32,
     release_s: f32,
     gain: f32,
-) -> Vec<f32> {
-    let n = sample_count(duration_s);
-    let sr = SAMPLE_RATE as f32;
-    let mut out = Vec::with_capacity(n);
-    let mut phase = 0.0_f32;
-    for i in 0..n {
-        let t = i as f32 / sr;
-        let env = adsr(t, duration_s, attack_s, decay_s, sustain_level, release_s);
-        let frac = if duration_s > 0.0 {
-            (t / duration_s).min(1.0)
-        } else {
-            0.0
-        };
-        let freq = start_hz + (end_hz - start_hz) * frac;
-        phase = (phase + freq / sr).fract();
-        let sample = if phase < 0.5 { 1.0 } else { -1.0 };
-        out.push(soft_clip(sample * env * gain));
-    }
-    out
 }
 
-fn render_triangle_note(
-    start_hz: f32,
-    end_hz: f32,
-    duration_s: f32,
-    attack_s: f32,
-    decay_s: f32,
-    sustain_level: f32,
-    release_s: f32,
-    gain: f32,
-) -> Vec<f32> {
-    let n = sample_count(duration_s);
+fn render_note(spec: NoteSpec) -> Vec<f32> {
+    let n = sample_count(spec.duration_s);
     let sr = SAMPLE_RATE as f32;
     let mut out = Vec::with_capacity(n);
     let mut phase = 0.0_f32;
     for i in 0..n {
         let t = i as f32 / sr;
-        let env = adsr(t, duration_s, attack_s, decay_s, sustain_level, release_s);
-        let frac = if duration_s > 0.0 {
-            (t / duration_s).min(1.0)
+        let env = adsr(
+            t,
+            spec.duration_s,
+            spec.attack_s,
+            spec.decay_s,
+            spec.sustain_level,
+            spec.release_s,
+        );
+        let frac = if spec.duration_s > 0.0 {
+            (t / spec.duration_s).min(1.0)
         } else {
             0.0
         };
-        let freq = start_hz + (end_hz - start_hz) * frac;
+        let freq = spec.start_hz + (spec.end_hz - spec.start_hz) * frac;
         phase = (phase + freq / sr).fract();
-        let sample = 4.0 * (phase - 0.5).abs() - 1.0;
-        out.push(soft_clip(sample * env * gain));
+        let sample = match spec.wave {
+            Wave::Sine => (phase * std::f32::consts::TAU).sin(),
+            Wave::Square => {
+                if phase < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            Wave::Triangle => 4.0 * (phase - 0.5).abs() - 1.0,
+        };
+        out.push(soft_clip(sample * env * spec.gain));
     }
     out
 }
@@ -230,49 +198,139 @@ pub fn render_placement_thunk() -> Vec<f32> {
 
 /// Low square buzz for errors / invalid actions.
 pub fn render_error_buzz() -> Vec<f32> {
-    render_square_note(110.0, 90.0, 0.140, 0.005, 0.020, 0.6, 0.050, 0.20)
+    render_note(NoteSpec {
+        wave: Wave::Square,
+        start_hz: 110.0,
+        end_hz: 90.0,
+        duration_s: 0.140,
+        attack_s: 0.005,
+        decay_s: 0.020,
+        sustain_level: 0.6,
+        release_s: 0.050,
+        gain: 0.20,
+    })
 }
 
 /// Two-note goal-complete chime (rising major third: C5 → E5).
 pub fn render_goal_chime() -> Vec<f32> {
-    let note_a = render_sine_note(523.25, 523.25, 0.140, 0.008, 0.030, 0.45, 0.070, 0.18);
+    let note_a = render_note(NoteSpec {
+        wave: Wave::Sine,
+        start_hz: 523.25,
+        end_hz: 523.25,
+        duration_s: 0.140,
+        attack_s: 0.008,
+        decay_s: 0.030,
+        sustain_level: 0.45,
+        release_s: 0.070,
+        gain: 0.18,
+    });
     let gap = sample_count(0.030);
-    let note_b = render_sine_note(659.25, 659.25, 0.180, 0.008, 0.040, 0.40, 0.090, 0.16);
+    let note_b = render_note(NoteSpec {
+        wave: Wave::Sine,
+        start_hz: 659.25,
+        end_hz: 659.25,
+        duration_s: 0.180,
+        attack_s: 0.008,
+        decay_s: 0.040,
+        sustain_level: 0.40,
+        release_s: 0.090,
+        gain: 0.16,
+    });
     let mut out = Vec::with_capacity(note_a.len() + gap + note_b.len());
     out.extend_from_slice(&note_a);
-    out.extend(std::iter::repeat(0.0).take(gap));
+    out.extend(std::iter::repeat_n(0.0, gap));
     out.extend_from_slice(&note_b);
     out
 }
 
 /// Bright toast pop — short triangle ping.
 pub fn render_toast_pop() -> Vec<f32> {
-    render_triangle_note(1320.0, 1320.0, 0.110, 0.003, 0.018, 0.35, 0.040, 0.14)
+    render_note(NoteSpec {
+        wave: Wave::Triangle,
+        start_hz: 1320.0,
+        end_hz: 1320.0,
+        duration_s: 0.110,
+        attack_s: 0.003,
+        decay_s: 0.018,
+        sustain_level: 0.35,
+        release_s: 0.040,
+        gain: 0.14,
+    })
 }
 
 /// Quiet confirm: rising fourth square sweep (kept for existing Confirm SFX).
 pub fn render_confirm() -> Vec<f32> {
-    render_square_note(659.25, 880.0, 0.090, 0.005, 0.020, 0.5, 0.030, 0.18)
+    render_note(NoteSpec {
+        wave: Wave::Square,
+        start_hz: 659.25,
+        end_hz: 880.0,
+        duration_s: 0.090,
+        attack_s: 0.005,
+        decay_s: 0.020,
+        sustain_level: 0.5,
+        release_s: 0.030,
+        gain: 0.18,
+    })
 }
 
 /// Cancel: falling fourth, darker than confirm.
 pub fn render_cancel() -> Vec<f32> {
-    render_square_note(440.0, 329.63, 0.090, 0.005, 0.020, 0.5, 0.030, 0.15)
+    render_note(NoteSpec {
+        wave: Wave::Square,
+        start_hz: 440.0,
+        end_hz: 329.63,
+        duration_s: 0.090,
+        attack_s: 0.005,
+        decay_s: 0.020,
+        sustain_level: 0.5,
+        release_s: 0.030,
+        gain: 0.15,
+    })
 }
 
 /// Pause settle: triangle octave down.
 pub fn render_pause() -> Vec<f32> {
-    render_triangle_note(660.0, 220.0, 0.180, 0.010, 0.030, 0.6, 0.060, 0.15)
+    render_note(NoteSpec {
+        wave: Wave::Triangle,
+        start_hz: 660.0,
+        end_hz: 220.0,
+        duration_s: 0.180,
+        attack_s: 0.010,
+        decay_s: 0.030,
+        sustain_level: 0.6,
+        release_s: 0.060,
+        gain: 0.15,
+    })
 }
 
 /// Unpause: mirror of pause.
 pub fn render_unpause() -> Vec<f32> {
-    render_triangle_note(220.0, 660.0, 0.180, 0.010, 0.030, 0.6, 0.060, 0.15)
+    render_note(NoteSpec {
+        wave: Wave::Triangle,
+        start_hz: 220.0,
+        end_hz: 660.0,
+        duration_s: 0.180,
+        attack_s: 0.010,
+        decay_s: 0.030,
+        sustain_level: 0.6,
+        release_s: 0.060,
+        gain: 0.15,
+    })
 }
 
 /// Speed scrub tick: shortest/quietest click in the palette.
 pub fn render_speed_tick() -> Vec<f32> {
-    render_square_note(1760.0, 1760.0, 0.030, 0.001, 0.005, 0.3, 0.012, 0.08)
+    render_note(NoteSpec {
+        wave: Wave::Square,
+        start_hz: 1760.0,
+        end_hz: 1760.0,
+        duration_s: 0.030,
+        attack_s: 0.001,
+        decay_s: 0.005,
+        sustain_level: 0.3,
+        release_s: 0.012,
+        gain: 0.08,
+    })
 }
 
 /// Looping city ambience: band-passed noise with a slow amplitude LFO whose
@@ -302,11 +360,6 @@ pub fn render_city_ambience() -> Vec<f32> {
         *last = first;
     }
     out
-}
-
-/// Expected duration in seconds for a rendered buffer (for length tests).
-pub fn expected_duration_s(samples: &[f32]) -> f32 {
-    samples.len() as f32 / SAMPLE_RATE as f32
 }
 
 #[cfg(test)]

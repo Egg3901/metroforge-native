@@ -457,8 +457,8 @@ mod tests {
             ..sample_file()
         };
         let s = toml::to_string_pretty(&file).unwrap();
-        assert!(s.contains("0.35") || s.contains("0.350"));
-        assert!(s.contains("mute"));
+        assert!(s.contains("master_volume"), "serialized:\n{s}");
+        assert!(s.contains("mute"), "serialized:\n{s}");
         let back: ConfigFile = toml::from_str(&s).unwrap();
         assert!((back.master_volume - 0.35).abs() < 1e-5);
         assert!(back.mute);
