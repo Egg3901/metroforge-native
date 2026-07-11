@@ -387,6 +387,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn shadow_hysteresis_band_is_ordered() {
         assert!(SHADOW_ON_NIGHT < SHADOW_OFF_NIGHT);
     }
