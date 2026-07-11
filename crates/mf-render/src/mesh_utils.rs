@@ -1250,3 +1250,219 @@ mod ear_clip_tests {
         assert!(buf.is_empty());
     }
 }
+
+#[cfg(test)]
+mod mesh_primitive_tests {
+    use super::*;
+
+    /// Signed volume of the parallelepiped spanned by (b-a) and (c-a) dotted
+    /// with `normal` — positive when (a,b,c) is wound CCW as seen from
+    /// `normal` (Bevy/wgpu front-face convention).
+    fn winding_sign(a: Vec3, b: Vec3, c: Vec3, normal: Vec3) -> f32 {
+        (b - a).cross(c - a).dot(normal)
+    }
+
+    #[test]
+    fn push_quad_winding_matches_declared_normal() {
+        let mut buf = MeshBuffers::new();
+        let n = Vec3::Y;
+        // CCW when viewed from +Y: (0,0,0)->(1,0,0)->(1,0,1)->(0,0,1) is CW
+        // from +Y; the ribbon/cuboid convention uses the opposite order.
+        let p0 = Vec3::new(0.0, 0.0, 1.0);
+        let p1 = Vec3::new(1.0, 0.0, 1.0);
+        let p2 = Vec3::new(1.0, 0.0, 0.0);
+        let p3 = Vec3::new(0.0, 0.0, 0.0);
+        buf.push_flat_quad(p0, p1, p2, p3, n, Color::WHITE);
+        assert_eq!(buf.vertex_count(), 4);
+        assert_eq!(buf.index_count(), 6);
+        // First triangle (p0,p1,p2) must be CCW from +Y.
+        assert!(
+            winding_sign(p0, p1, p2, n) > 0.0,
+            "first triangle must face along the declared normal"
+        );
+        assert!(winding_sign(p0, p2, p3, n) > 0.0);
+        let mesh = buf.build();
+        let normals = mesh
+            .attribute(Mesh::ATTRIBUTE_NORMAL)
+            .expect("normals")
+            .as_float3()
+            .expect("float3");
+        for nrm in normals {
+            assert!((nrm[0]).abs() < 1e-6);
+            assert!((nrm[1] - 1.0).abs() < 1e-6);
+            assert!((nrm[2]).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn append_cuboid_emits_top_plus_four_walls_with_axis_normals() {
+        let mut buf = MeshBuffers::new();
+        append_cuboid(
+            &mut buf,
+            Vec2::ZERO,
+            0.0,
+            1.0,
+            1.0,
+            10.0,
+            Color::WHITE,
+            Color::WHITE,
+            Color::WHITE,
+        );
+        // 5 quads × 4 verts / 6 indices (no bottom cap).
+        assert_eq!(buf.vertex_count(), 5 * 4);
+        assert_eq!(buf.index_count(), 5 * 6);
+
+        let mesh = buf.build();
+        let normals = mesh
+            .attribute(Mesh::ATTRIBUTE_NORMAL)
+            .expect("normals")
+            .as_float3()
+            .expect("float3");
+        // Each quad's four verts share one axis-aligned unit normal.
+        let mut seen = [false; 5]; // +Y, +Z, -Z, +X, -X
+        for chunk in normals.chunks_exact(4) {
+            let n = chunk[0];
+            assert!(
+                chunk.iter().all(|v| *v == n),
+                "quad verts must share a flat normal"
+            );
+            let key = if (n[1] - 1.0).abs() < 1e-5 && n[0].abs() < 1e-5 && n[2].abs() < 1e-5 {
+                0
+            } else if (n[2] - 1.0).abs() < 1e-5 {
+                1
+            } else if (n[2] + 1.0).abs() < 1e-5 {
+                2
+            } else if (n[0] - 1.0).abs() < 1e-5 {
+                3
+            } else if (n[0] + 1.0).abs() < 1e-5 {
+                4
+            } else {
+                panic!("unexpected cuboid normal {n:?}");
+            };
+            seen[key] = true;
+        }
+        assert!(seen.iter().all(|&s| s), "missing an axis wall/top normal");
+    }
+
+    #[test]
+    fn densify_polyline_preserves_endpoints_and_respects_step() {
+        let pts = [
+            Vec2::new(0.0, 0.0),
+            Vec2::new(100.0, 0.0),
+            Vec2::new(100.0, 50.0),
+        ];
+        let step = 10.0;
+        let dense = densify_polyline(&pts, step);
+        assert_eq!(dense.first().copied(), Some(pts[0]));
+        assert_eq!(dense.last().copied(), Some(pts[pts.len() - 1]));
+        // Every consecutive pair except possibly the final stub into an
+        // original vertex must be ≤ step (+ float slack).
+        for w in dense.windows(2) {
+            let d = w[0].distance(w[1]);
+            assert!(
+                d <= step + 1e-3,
+                "spacing {d} exceeds step {step} between {:?} and {:?}",
+                w[0],
+                w[1]
+            );
+        }
+        // Degenerate inputs: empty step / short polyline are identity.
+        assert_eq!(densify_polyline(&pts, 0.0), pts.to_vec());
+        assert_eq!(densify_polyline(&[Vec2::ZERO], 5.0), vec![Vec2::ZERO]);
+    }
+
+    #[test]
+    fn densify_polyline_does_not_invent_points_on_short_segments() {
+        let pts = [Vec2::new(0.0, 0.0), Vec2::new(3.0, 0.0)];
+        let dense = densify_polyline(&pts, 10.0);
+        assert_eq!(dense, pts.to_vec());
+    }
+
+    #[test]
+    fn arc_length_table_is_monotone_and_matches_total() {
+        let pts = [
+            Vec2::new(0.0, 0.0),
+            Vec2::new(3.0, 0.0),
+            Vec2::new(3.0, 4.0),
+            Vec2::new(0.0, 4.0),
+        ];
+        let (cum, total) = arc_length_table(&pts);
+        assert_eq!(cum.len(), pts.len());
+        assert_eq!(cum[0], 0.0);
+        assert!((cum[cum.len() - 1] - total).abs() < 1e-5);
+        for w in cum.windows(2) {
+            assert!(w[1] >= w[0], "arc-length table must be non-decreasing");
+        }
+        // 3 + 4 + 3 = 10
+        assert!((total - 10.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn point_along_clamps_before_start_and_past_end() {
+        let pts = [Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0)];
+        let (cum, total) = arc_length_table(&pts);
+        let (at_neg, dir_neg) = point_along(&pts, &cum, -50.0);
+        assert!((at_neg - pts[0]).length() < 1e-4);
+        assert!((dir_neg - Vec2::X).length() < 1e-4);
+
+        let (at_past, dir_past) = point_along(&pts, &cum, total + 50.0);
+        assert!((at_past - pts[1]).length() < 1e-4);
+        assert!((dir_past - Vec2::X).length() < 1e-4);
+
+        let (mid, _) = point_along(&pts, &cum, 5.0);
+        assert!((mid - Vec2::new(5.0, 0.0)).length() < 1e-4);
+    }
+
+    #[test]
+    fn apply_to_mesh_writes_matching_attribute_counts_and_keeps_capacity() {
+        let mut buf = MeshBuffers::with_capacity(64, 96);
+        append_cuboid(
+            &mut buf,
+            Vec2::new(1.0, 2.0),
+            0.0,
+            2.0,
+            3.0,
+            5.0,
+            Color::srgb(1.0, 0.0, 0.0),
+            Color::srgb(0.0, 1.0, 0.0),
+            Color::srgb(0.0, 0.0, 1.0),
+        );
+        let v = buf.vertex_count();
+        let i = buf.index_count();
+        assert!(v > 0 && i > 0);
+
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        buf.apply_to_mesh(&mut mesh);
+
+        // Buffer is cleared for the next fill cycle.
+        assert!(buf.is_empty());
+
+        let positions = mesh
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .expect("positions")
+            .as_float3()
+            .expect("float3");
+        let normals = mesh
+            .attribute(Mesh::ATTRIBUTE_NORMAL)
+            .expect("normals")
+            .as_float3()
+            .expect("float3");
+        let colors = mesh.attribute(Mesh::ATTRIBUTE_COLOR).expect("colors");
+        assert_eq!(positions.len(), v);
+        assert_eq!(normals.len(), v);
+        assert_eq!(colors.len(), v);
+        match mesh.indices().expect("indices") {
+            Indices::U32(idx) => {
+                assert_eq!(idx.len(), i);
+                assert!(idx.iter().all(|&ix| (ix as usize) < v));
+            }
+            Indices::U16(idx) => {
+                assert_eq!(idx.len(), i);
+                assert!(idx.iter().all(|&ix| (ix as usize) < v));
+            }
+        }
+    }
+}
