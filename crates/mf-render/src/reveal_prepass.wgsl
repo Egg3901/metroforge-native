@@ -27,11 +27,14 @@
 }
 
 // Identical layout to facade.wgsl's `RevealUniform` — same binding, same
-// buffer. Prepass only reads `reveal`/`params` for the discard test; the
-// `facade` field must still be present so the uniform struct size matches.
+// buffer. Prepass only reads `reveal`/`params` for the discard test; `cloud`
+// (main-pass color multiply) and `facade` are unused here but must stay in
+// the struct so the uniform buffer layout matches the Rust `RevealExtension`
+// and the main-pass shader: reveal, params, cloud, facade.
 struct RevealUniform {
     reveal: vec4<f32>,
     params: vec4<f32>,
+    cloud: vec4<f32>,
     facade: vec4<f32>,
 }
 

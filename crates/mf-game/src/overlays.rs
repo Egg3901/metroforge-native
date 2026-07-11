@@ -448,11 +448,11 @@ fn overlay_toggle_system(
     overlay.cycle();
     match overlay.mode {
         OverlayMode::Demand if !*demand_toast_shown => {
-            toasts.0.push((DEMAND_TOAST.to_string(), ToastTone::Info));
+            toasts.push(DEMAND_TOAST.to_string(), ToastTone::Info);
             *demand_toast_shown = true;
         }
         OverlayMode::Unserved if !*unserved_toast_shown => {
-            toasts.0.push((UNSERVED_TOAST.to_string(), ToastTone::Info));
+            toasts.push(UNSERVED_TOAST.to_string(), ToastTone::Info);
             *unserved_toast_shown = true;
         }
         _ => {}

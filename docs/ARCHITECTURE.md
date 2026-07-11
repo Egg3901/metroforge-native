@@ -81,10 +81,16 @@ directly.
 `SidecarProcess` locates and spawns the sidecar binary (lookup order: env var, then
 next to the running executable, then a dev fallback of `bun run sidecar/index.ts`
 against the sibling `metroforge` checkout), parses its one-line stdout handshake to
-learn the assigned port, and kills it on `Drop`. `reconnect.rs` implements the
-liveness policy: no inbound traffic for 10 seconds means the sim is declared dead;
-respawn and reconnect with backoff from 500 ms up to 4 s, for up to 5 attempts,
-before surfacing a fatal error the game shell maps onto its own state machine.
+learn the assigned port, captures a rolling stderr log tail, and kills the process
+group on `Drop`. On Unix the child sets `PR_SET_PDEATHSIG` so a client crash cannot
+leave a zombie sidecar; on Windows the child is assigned to a Job Object with
+`KILL_ON_JOB_CLOSE`. Stale `metroforge-sidecar` processes from a previous run are
+reaped on every spawn. `reconnect.rs` implements the liveness policy: process exit
+**or** no inbound traffic for 5 seconds means the sim is declared dead (the two
+causes are distinguished); respawn and reconnect with backoff from 500 ms up to 4 s,
+for up to 3 attempts. Mid-game recovery re-handshakes and restores from autosave
+without returning to MainMenu; exhausting attempts surfaces a diagnostics screen
+with the sidecar log tail.
 
 **The mobile constraint this is built around:** iOS forbids spawning subprocesses.
 `mf-net` is structured so that on a future iOS/Android port, `SimTransport` is
@@ -151,8 +157,9 @@ table: see the README, or `mf-state/src/quality.rs` for the source of truth.
 ### mf-game
 
 The game shell (binary `metroforge`): the app state machine
-(`Boot -> ConnectingSim -> MainMenu -> Loading -> InGame`), the RTS camera rig,
-input-to-command translation, the egui HUD, and persistent config
+(`Boot -> ConnectingSim -> MainMenu -> Loading -> InGame`, plus `SimError` after
+exhausted sidecar reconnects), the RTS camera rig, input-to-command translation,
+the egui HUD, and persistent config
 (`config.toml` under the OS config directory, holding a quality-tier override that
 always wins over auto-detection). This is the only crate that maps `mf-net`'s
 `NetStatus` and `mf-state`'s readiness resources onto a concrete state machine;

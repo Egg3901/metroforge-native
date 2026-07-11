@@ -93,10 +93,14 @@ fn fade_road_and_stripe_alpha_system(
     mut materials: ResMut<Assets<StandardMaterial>>,
     roads: Query<&MeshMaterial3d<StandardMaterial>, With<RoadSurface>>,
     stripes: Query<(&RouteStripe, &MeshMaterial3d<StandardMaterial>)>,
-    terrain: Query<&MeshMaterial3d<StandardMaterial>, With<crate::terrain::TerrainSurface>>,
+    terrain: Query<
+        &MeshMaterial3d<crate::terrain_material::TerrainMaterial>,
+        With<crate::terrain::TerrainSurface>,
+    >,
     fresh_roads: Query<Entity, Added<RoadSurface>>,
     fresh_stripes: Query<Entity, Added<RouteStripe>>,
     fresh_terrain: Query<Entity, Added<crate::terrain::TerrainSurface>>,
+    mut terrain_materials: ResMut<Assets<crate::terrain_material::TerrainMaterial>>,
 ) {
     // Roads, terrain and route stripes are each independently rebuilt
     // (despawn+respawn with brand-new materials) by their own modules; a
@@ -129,8 +133,8 @@ fn fade_road_and_stripe_alpha_system(
     // `AlphaMode` is untouched (it's created, and stays, `Opaque`).
     let dim = 1.0 - subway.t * GROUND_DIM;
     for handle in &terrain {
-        if let Some(mat) = materials.get_mut(&handle.0) {
-            mat.base_color = Color::srgb(dim, dim, dim);
+        if let Some(mat) = terrain_materials.get_mut(&handle.0) {
+            mat.base.base_color = Color::srgb(dim, dim, dim);
         }
     }
     for (stripe, handle) in &stripes {
