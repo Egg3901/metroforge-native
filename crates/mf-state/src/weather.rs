@@ -9,6 +9,7 @@ use bevy_ecs::prelude::*;
 /// cloud) drawn when the active quality tier supports it.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WeatherEffects {
+    /// When `true` and the quality tier allows atmosphere, draw weather fog/clouds.
     pub enabled: bool,
 }
 

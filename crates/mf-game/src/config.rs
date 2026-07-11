@@ -403,6 +403,7 @@ mod tests {
             tutorial_completed: false,
             weather_effects: true,
             autosave_interval_days: 5,
+            minimap_open: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("5"));
