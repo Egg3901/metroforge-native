@@ -6,7 +6,7 @@
 //! at a time.
 //!
 //! Deliberately decoupled from UI: this module only emits [`CommandFeedback`]
-//! events. Toast/SFX wiring (`hud.rs`'s `ToastLog`, `audio.rs`'s `PlaySfx`)
+//! events. Toast/SFX wiring (`hud.rs`'s `ToastLog`, `audio`'s `PlaySfx`)
 //! is the UI layer's job, subscribing to those events. Keeping the bus
 //! itself silent/pure means it can be unit tested without a Bevy `App`.
 

@@ -101,6 +101,15 @@ struct ConfigFile {
     /// `weather_effects` above.
     #[serde(default = "default_minimap_open")]
     minimap_open: bool,
+    /// Master output gain in `[0, 1]`. Defaults to 1.0 for legacy configs
+    /// that predate the audio settings row.
+    #[serde(default = "default_master_volume")]
+    master_volume: f32,
+    /// When true, all procedural SFX and ambience are silent. Omitted from
+    /// TOML when false (fresh-install default), same pattern as
+    /// `tutorial_completed`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    mute: bool,
 }
 
 fn default_weather_effects() -> bool {
@@ -115,6 +124,10 @@ fn default_minimap_open() -> bool {
     true
 }
 
+fn default_master_volume() -> f32 {
+    1.0
+}
+
 impl Default for ConfigFile {
     fn default() -> Self {
         ConfigFile {
@@ -124,6 +137,8 @@ impl Default for ConfigFile {
             weather_effects: true,
             autosave_interval_days: default_autosave_interval_days(),
             minimap_open: true,
+            master_volume: default_master_volume(),
+            mute: false,
         }
     }
 }
@@ -149,6 +164,10 @@ pub struct MfConfig {
     /// (verified unclaimed by grep before wiring it up, same convention
     /// `map_mode.rs`'s module doc uses for `M`).
     pub minimap_open: bool,
+    /// Master output gain in `[0, 1]` for procedural SFX + ambience.
+    pub master_volume: f32,
+    /// When true, all audio is silent regardless of `master_volume`.
+    pub mute: bool,
     path: Option<PathBuf>,
 }
 
@@ -161,6 +180,8 @@ impl Default for MfConfig {
             weather_effects: true,
             autosave_interval_days: crate::saves::DEFAULT_AUTOSAVE_INTERVAL_DAYS,
             minimap_open: true,
+            master_volume: 1.0,
+            mute: false,
             path: None,
         }
     }
@@ -202,6 +223,11 @@ impl MfConfig {
             .map(|f| f.autosave_interval_days)
             .unwrap_or_else(default_autosave_interval_days);
         let minimap_open = parsed.as_ref().map(|f| f.minimap_open).unwrap_or(true);
+        let master_volume = parsed
+            .as_ref()
+            .map(|f| f.master_volume.clamp(0.0, 1.0))
+            .unwrap_or_else(default_master_volume);
+        let mute = parsed.as_ref().map(|f| f.mute).unwrap_or(false);
         MfConfig {
             quality_override,
             theme_override,
@@ -209,6 +235,8 @@ impl MfConfig {
             weather_effects,
             autosave_interval_days,
             minimap_open,
+            master_volume,
+            mute,
             path: Some(path),
         }
     }
@@ -229,6 +257,8 @@ impl MfConfig {
             weather_effects: self.weather_effects,
             autosave_interval_days: self.autosave_interval_days,
             minimap_open: self.minimap_open,
+            master_volume: self.master_volume.clamp(0.0, 1.0),
+            mute: self.mute,
         };
         let toml_str = toml::to_string_pretty(&file)?;
         std::fs::write(path, toml_str)?;
@@ -281,21 +311,47 @@ impl MfConfig {
             tracing::warn!("mf-game: failed to persist config.toml: {e}");
         }
     }
+
+    /// Persist master volume in `[0, 1]` (Settings slider).
+    pub fn set_master_volume(&mut self, volume: f32) {
+        self.master_volume = volume.clamp(0.0, 1.0);
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
+
+    /// Persist mute (Settings checkbox). When muted, procedural SFX and
+    /// ambience are silent regardless of `master_volume`.
+    pub fn set_mute(&mut self, mute: bool) {
+        self.mute = mute;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn config_quality_roundtrips_through_toml() {
-        let file = ConfigFile {
-            quality_override: Some(ConfigQuality::High),
+    fn sample_file() -> ConfigFile {
+        ConfigFile {
+            quality_override: None,
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
             autosave_interval_days: 10,
             minimap_open: true,
+            master_volume: 1.0,
+            mute: false,
+        }
+    }
+
+    #[test]
+    fn config_quality_roundtrips_through_toml() {
+        let file = ConfigFile {
+            quality_override: Some(ConfigQuality::High),
+            ..sample_file()
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("high"));
@@ -305,14 +361,7 @@ mod tests {
 
     #[test]
     fn missing_override_serializes_weather_default() {
-        let file = ConfigFile {
-            quality_override: None,
-            theme_override: None,
-            tutorial_completed: false,
-            weather_effects: true,
-            autosave_interval_days: 10,
-            minimap_open: true,
-        };
+        let file = sample_file();
         let s = toml::to_string_pretty(&file).unwrap();
         let back: ConfigFile = toml::from_str(&s).unwrap();
         assert_eq!(back.quality_override, None);
@@ -326,17 +375,15 @@ mod tests {
         assert!(back.weather_effects);
         assert_eq!(back.quality_override, Some(ConfigQuality::Medium));
         assert_eq!(back.autosave_interval_days, 10);
+        assert!((back.master_volume - 1.0).abs() < f32::EPSILON);
+        assert!(!back.mute);
     }
 
     #[test]
     fn weather_effects_roundtrips_off() {
         let file = ConfigFile {
-            quality_override: None,
-            theme_override: None,
-            tutorial_completed: false,
             weather_effects: false,
-            autosave_interval_days: 10,
-            minimap_open: true,
+            ..sample_file()
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("false"));
@@ -347,12 +394,8 @@ mod tests {
     #[test]
     fn config_theme_roundtrips_through_toml() {
         let file = ConfigFile {
-            quality_override: None,
             theme_override: Some(ConfigTheme::Purple),
-            tutorial_completed: false,
-            weather_effects: true,
-            autosave_interval_days: 10,
-            minimap_open: true,
+            ..sample_file()
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("purple"));
@@ -363,12 +406,8 @@ mod tests {
     #[test]
     fn tutorial_completed_roundtrips_through_toml() {
         let file = ConfigFile {
-            quality_override: None,
-            theme_override: None,
             tutorial_completed: true,
-            weather_effects: true,
-            autosave_interval_days: 10,
-            minimap_open: true,
+            ..sample_file()
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("tutorial_completed"));
@@ -398,11 +437,8 @@ mod tests {
     #[test]
     fn autosave_interval_roundtrips_and_defaults() {
         let file = ConfigFile {
-            quality_override: None,
-            theme_override: None,
-            tutorial_completed: false,
-            weather_effects: true,
             autosave_interval_days: 5,
+            ..sample_file()
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("5"));
@@ -411,5 +447,28 @@ mod tests {
 
         let legacy: ConfigFile = toml::from_str("weather_effects = false\n").unwrap();
         assert_eq!(legacy.autosave_interval_days, 10);
+    }
+
+    #[test]
+    fn master_volume_and_mute_roundtrip_and_default() {
+        let file = ConfigFile {
+            master_volume: 0.35,
+            mute: true,
+            ..sample_file()
+        };
+        let s = toml::to_string_pretty(&file).unwrap();
+        assert!(s.contains("0.35") || s.contains("0.350"));
+        assert!(s.contains("mute"));
+        let back: ConfigFile = toml::from_str(&s).unwrap();
+        assert!((back.master_volume - 0.35).abs() < 1e-5);
+        assert!(back.mute);
+
+        let legacy: ConfigFile = toml::from_str("weather_effects = false\n").unwrap();
+        assert!((legacy.master_volume - 1.0).abs() < f32::EPSILON);
+        assert!(!legacy.mute);
+
+        let unmuted = sample_file();
+        let s2 = toml::to_string_pretty(&unmuted).unwrap();
+        assert!(!s2.contains("mute"));
     }
 }
