@@ -20,16 +20,16 @@ impl Plugin for MfShortcutsPlugin {
         app.insert_resource(ShortcutsOverlayOpen(
             std::env::var_os("MF_SHOW_SHORTCUTS").is_some(),
         ))
-            .add_systems(
-                Update,
-                toggle_shortcuts_system.run_if(in_state(AppState::InGame)),
-            )
-            .add_systems(
-                EguiPrimaryContextPass,
-                shortcuts_overlay_system
-                    .run_if(in_state(AppState::InGame))
-                    .run_if(|| !ds::hud_hidden()),
-            );
+        .add_systems(
+            Update,
+            toggle_shortcuts_system.run_if(in_state(AppState::InGame)),
+        )
+        .add_systems(
+            EguiPrimaryContextPass,
+            shortcuts_overlay_system
+                .run_if(in_state(AppState::InGame))
+                .run_if(|| !ds::hud_hidden()),
+        );
     }
 }
 
