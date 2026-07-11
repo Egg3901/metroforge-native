@@ -287,8 +287,7 @@ fn station_upgrade_button(
     }
     let resp = ui.add(
         egui::Button::new(
-            egui::RichText::new(s.upgrade_to_level(station.level + 1))
-                .color(egui::Color32::WHITE),
+            egui::RichText::new(s.upgrade_to_level(station.level + 1)).color(egui::Color32::WHITE),
         )
         .fill(ds::accent())
         .corner_radius(ds::CORNER_RADIUS),
@@ -380,7 +379,9 @@ fn station_panel_system(
                 );
                 ui.label(ds::heading(station_title(station)));
             });
-            ui.label(ds::label_small(s.level_mode(station.level, mode_word(station.mode))));
+            ui.label(ds::label_small(
+                s.level_mode(station.level, mode_word(station.mode)),
+            ));
             ui.add_space(ds::SPACE_SM);
 
             ui.horizontal(|ui| {

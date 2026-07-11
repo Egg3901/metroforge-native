@@ -450,10 +450,9 @@ fn evaluate_progress_system(
         if earned > previous {
             let s = crate::strings::current();
             for goal in &objectives.stars[previous as usize..earned as usize] {
-                toasts.0.push((
-                    s.star_earned(&describe_goal(*goal)),
-                    ToastTone::Good,
-                ));
+                toasts
+                    .0
+                    .push((s.star_earned(&describe_goal(*goal)), ToastTone::Good));
             }
             if toasts.0.len() > TOAST_LOG_CAP {
                 let excess = toasts.0.len() - TOAST_LOG_CAP;

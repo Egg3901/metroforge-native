@@ -358,10 +358,9 @@ fn tutorial_overlay_system(
                     ui.set_max_width(360.0);
                     let s = crate::strings::current();
                     ui.label(
-                        egui::RichText::new(s.tutorial_step_of(
-                            step.number(),
-                            TutorialStep::ALL.len(),
-                        ))
+                        egui::RichText::new(
+                            s.tutorial_step_of(step.number(), TutorialStep::ALL.len()),
+                        )
                         .size(11.0)
                         .color(tutorial_accent())
                         .strong(),

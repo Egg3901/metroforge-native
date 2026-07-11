@@ -200,11 +200,7 @@ fn report_ui_system(
                         );
                         key_number_row(ui, s.approval, format!("{:.0}%", state.approval));
                         key_number_row(ui, s.coverage, format!("{:.0}%", state.coverage * 100.0));
-                        key_number_row(
-                            ui,
-                            s.net_last_day,
-                            format_signed_cash(last_day_net(state)),
-                        );
+                        key_number_row(ui, s.net_last_day, format_signed_cash(last_day_net(state)));
 
                         ui.add_space(ds::SPACE_LG);
 

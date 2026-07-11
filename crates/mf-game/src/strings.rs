@@ -180,7 +180,6 @@ pub struct Strings {
     pub live_crowding_pct_prefix: &'static str,
     pub route_list_stations: &'static str,
     pub route_list_vehicles: &'static str,
-    pub route_list_mode: &'static str,
     pub farebox_per_day: &'static str,
     pub operating_cost_per_day: &'static str,
     pub net_per_day: &'static str,
@@ -418,7 +417,6 @@ pub static EN: Strings = Strings {
     live_crowding_pct_prefix: "Live crowding ",
     route_list_stations: " station(s), ",
     route_list_vehicles: " vehicle(s), mode ",
-    route_list_mode: "",
     farebox_per_day: "Farebox / day",
     operating_cost_per_day: "Operating cost / day",
     net_per_day: "Net / day",
@@ -515,11 +513,13 @@ pub fn current() -> &'static Strings {
 
 /// Swap the active table. Intended for a future locale loader; pass a
 /// `&'static Strings` (compiled-in locale or leaked parsed table).
+#[allow(dead_code)] // Public API for future locale swap; unused until locales land.
 pub fn set_current(table: &'static Strings) {
     CURRENT.store(table as *const Strings as *mut Strings, Ordering::Release);
 }
 
 /// Reset to English (tests / locale unload).
+#[allow(dead_code)] // Paired with [`set_current`]; used by unit tests.
 pub fn reset_to_en() {
     CURRENT.store(std::ptr::null_mut(), Ordering::Release);
 }
@@ -621,7 +621,10 @@ impl Strings {
     }
 
     pub fn slot_empty_label(&self, n: u8) -> String {
-        format!("{}{n}{}", self.save_slot_prefix, self.save_slot_empty_suffix)
+        format!(
+            "{}{n}{}",
+            self.save_slot_prefix, self.save_slot_empty_suffix
+        )
     }
 
     pub fn autosave_label(&self, n: u8) -> String {
@@ -753,6 +756,7 @@ impl Strings {
 
 /// Walk every `&'static str` field on the active table (used by the dash
 /// gate and any future locale integrity checks).
+#[cfg(test)]
 pub fn all_static_strings(s: &Strings) -> Vec<&'static str> {
     vec![
         s.brand,
@@ -897,7 +901,6 @@ pub fn all_static_strings(s: &Strings) -> Vec<&'static str> {
         s.live_crowding_pct_prefix,
         s.route_list_stations,
         s.route_list_vehicles,
-        s.route_list_mode,
         s.farebox_per_day,
         s.operating_cost_per_day,
         s.net_per_day,

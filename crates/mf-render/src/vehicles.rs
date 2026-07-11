@@ -177,6 +177,7 @@ fn update_vehicles_system(
     height_at: Res<HeightAt>,
     quality: Res<QualityTier>,
     theme: Res<mf_state::Theme>,
+    colorblind: Res<mf_state::ColorblindMode>,
     overlay: Res<mf_state::OverlayState>,
     day_night: Res<DayNightState>,
     mut pool: ResMut<VehiclePool>,
@@ -213,6 +214,7 @@ fn update_vehicles_system(
     if !frame_changed
         && !quality.is_changed()
         && !theme.is_changed()
+        && !colorblind.is_changed()
         && !overlay.is_changed()
         && !night_changed
     {
@@ -223,9 +225,9 @@ fn update_vehicles_system(
         return;
     };
     let unlit = quality.knobs().unlit_material;
-    // Theme switches change `vivid_route_color` for the same color_idx —
-    // drop the paint cache so vehicles pick up the new palette immediately.
-    if theme.is_changed() {
+    // Theme / colorblind switches change `vivid_route_color` for the same
+    // color_idx — drop the paint cache so vehicles pick up the new palette.
+    if theme.is_changed() || colorblind.is_changed() {
         pool.material_cache.clear();
         for slot in &mut pool.applied_paint {
             *slot = None;

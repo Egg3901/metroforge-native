@@ -307,6 +307,7 @@ fn attract_orbit_system(
     city: Res<CurrentCity>,
     dense_center: Res<BuildingsDenseCenter>,
     height_at: Res<HeightAt>,
+    config: Res<crate::config::MfConfig>,
     mut rigs: Query<(&mut CameraRig, &mut Transform)>,
 ) {
     if !city.masks_complete() {
@@ -317,7 +318,10 @@ fn attract_orbit_system(
     };
     let dt = time.delta_secs();
 
-    rig.yaw_goal = advance_yaw_goal(rig.yaw_goal, dt);
+    // Reduce-motion: keep the framed diorama but stop the continuous yaw drift.
+    if !config.reduce_motion {
+        rig.yaw_goal = advance_yaw_goal(rig.yaw_goal, dt);
+    }
     rig.pitch_goal = ATTRACT_PITCH_GOAL;
     rig.distance_goal = ATTRACT_DISTANCE_GOAL;
     rig.target_goal = dense_center.0;

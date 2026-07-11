@@ -35,6 +35,10 @@ jobs:
         working-directory: metroforge-native
         run: cargo fmt --check
 
+      - name: check strings table for en/em dashes
+        working-directory: metroforge-native
+        run: scripts/check-strings-dashes.sh
+
       - name: cargo clippy -D warnings
         working-directory: metroforge-native
         run: cargo clippy --workspace --all-targets -j 4 -- -D warnings

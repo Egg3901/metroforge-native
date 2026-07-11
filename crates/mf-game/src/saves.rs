@@ -444,9 +444,10 @@ impl SaveManager {
             }
             Err(e) => {
                 tracing::warn!("mf-game: failed to send requestSave: {e}");
-                toasts
-                    .0
-                    .push((crate::strings::current().save_failed(&e.to_string()), ToastTone::Warn));
+                toasts.0.push((
+                    crate::strings::current().save_failed(&e.to_string()),
+                    ToastTone::Warn,
+                ));
                 sfx.write(PlaySfx(Sfx::Error));
             }
         }
@@ -470,9 +471,10 @@ impl SaveManager {
             }
             Err(e) => {
                 tracing::warn!("mf-game: failed to load save slot: {e}");
-                toasts
-                    .0
-                    .push((crate::strings::current().load_failed(&e.to_string()), ToastTone::Warn));
+                toasts.0.push((
+                    crate::strings::current().load_failed(&e.to_string()),
+                    ToastTone::Warn,
+                ));
                 sfx.write(PlaySfx(Sfx::Error));
                 None
             }
@@ -572,9 +574,10 @@ fn capture_saved_system(
             }
             Err(e) => {
                 tracing::warn!("mf-game: failed to write save slot: {e}");
-                toasts
-                    .0
-                    .push((crate::strings::current().save_failed(&e.to_string()), ToastTone::Warn));
+                toasts.0.push((
+                    crate::strings::current().save_failed(&e.to_string()),
+                    ToastTone::Warn,
+                ));
                 sfx.write(PlaySfx(Sfx::Error));
             }
         }

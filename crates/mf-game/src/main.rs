@@ -24,6 +24,7 @@ mod report_ui;
 mod reveal_input;
 mod saves;
 mod state;
+mod strings;
 mod theme_boot;
 mod tools;
 mod tutorial;

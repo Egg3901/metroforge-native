@@ -287,9 +287,7 @@ fn goals_eval_system(
     for id in newly {
         goals.completed.insert(id);
         let title = goal_def(id).title();
-        toasts
-            .0
-            .push((s.goal_complete(title), ToastTone::Good));
+        toasts.0.push((s.goal_complete(title), ToastTone::Good));
         const TOAST_LOG_CAP: usize = 20;
         if toasts.0.len() > TOAST_LOG_CAP {
             let overflow = toasts.0.len() - TOAST_LOG_CAP;
@@ -357,10 +355,9 @@ pub fn goals_panel_system(
                 ui.separator();
             }
             if unlocked < max_tier {
-                ui.label(crate::design_system::label_muted(s.tier_locked(
-                    unlocked + 1,
-                    unlocked,
-                )));
+                ui.label(crate::design_system::label_muted(
+                    s.tier_locked(unlocked + 1, unlocked),
+                ));
             }
         });
     Ok(())

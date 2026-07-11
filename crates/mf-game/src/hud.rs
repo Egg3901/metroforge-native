@@ -7,11 +7,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bevy::app::AppExit;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
-use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
+use bevy_egui::{egui, EguiContextSettings, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 use mf_net::{NetStatus, ReconnectState, SimEvent, SimLink};
 use mf_protocol::envelope::FromSimJson;
 use mf_protocol::{Difficulty, FromSimMsg, ToSim, ToastTone};
-use mf_state::{LatestUi, QualityTier, SubwayView, Theme, WeatherEffects};
+use mf_state::{ColorblindMode, LatestUi, QualityTier, SubwayView, Theme, WeatherEffects};
 
 use crate::audio::{PlaySfx, Sfx};
 use crate::campaign::{self, CampaignProgress};
@@ -60,6 +60,56 @@ fn card_border() -> egui::Color32 {
     crate::design_system::current_colors().border
 }
 
+/// Returns 1.0 immediately when `reduce_motion` is set; otherwise runs the
+/// standard 0.2s egui opacity animation. Call at every menu fade site so
+/// the animation is silently bypassed when the player opts out via
+/// Settings -> Reduce motion.
+fn menu_fade(ctx: &egui::Context, id: &'static str, reduce_motion: bool) -> f32 {
+    if reduce_motion {
+        1.0
+    } else {
+        ctx.animate_value_with_time(egui::Id::new(id), 1.0, 0.2)
+    }
+}
+
+fn quality_label(tier: QualityTier) -> &'static str {
+    let s = crate::strings::current();
+    match tier {
+        QualityTier::Potato => s.quality_potato,
+        QualityTier::Low => s.quality_low,
+        QualityTier::Medium => s.quality_medium,
+        QualityTier::High => s.quality_high,
+    }
+}
+
+fn theme_label(theme: Theme) -> &'static str {
+    let s = crate::strings::current();
+    match theme {
+        Theme::Light => s.theme_light,
+        Theme::Dark => s.theme_dark,
+        Theme::Purple => s.theme_purple,
+    }
+}
+
+fn difficulty_label(d: Difficulty) -> &'static str {
+    let s = crate::strings::current();
+    match d {
+        Difficulty::Easy => s.difficulty_easy,
+        Difficulty::Normal => s.difficulty_normal,
+        Difficulty::Hard => s.difficulty_hard,
+    }
+}
+
+fn colorblind_label(mode: ColorblindMode) -> &'static str {
+    let s = crate::strings::current();
+    match mode {
+        ColorblindMode::Off => s.colorblind_off,
+        ColorblindMode::Deuteranopia => s.colorblind_deuteranopia,
+        ColorblindMode::Protanopia => s.colorblind_protanopia,
+        ColorblindMode::Tritanopia => s.colorblind_tritanopia,
+    }
+}
+
 const INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
 /// City-select / continue rows use the global 2px radius (art-direction:
 /// no rounded-corner excess). Was 4px — drifted from `design_system`.
@@ -87,6 +137,10 @@ impl Plugin for MfHudPlugin {
             .add_systems(
                 EguiPrimaryContextPass,
                 (
+                    // apply_ui_scale_system runs first so egui's
+                    // pixels_per_point (driven by scale_factor) is correct
+                    // before setup_egui_style_system and all widget paints.
+                    apply_ui_scale_system,
                     setup_egui_style_system,
                     connecting_hud_system.run_if(in_state(AppState::ConnectingSim)),
                     main_menu_hud_system.run_if(in_state(AppState::MainMenu)),
@@ -176,6 +230,21 @@ fn setup_egui_style_system(
     applied.0 = Some(*theme);
 }
 
+/// Applies `config.ui_scale` to `EguiContextSettings::scale_factor`, which
+/// bevy_egui 0.36 multiplies into `pixels_per_point` before every frame.
+/// Runs first in the EguiPrimaryContextPass chain so every widget paint
+/// this frame uses the updated scale.
+fn apply_ui_scale_system(
+    config: Res<MfConfig>,
+    mut egui_settings: Query<&mut EguiContextSettings>,
+) {
+    for mut settings in &mut egui_settings {
+        if (settings.scale_factor - config.ui_scale).abs() > f32::EPSILON {
+            settings.scale_factor = config.ui_scale;
+        }
+    }
+}
+
 fn collect_toasts_system(mut events: EventReader<SimEvent>, mut log: ResMut<ToastLog>) {
     for SimEvent(msg) in events.read() {
         if let FromSimMsg::Json(FromSimJson::Toast(toast)) = msg {
@@ -261,7 +330,7 @@ fn quality_options(
         QualityTier::High,
     ] {
         if ui
-            .selectable_label(*quality == tier, tier.label())
+            .selectable_label(*quality == tier, quality_label(tier))
             .clicked()
         {
             *quality = tier;
@@ -281,7 +350,7 @@ fn theme_options(
 ) {
     for candidate in Theme::ALL {
         if ui
-            .selectable_label(*theme == candidate, candidate.label())
+            .selectable_label(*theme == candidate, theme_label(candidate))
             .clicked()
         {
             *theme = candidate;
@@ -300,6 +369,7 @@ struct SettingsControls<'w> {
     theme: ResMut<'w, Theme>,
     weather: ResMut<'w, WeatherEffects>,
     config: ResMut<'w, MfConfig>,
+    colorblind: ResMut<'w, ColorblindMode>,
 }
 
 /// ConnectingSim previously registered NO ui system at all, so a player whose
@@ -307,6 +377,7 @@ struct SettingsControls<'w> {
 /// zero feedback until the fatal banner eventually appeared. Every app state
 /// must draw *something*.
 fn connecting_hud_system(mut contexts: EguiContexts, reconnect: Res<ReconnectState>) -> Result {
+    let s = crate::strings::current();
     let ctx = contexts.ctx_mut()?;
     egui::CentralPanel::default()
         .frame(egui::Frame::default().fill(crate::design_system::menu_wash()))
@@ -315,24 +386,20 @@ fn connecting_hud_system(mut contexts: EguiContexts, reconnect: Res<ReconnectSta
                 ui.add_space((ui.available_height() * 0.28).max(24.0));
                 draw_logo(ui, 56.0);
                 ui.add_space(crate::design_system::SPACE_MD);
-                ui.label(crate::design_system::heading("MetroForge").color(text_color()));
+                ui.label(crate::design_system::heading(s.brand).color(text_color()));
                 ui.add_space(crate::design_system::SPACE_SM);
                 match &reconnect.status {
                     NetStatus::Fatal(msg) => {
-                        ui.colored_label(BAD, format!("Could not start the simulation: {msg}"));
+                        ui.colored_label(BAD, s.could_not_start_sim(msg));
                     }
                     NetStatus::Reconnecting { attempt } => {
                         ui.label(
-                            egui::RichText::new(format!(
-                                "Starting the simulation (attempt {attempt} of 5)..."
-                            ))
-                            .color(muted_text()),
+                            egui::RichText::new(s.starting_simulation_attempt(*attempt))
+                                .color(muted_text()),
                         );
                     }
                     NetStatus::Connected => {
-                        ui.label(
-                            egui::RichText::new("Starting the simulation...").color(muted_text()),
-                        );
+                        ui.label(egui::RichText::new(s.starting_simulation).color(muted_text()));
                     }
                 }
             });
@@ -452,29 +519,31 @@ fn draw_lock(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
 /// `"just now"` / `"Nm ago"` / `"Nh ago"` / `"Nd ago"` relative to now —
 /// coarse on purpose, this is a save-slot caption, not a precise clock.
 fn format_relative_time(saved_at_epoch_secs: u64) -> String {
+    let s = crate::strings::current();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(saved_at_epoch_secs);
     let elapsed = now.saturating_sub(saved_at_epoch_secs);
     if elapsed < 60 {
-        "just now".to_string()
+        s.just_now.to_string()
     } else if elapsed < 3600 {
-        format!("{}m ago", elapsed / 60)
+        s.relative_minutes_ago(elapsed / 60)
     } else if elapsed < 86_400 {
-        format!("{}h ago", elapsed / 3600)
+        s.relative_hours_ago(elapsed / 3600)
     } else {
-        format!("{}d ago", elapsed / 86_400)
+        s.relative_days_ago(elapsed / 86_400)
     }
 }
 
 fn format_playtime(secs: u64) -> String {
+    let s = crate::strings::current();
     let hours = secs / 3600;
     let mins = (secs % 3600) / 60;
     if hours > 0 {
-        format!("{hours}h {mins}m")
+        s.playtime_hm(hours, mins)
     } else {
-        format!("{mins}m")
+        s.playtime_m(mins)
     }
 }
 
@@ -507,6 +576,7 @@ fn city_card(
     hovered: &mut Option<egui::Id>,
     sfx: &mut EventWriter<PlaySfx>,
 ) -> (bool, bool) {
+    let s = crate::strings::current();
     let sense = if unlocked {
         egui::Sense::click()
     } else {
@@ -570,9 +640,8 @@ fn city_card(
             let (lock_rect, _) =
                 ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
             draw_lock(&ui.painter_at(lock_rect), lock_rect, muted_text());
-            let plural = if stars_needed == 1 { "" } else { "s" };
             ui.label(
-                egui::RichText::new(format!("Earn {stars_needed} more star{plural}"))
+                egui::RichText::new(s.earn_more_stars(stars_needed))
                     .size(11.0)
                     .color(muted_text()),
             );
@@ -585,10 +654,10 @@ fn city_card(
     )
 }
 
-/// One row in the save browser / Continue section: an autosave or numbered
-/// slot, showing city / sim day / network size / playtime / timestamp when
-/// occupied, or "Empty" otherwise. Returns whether an occupied row was
-/// clicked.
+/// One row in the save browser / Continue section: an autosave ring entry +
+/// numbered slot, showing city / sim day / network size / playtime /
+/// timestamp when occupied, or "Empty" otherwise. Returns whether an
+/// occupied row was clicked.
 fn continue_slot_row(
     ui: &mut egui::Ui,
     width: f32,
@@ -597,6 +666,7 @@ fn continue_slot_row(
     hovered: &mut Option<egui::Id>,
     sfx: &mut EventWriter<PlaySfx>,
 ) -> bool {
+    let s = crate::strings::current();
     let title = slot.label();
     let occupied = meta.is_some();
     let sense = if occupied {
@@ -678,15 +748,15 @@ fn continue_slot_row(
             let city = meta
                 .city_label
                 .clone()
-                .unwrap_or_else(|| "Unknown city".to_string());
-            format!(
-                "{city} · Day {} · {} stops · {}",
+                .unwrap_or_else(|| s.unknown_city.to_string());
+            s.save_subtitle(
+                &city,
                 meta.day,
-                meta.network_size,
-                format_playtime(meta.playtime_secs)
+                meta.network_size as usize,
+                &format_playtime(meta.playtime_secs),
             )
         }
-        None => "Empty".to_string(),
+        None => s.empty.to_string(),
     };
     child.label(egui::RichText::new(subtitle).size(11.0).color(muted_text()));
     if let Some(meta) = meta {
@@ -718,8 +788,10 @@ fn main_menu_hud_system(
     hovered: Local<Option<egui::Id>>,
     slots_cache: Local<Option<Vec<saves::SlotEntry>>>,
 ) -> Result {
+    // Capture before settings is consumed in the Settings branch.
+    let reduce_motion = settings.config.reduce_motion;
     match *screen {
-        MenuScreen::Title => title_screen_ui(contexts, screen, exit, sfx, hovered)?,
+        MenuScreen::Title => title_screen_ui(contexts, screen, exit, sfx, hovered, reduce_motion)?,
         MenuScreen::CitySelect => city_select_screen_ui(
             contexts,
             hello,
@@ -734,6 +806,7 @@ fn main_menu_hud_system(
             playtime,
             hovered,
             slots_cache,
+            reduce_motion,
         )?,
         MenuScreen::LoadGame => load_game_screen_ui(
             contexts,
@@ -744,6 +817,7 @@ fn main_menu_hud_system(
             sfx,
             hovered,
             slots_cache,
+            reduce_motion,
         )?,
         MenuScreen::Settings => {
             let mut screen = screen;
@@ -819,9 +893,11 @@ fn title_screen_ui(
     mut exit: EventWriter<AppExit>,
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
+    reduce_motion: bool,
 ) -> Result {
+    let s = crate::strings::current();
     let ctx = contexts.ctx_mut()?;
-    let fade = ctx.animate_value_with_time(egui::Id::new("title_fade"), 1.0, 0.2);
+    let fade = menu_fade(ctx, "title_fade", reduce_motion);
 
     egui::TopBottomPanel::bottom("title_version")
         .frame(
@@ -851,10 +927,10 @@ fn title_screen_ui(
                 ui.add_space((ui.available_height() * 0.24).max(crate::design_system::SPACE_LG));
                 draw_logo(ui, 88.0);
                 ui.add_space(crate::design_system::SPACE_MD);
-                ui.label(crate::design_system::hero("MetroForge").color(text_color()));
+                ui.label(crate::design_system::hero(s.brand).color(text_color()));
                 ui.add_space(crate::design_system::SPACE_XXS + 2.0);
                 ui.label(
-                    egui::RichText::new("Build the network. Move the city.")
+                    egui::RichText::new(s.tagline)
                         .size(crate::design_system::TEXT_MD)
                         .color(muted_text()),
                 );
@@ -863,7 +939,7 @@ fn title_screen_ui(
                 let play = ui.add_sized(
                     [240.0, 46.0],
                     egui::Button::new(
-                        egui::RichText::new("Play")
+                        egui::RichText::new(s.play)
                             .color(egui::Color32::WHITE)
                             .size(17.0)
                             .strong(),
@@ -880,7 +956,7 @@ fn title_screen_ui(
                 ui.add_space(crate::design_system::SPACE_XS + 2.0);
                 let load = ui.add_sized(
                     [240.0, 40.0],
-                    egui::Button::new(egui::RichText::new("Load Game").size(14.0))
+                    egui::Button::new(egui::RichText::new(s.load_game).size(14.0))
                         .corner_radius(crate::design_system::CORNER_RADIUS),
                 );
                 hover_tick(&load, &mut hovered, &mut sfx);
@@ -892,7 +968,7 @@ fn title_screen_ui(
                 ui.add_space(crate::design_system::SPACE_XS + 2.0);
                 let settings = ui.add_sized(
                     [240.0, 40.0],
-                    egui::Button::new(egui::RichText::new("Settings").size(14.0))
+                    egui::Button::new(egui::RichText::new(s.settings).size(14.0))
                         .corner_radius(crate::design_system::CORNER_RADIUS),
                 );
                 hover_tick(&settings, &mut hovered, &mut sfx);
@@ -904,7 +980,7 @@ fn title_screen_ui(
                 ui.add_space(crate::design_system::SPACE_XS + 2.0);
                 let quit = ui.add_sized(
                     [240.0, 40.0],
-                    egui::Button::new(egui::RichText::new("Quit").size(14.0))
+                    egui::Button::new(egui::RichText::new(s.quit).size(14.0))
                         .corner_radius(crate::design_system::CORNER_RADIUS),
                 );
                 hover_tick(&quit, &mut hovered, &mut sfx);
@@ -946,7 +1022,9 @@ fn city_select_screen_ui(
     mut playtime: ResMut<PlaytimeTracker>,
     mut hovered: Local<Option<egui::Id>>,
     mut slots_cache: Local<Option<Vec<saves::SlotEntry>>>,
+    reduce_motion: bool,
 ) -> Result {
+    let s = crate::strings::current();
     // Reread the save slots from disk once on entry to `MainMenu` (or the
     // very first time this system runs) rather than every single frame —
     // the slot files only change from a pause-overlay save or an autosave,
@@ -959,7 +1037,7 @@ fn city_select_screen_ui(
     let slots = slots_cache.as_ref().expect("populated just above");
 
     let ctx = contexts.ctx_mut()?;
-    let fade = ctx.animate_value_with_time(egui::Id::new("city_select_fade"), 1.0, 0.2);
+    let fade = menu_fade(ctx, "city_select_fade", reduce_motion);
 
     let mut go_back = false;
     let mut start_pressed = false;
@@ -973,7 +1051,9 @@ fn city_select_screen_ui(
         .show(ctx, |ui| {
             ui.set_opacity(fade);
             ui.horizontal(|ui| {
-                let back = ui.add(egui::Button::new(egui::RichText::new("< Back").size(13.0)));
+                let back = ui.add(egui::Button::new(
+                    egui::RichText::new(s.back_arrow).size(13.0),
+                ));
                 hover_tick(&back, &mut hovered, &mut sfx);
                 if back.clicked() {
                     go_back = true;
@@ -982,7 +1062,7 @@ fn city_select_screen_ui(
                 draw_logo(ui, 28.0);
                 ui.add_space(crate::design_system::SPACE_XS);
                 ui.label(
-                    egui::RichText::new("MetroForge")
+                    egui::RichText::new(s.brand)
                         .size(crate::design_system::TEXT_SM)
                         .strong()
                         .color(text_color()),
@@ -1006,11 +1086,7 @@ fn city_select_screen_ui(
             .map(|c| c.label.clone())
             .unwrap_or_else(|| capitalize(&pending.preset_key))
     };
-    let start_caption = format!(
-        "Start — {} ({})",
-        selected_label,
-        pending.difficulty.label()
-    );
+    let start_caption = s.start_city(&selected_label, difficulty_label(pending.difficulty));
 
     egui::TopBottomPanel::bottom("city_select_bottom")
         .frame(
@@ -1069,7 +1145,7 @@ fn city_select_screen_ui(
                                     .map(|&key| progress.stars(key) as u32)
                                     .sum();
 
-                                field_label(ui, "City");
+                                field_label(ui, s.city);
                                 ui.add_space(4.0);
                                 const CARD_SIZE: egui::Vec2 = egui::vec2(216.0, 96.0);
                                 const CARD_GAP: f32 = 12.0;
@@ -1125,7 +1201,7 @@ fn city_select_screen_ui(
                                 ui.add_space(20.0);
                                 thin_separator(ui);
                                 ui.add_space(8.0);
-                                field_label(ui, "Continue");
+                                field_label(ui, s.continue_label);
                                 ui.add_space(4.0);
                                 for entry in slots {
                                     let clicked = continue_slot_row(
@@ -1147,9 +1223,9 @@ fn city_select_screen_ui(
                                 }
 
                                 ui.add_space(12.0);
-                                field_label(ui, "Difficulty");
+                                field_label(ui, s.difficulty);
                                 egui::ComboBox::from_id_salt("difficulty_picker")
-                                    .selected_text(pending.difficulty.label())
+                                    .selected_text(difficulty_label(pending.difficulty))
                                     .width(300.0)
                                     .show_ui(ui, |ui| {
                                         for d in
@@ -1158,7 +1234,7 @@ fn city_select_screen_ui(
                                             ui.selectable_value(
                                                 &mut pending.difficulty,
                                                 d,
-                                                d.label(),
+                                                difficulty_label(d),
                                             );
                                         }
                                     });
@@ -1197,7 +1273,9 @@ fn load_game_screen_ui(
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
     mut slots_cache: Local<Option<Vec<saves::SlotEntry>>>,
+    reduce_motion: bool,
 ) -> Result {
+    let s = crate::strings::current();
     if slots_cache.is_none() {
         *slots_cache = Some(saves::list());
     }
@@ -1208,7 +1286,7 @@ fn load_game_screen_ui(
     let slots = slots_cache.as_ref().expect("populated just above");
 
     let ctx = contexts.ctx_mut()?;
-    let fade = ctx.animate_value_with_time(egui::Id::new("load_game_fade"), 1.0, 0.2);
+    let fade = menu_fade(ctx, "load_game_fade", reduce_motion);
     let mut go_back = false;
     let mut load_slot: Option<SaveSlot> = None;
 
@@ -1224,7 +1302,7 @@ fn load_game_screen_ui(
             ui.vertical_centered(|ui| {
                 let back = ui.add_sized(
                     [220.0, 40.0],
-                    egui::Button::new(egui::RichText::new("Back").size(14.0))
+                    egui::Button::new(egui::RichText::new(s.back).size(14.0))
                         .corner_radius(crate::design_system::CORNER_RADIUS),
                 );
                 hover_tick(&back, &mut hovered, &mut sfx);
@@ -1242,10 +1320,10 @@ fn load_game_screen_ui(
                 ui.add_space(crate::design_system::SPACE_LG);
                 draw_logo(ui, 48.0);
                 ui.add_space(crate::design_system::SPACE_SM);
-                ui.label(crate::design_system::heading("Load Game").color(text_color()));
+                ui.label(crate::design_system::heading(s.load_game).color(text_color()));
                 ui.add_space(crate::design_system::SPACE_XS);
                 ui.label(
-                    egui::RichText::new("Pick a slot to continue")
+                    egui::RichText::new(s.pick_slot_to_continue)
                         .size(crate::design_system::TEXT_SM)
                         .color(muted_text()),
                 );
@@ -1255,7 +1333,7 @@ fn load_game_screen_ui(
                     .max_height(ui.available_height() - 24.0)
                     .show(ui, |ui| {
                         ui.set_width(480.0);
-                        field_label(ui, "Autosaves");
+                        field_label(ui, s.autosaves);
                         ui.add_space(4.0);
                         for entry in slots
                             .iter()
@@ -1275,7 +1353,7 @@ fn load_game_screen_ui(
                             }
                         }
                         ui.add_space(12.0);
-                        field_label(ui, "Manual slots");
+                        field_label(ui, s.manual_slots);
                         ui.add_space(4.0);
                         for entry in slots.iter().filter(|e| matches!(e.slot, SaveSlot::Slot(_))) {
                             let clicked = continue_slot_row(
@@ -1309,12 +1387,13 @@ fn load_game_screen_ui(
     Ok(())
 }
 
-/// Settings screen: quality, theme, weather, autosave cadence — the
-/// overrides `config.rs` persists to `config.toml`. Shared verbatim by the
-/// title screen's Settings button and the in-game pause menu's Settings
-/// button — both call sites own what "Back" means for them (return to
-/// `MenuScreen::Title` vs. close the pause-menu settings panel) via this
-/// function's `bool` return (true == Back was clicked this frame).
+/// Settings screen: quality, theme, weather, autosave cadence, UI scale,
+/// colorblind mode, reduce motion — the overrides `config.rs` persists to
+/// `config.toml`. Shared verbatim by the title screen's Settings button and
+/// the in-game pause menu's Settings button — both call sites own what
+/// "Back" means for them (return to `MenuScreen::Title` vs. close the
+/// pause-menu settings panel) via this function's `bool` return (true ==
+/// Back was clicked this frame).
 #[allow(clippy::too_many_arguments)]
 fn settings_screen_ui(
     mut contexts: EguiContexts,
@@ -1325,9 +1404,10 @@ fn settings_screen_ui(
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
 ) -> Result<bool> {
+    let s = crate::strings::current();
     let mut back_clicked = false;
     let ctx = contexts.ctx_mut()?;
-    let fade = ctx.animate_value_with_time(egui::Id::new("settings_fade"), 1.0, 0.2);
+    let fade = menu_fade(ctx, "settings_fade", settings.config.reduce_motion);
 
     // Soft scrim + floating card so the attract diorama remains the
     // atmosphere behind Settings (same layering language as pause).
@@ -1358,12 +1438,12 @@ fn settings_screen_ui(
                     ui.vertical_centered(|ui| {
                         draw_logo(ui, 36.0);
                         ui.add_space(6.0);
-                        ui.label(crate::design_system::heading("Settings").color(text_color()));
+                        ui.label(crate::design_system::heading(s.settings).color(text_color()));
                         ui.add_space(24.0);
 
-                        field_label(ui, "Quality");
+                        field_label(ui, s.quality);
                         egui::ComboBox::from_id_salt("settings_quality")
-                            .selected_text(settings.quality.label())
+                            .selected_text(quality_label(*settings.quality))
                             .width(300.0)
                             .show_ui(ui, |ui| {
                                 quality_options(
@@ -1375,9 +1455,9 @@ fn settings_screen_ui(
                             });
 
                         ui.add_space(14.0);
-                        field_label(ui, "Theme");
+                        field_label(ui, s.theme);
                         egui::ComboBox::from_id_salt("settings_theme")
-                            .selected_text(settings.theme.label())
+                            .selected_text(theme_label(*settings.theme))
                             .width(300.0)
                             .show_ui(ui, |ui| {
                                 theme_options(
@@ -1389,14 +1469,64 @@ fn settings_screen_ui(
                             });
 
                         ui.add_space(14.0);
-                        field_label(ui, "Weather");
+                        field_label(ui, s.ui_scale);
+                        let mut scale = settings.config.ui_scale;
+                        let scale_text = format!("{:.2}x", scale);
+                        if ui
+                            .add(
+                                egui::Slider::new(
+                                    &mut scale,
+                                    crate::config::UI_SCALE_MIN..=crate::config::UI_SCALE_MAX,
+                                )
+                                .text(scale_text),
+                            )
+                            .changed()
+                        {
+                            settings.config.set_ui_scale(scale);
+                            sfx.write(PlaySfx(Sfx::Confirm));
+                        }
+
+                        ui.add_space(14.0);
+                        field_label(ui, s.colorblind);
+                        let cur_mode = *settings.colorblind;
+                        egui::ComboBox::from_id_salt("settings_colorblind")
+                            .selected_text(colorblind_label(cur_mode))
+                            .width(300.0)
+                            .show_ui(ui, |ui| {
+                                for mode in ColorblindMode::ALL {
+                                    if ui
+                                        .selectable_label(cur_mode == mode, colorblind_label(mode))
+                                        .clicked()
+                                        && cur_mode != mode
+                                    {
+                                        settings.config.set_colorblind(mode);
+                                        *settings.colorblind = mode;
+                                        sfx.write(PlaySfx(Sfx::Confirm));
+                                    }
+                                }
+                            });
+
+                        ui.add_space(14.0);
+                        let mut rm = settings.config.reduce_motion;
+                        if ui.checkbox(&mut rm, s.reduce_motion).changed() {
+                            settings.config.set_reduce_motion(rm);
+                            sfx.write(PlaySfx(Sfx::Confirm));
+                        }
+                        ui.label(
+                            egui::RichText::new(s.reduce_motion_hint)
+                                .size(crate::design_system::TEXT_XS)
+                                .color(muted_text()),
+                        );
+
+                        ui.add_space(14.0);
+                        field_label(ui, s.weather);
                         let tier_allows = settings.quality.knobs().atmosphere_enabled;
                         ui.add_enabled_ui(tier_allows, |ui| {
                             let mut enabled = settings.weather.enabled;
                             let label = if tier_allows {
-                                "Fog & clouds"
+                                s.fog_and_clouds
                             } else {
-                                "Fog & clouds (Medium+)"
+                                s.fog_and_clouds_gated
                             };
                             if ui.checkbox(&mut enabled, label).changed() {
                                 settings.weather.enabled = enabled;
@@ -1406,10 +1536,10 @@ fn settings_screen_ui(
                         });
 
                         ui.add_space(14.0);
-                        field_label(ui, "Autosave");
+                        field_label(ui, s.autosave);
                         let interval_label = match settings.config.autosave_interval_days {
-                            0 => "Off".to_string(),
-                            n => format!("Every {n} sim-days"),
+                            0 => s.off.to_string(),
+                            n => s.every_n_sim_days(n),
                         };
                         egui::ComboBox::from_id_salt("settings_autosave")
                             .selected_text(interval_label)
@@ -1417,9 +1547,9 @@ fn settings_screen_ui(
                             .show_ui(ui, |ui| {
                                 for days in [0_u32, 5, 10, 20, 30] {
                                     let label = if days == 0 {
-                                        "Off".to_string()
+                                        s.off.to_string()
                                     } else {
-                                        format!("Every {days} sim-days")
+                                        s.every_n_sim_days(days)
                                     };
                                     let selected = settings.config.autosave_interval_days == days;
                                     if ui.selectable_label(selected, label).clicked()
@@ -1431,7 +1561,7 @@ fn settings_screen_ui(
                                 }
                             });
                         ui.label(
-                            egui::RichText::new("Keeps a ring of 3 autosaves")
+                            egui::RichText::new(s.autosave_ring_hint)
                                 .size(crate::design_system::TEXT_XS)
                                 .color(muted_text()),
                         );
@@ -1439,7 +1569,7 @@ fn settings_screen_ui(
                         ui.add_space(28.0);
                         let replay = ui.add_sized(
                             [220.0, 36.0],
-                            egui::Button::new(egui::RichText::new("Replay tutorial").size(13.0)),
+                            egui::Button::new(egui::RichText::new(s.replay_tutorial).size(13.0)),
                         );
                         hover_tick(&replay, &mut hovered, &mut sfx);
                         if replay.clicked() {
@@ -1456,7 +1586,7 @@ fn settings_screen_ui(
                         ui.add_space(10.0);
                         let back = ui.add_sized(
                             [220.0, 40.0],
-                            egui::Button::new(egui::RichText::new("Back").size(14.0))
+                            egui::Button::new(egui::RichText::new(s.back).size(14.0))
                                 .corner_radius(crate::design_system::CORNER_RADIUS),
                         );
                         hover_tick(&back, &mut hovered, &mut sfx);
@@ -1476,6 +1606,7 @@ fn loading_hud_system(
     fields: Res<mf_state::LatestFields>,
     ui_state: Res<LatestUi>,
 ) -> Result {
+    let s = crate::strings::current();
     let ctx = contexts.ctx_mut()?;
     egui::CentralPanel::default()
         .frame(egui::Frame::default().fill(crate::design_system::menu_wash()))
@@ -1484,19 +1615,33 @@ fn loading_hud_system(
                 ui.add_space((ui.available_height() * 0.28).max(24.0));
                 draw_logo(ui, 48.0);
                 ui.add_space(crate::design_system::SPACE_MD);
-                ui.label(crate::design_system::heading("Loading city").color(text_color()));
+                ui.label(crate::design_system::heading(s.loading_city).color(text_color()));
                 ui.add_space(crate::design_system::SPACE_MD);
 
-                let readiness = |label: &str, ready: bool| {
-                    let status = if ready { "ready" } else { "waiting" };
-                    egui::RichText::new(format!("{label}: {status}"))
+                ui.label(
+                    egui::RichText::new(
+                        s.loading_status(s.loading_static_city, city.static_city.is_some()),
+                    )
+                    .size(crate::design_system::TEXT_SM)
+                    .color(muted_text()),
+                );
+                ui.label(
+                    egui::RichText::new(s.loading_status(s.loading_masks, city.masks_complete()))
                         .size(crate::design_system::TEXT_SM)
-                        .color(muted_text())
-                };
-                ui.label(readiness("Static city", city.static_city.is_some()));
-                ui.label(readiness("Masks", city.masks_complete()));
-                ui.label(readiness("Fields", fields.0.is_some()));
-                ui.label(readiness("Interface", ui_state.0.is_some()));
+                        .color(muted_text()),
+                );
+                ui.label(
+                    egui::RichText::new(s.loading_status(s.loading_fields, fields.0.is_some()))
+                        .size(crate::design_system::TEXT_SM)
+                        .color(muted_text()),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        s.loading_status(s.loading_interface, ui_state.0.is_some()),
+                    )
+                    .size(crate::design_system::TEXT_SM)
+                    .color(muted_text()),
+                );
             });
         });
     Ok(())
@@ -1514,6 +1659,7 @@ fn in_game_hud_system(
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
 ) -> Result {
+    let s = crate::strings::current();
     let ctx = contexts.ctx_mut()?;
 
     // Art-direction §8: off-white panel, near-black text, consistent
@@ -1556,11 +1702,10 @@ fn in_game_hud_system(
                     draw_day_night_icon(ui.painter(), icon_rect, is_night_hour(hour));
                     fixed_width_label(
                         ui,
-                        egui::RichText::new(format!(
-                            "Day {}  {:02}:{:02}",
+                        egui::RichText::new(s.day_clock(
                             state.day,
                             hour as u32,
-                            ((hour.fract()) * 60.0) as u32
+                            (hour.fract() * 60.0) as u32,
                         ))
                         .monospace(),
                         128.0,
@@ -1569,13 +1714,14 @@ fn in_game_hud_system(
 
                     // Art-direction: vivid color only on interactive/transit.
                     // Approval state is weight + glyph, not traffic-light hues.
-                    let approval_text = if state.approval >= 60.0 {
-                        format!("▲ Approval {:.0}%", state.approval)
+                    let trend: i8 = if state.approval >= 60.0 {
+                        1
                     } else if state.approval >= 35.0 {
-                        format!("Approval {:.0}%", state.approval)
+                        0
                     } else {
-                        format!("▼ Approval {:.0}%", state.approval)
+                        -1
                     };
+                    let approval_text = s.approval_pct(state.approval, trend);
                     let approval_style = if state.approval < 35.0 {
                         egui::RichText::new(approval_text)
                             .monospace()
@@ -1590,8 +1736,7 @@ fn in_game_hud_system(
                     thin_separator(ui);
                     fixed_width_label(
                         ui,
-                        egui::RichText::new(format!("Pop {}", format_thousands(state.population)))
-                            .monospace(),
+                        egui::RichText::new(s.pop(&format_thousands(state.population))).monospace(),
                         130.0,
                     );
 
@@ -1607,15 +1752,14 @@ fn in_game_hud_system(
                     if let Some(route_id) = first_overcrowded {
                         thin_separator(ui);
                         let count = state.overcrowded_routes.len();
-                        let plural = if count == 1 { "" } else { "s" };
                         let chip = egui::Button::new(
-                            egui::RichText::new(format!("{count} crowded route{plural}"))
+                            egui::RichText::new(s.crowded_routes_chip(count))
                                 .color(egui::Color32::WHITE)
                                 .strong(),
                         )
                         .fill(WARN)
                         .corner_radius(crate::design_system::CORNER_RADIUS);
-                        let resp = ui.add(chip).on_hover_text("Open the busiest crowded route");
+                        let resp = ui.add(chip).on_hover_text(s.open_busiest_crowded_route);
                         hover_tick(&resp, &mut hovered, &mut sfx);
                         if resp.clicked() {
                             route_panel.open = true;
@@ -1624,11 +1768,16 @@ fn in_game_hud_system(
                         }
                     }
                 } else {
-                    ui.label("Connecting to city...");
+                    ui.label(s.connecting_to_city);
                 }
 
                 thin_separator(ui);
-                for (label, speed) in [("1x", 1.0), ("10x", 10.0), ("30x", 30.0), ("120x", 120.0)] {
+                for (label, speed) in [
+                    (s.speed_1x, 1.0_f64),
+                    (s.speed_10x, 10.0),
+                    (s.speed_30x, 30.0),
+                    (s.speed_120x, 120.0),
+                ] {
                     let is_current = ui_state
                         .0
                         .as_ref()
@@ -1650,13 +1799,14 @@ fn in_game_hud_system(
                 }
 
                 thin_separator(ui);
-                let subway_button = egui::Button::new(if subway.active {
-                    "Surface view"
+                let subway_label = if subway.active {
+                    s.surface_view
                 } else {
-                    "Subway view"
-                })
-                .fill(if subway.active { accent() } else { card_bg() })
-                .corner_radius(crate::design_system::CORNER_RADIUS);
+                    s.subway_view
+                };
+                let subway_button = egui::Button::new(subway_label)
+                    .fill(if subway.active { accent() } else { card_bg() })
+                    .corner_radius(crate::design_system::CORNER_RADIUS);
                 let subway_resp = ui.add(subway_button);
                 hover_tick(&subway_resp, &mut hovered, &mut sfx);
                 if subway_resp.clicked() {
@@ -1669,7 +1819,7 @@ fn in_game_hud_system(
                 }
 
                 thin_separator(ui);
-                let goals_button = egui::Button::new("Goals")
+                let goals_button = egui::Button::new(s.goals)
                     .fill(if goals_panel.0 { accent() } else { card_bg() })
                     .corner_radius(crate::design_system::CORNER_RADIUS);
                 let goals_resp = ui.add(goals_button);
@@ -1752,6 +1902,7 @@ fn pause_overlay_system(
         }
         return Ok(());
     }
+    let s = crate::strings::current();
     let mut contexts = contexts;
     // Refresh the occupied/empty cache once per pause session (on the
     // false->true transition, which flags `pause` as changed) rather than
@@ -1800,13 +1951,13 @@ fn pause_overlay_system(
                     ui.vertical_centered(|ui| {
                         draw_logo(ui, 36.0);
                         ui.add_space(6.0);
-                        ui.label(egui::RichText::new("Paused").size(24.0).strong());
+                        ui.label(egui::RichText::new(s.paused).size(24.0).strong());
                         ui.add_space(18.0);
 
                         let resume = ui.add_sized(
                             [220.0, 40.0],
                             egui::Button::new(
-                                egui::RichText::new("Resume")
+                                egui::RichText::new(s.resume)
                                     .color(egui::Color32::WHITE)
                                     .strong(),
                             )
@@ -1819,18 +1970,18 @@ fn pause_overlay_system(
                         }
 
                         ui.add_space(10.0);
-                        let settings = ui.add_sized(
+                        let settings_btn = ui.add_sized(
                             [220.0, 36.0],
-                            egui::Button::new(egui::RichText::new("Settings").size(13.0)),
+                            egui::Button::new(egui::RichText::new(s.settings).size(13.0)),
                         );
-                        hover_tick(&settings, &mut hovered, &mut sfx);
-                        if settings.clicked() {
+                        hover_tick(&settings_btn, &mut hovered, &mut sfx);
+                        if settings_btn.clicked() {
                             sfx.write(PlaySfx(Sfx::Confirm));
                             settings_open_pressed = true;
                         }
 
                         ui.add_space(14.0);
-                        field_label(ui, "Save game");
+                        field_label(ui, s.save_game);
                         ui.horizontal(|ui| {
                             for n in 1..=saves::SLOT_COUNT {
                                 let occupied = slot_occupied
@@ -1838,9 +1989,9 @@ fn pause_overlay_system(
                                     .copied()
                                     .unwrap_or(false);
                                 let label = if occupied {
-                                    format!("Slot {n}")
+                                    s.slot_label(n)
                                 } else {
-                                    format!("Slot {n} (empty)")
+                                    s.slot_empty_label(n)
                                 };
                                 let btn = ui.add_sized(
                                     [68.0, 32.0],
@@ -1868,7 +2019,7 @@ fn pause_overlay_system(
 
                         ui.add_space(14.0);
                         let quit =
-                            ui.add_sized([220.0, 40.0], egui::Button::new("Quit to desktop"));
+                            ui.add_sized([220.0, 40.0], egui::Button::new(s.quit_to_desktop));
                         hover_tick(&quit, &mut hovered, &mut sfx);
                         if quit.clicked() {
                             sfx.write(PlaySfx(Sfx::Cancel));
@@ -1901,9 +2052,10 @@ fn fatal_banner_system(
         sfx.write(PlaySfx(Sfx::Error));
         *error_played = true;
     }
+    let s = crate::strings::current();
     let ctx = contexts.ctx_mut()?;
     egui::TopBottomPanel::bottom("fatal_banner").show(ctx, |ui| {
-        ui.colored_label(BAD, format!("Lost connection to the sim: {msg}"));
+        ui.colored_label(BAD, s.lost_connection(msg));
     });
     Ok(())
 }

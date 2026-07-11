@@ -96,7 +96,6 @@ const STEEL_BLUE: (u8, u8, u8) = (0x4a, 0x7b, 0xa6);
 const AMBER: (u8, u8, u8) = (0xff, 0xbf, 0x00);
 const HOT_PINK: (u8, u8, u8) = (0xff, 0x2d, 0x95);
 
-
 // ---------------------------------------------------------------------
 // Shared line type (world-space, f32 — protocol/field data converted into
 // this once, up front, so the drawing code never juggles f64 or grid

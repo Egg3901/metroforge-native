@@ -5,10 +5,12 @@
 //! directly.
 //!
 //! Resources: [`CurrentCity`], [`LatestFields`], [`LatestUi`],
-//! [`LatestFrame`], [`QualityTier`], [`SubwayView`], [`HeightAt`],
-//! [`RevealState`], [`LatestDemand`], [`OverlayState`], [`WeatherEffects`].
+//! [`LatestFrame`], [`QualityTier`], [`Theme`], [`ColorblindMode`],
+//! [`SubwayView`], [`HeightAt`], [`RevealState`], [`LatestDemand`],
+//! [`OverlayState`], [`WeatherEffects`].
 
 pub mod city;
+pub mod colorblind;
 pub mod demand;
 pub mod fields;
 pub mod frame;
@@ -23,6 +25,7 @@ pub mod ui;
 pub mod weather;
 
 pub use city::CurrentCity;
+pub use colorblind::ColorblindMode;
 pub use demand::LatestDemand;
 pub use fields::LatestFields;
 pub use frame::LatestFrame;

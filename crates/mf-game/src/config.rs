@@ -1,12 +1,13 @@
 //! Persistent client config (spec §3.4 `config.rs`): a `config.toml` under
 //! the OS config dir (`directories::ProjectDirs("com","[REDACTED]",
 //! "MetroForge")`), holding a quality-tier override, a theme override
-//! (issue #32), and the weather-effects toggle. Auto-detection (spec §4) is
-//! used whenever no quality override is set; `Theme::Light` is used whenever
-//! no theme override is set. Either override always wins over its default.
+//! (issue #32), weather, accessibility prefs (UI scale / colorblind /
+//! reduce-motion), and HUD prefs. Auto-detection (spec §4) is used whenever
+//! no quality override is set; `Theme::Light` is used whenever no theme
+//! override is set. Either override always wins over its default.
 
 use bevy::prelude::*;
-use mf_state::{QualityTier, Theme};
+use mf_state::{ColorblindMode, QualityTier, Theme};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -74,6 +75,49 @@ impl From<Theme> for ConfigTheme {
     }
 }
 
+/// TOML-serializable mirror of [`ColorblindMode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigColorblind {
+    #[default]
+    Off,
+    Deuteranopia,
+    Protanopia,
+    Tritanopia,
+}
+
+impl From<ConfigColorblind> for ColorblindMode {
+    fn from(c: ConfigColorblind) -> Self {
+        match c {
+            ConfigColorblind::Off => ColorblindMode::Off,
+            ConfigColorblind::Deuteranopia => ColorblindMode::Deuteranopia,
+            ConfigColorblind::Protanopia => ColorblindMode::Protanopia,
+            ConfigColorblind::Tritanopia => ColorblindMode::Tritanopia,
+        }
+    }
+}
+
+impl From<ColorblindMode> for ConfigColorblind {
+    fn from(c: ColorblindMode) -> Self {
+        match c {
+            ColorblindMode::Off => ConfigColorblind::Off,
+            ColorblindMode::Deuteranopia => ConfigColorblind::Deuteranopia,
+            ColorblindMode::Protanopia => ConfigColorblind::Protanopia,
+            ColorblindMode::Tritanopia => ConfigColorblind::Tritanopia,
+        }
+    }
+}
+
+/// Inclusive UI-scale range applied via egui `pixels_per_point` /
+/// `EguiContextSettings::scale_factor`.
+pub const UI_SCALE_MIN: f32 = 0.85;
+pub const UI_SCALE_MAX: f32 = 1.5;
+pub const UI_SCALE_DEFAULT: f32 = 1.0;
+
+pub fn clamp_ui_scale(scale: f32) -> f32 {
+    scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,6 +145,15 @@ struct ConfigFile {
     /// `weather_effects` above.
     #[serde(default = "default_minimap_open")]
     minimap_open: bool,
+    /// egui UI scale multiplier (0.85..=1.5). Defaults to 1.0.
+    #[serde(default = "default_ui_scale")]
+    ui_scale: f32,
+    /// Colorblind palette shift. Defaults to off.
+    #[serde(default, skip_serializing_if = "is_colorblind_off")]
+    colorblind: ConfigColorblind,
+    /// Disable UI fades and attract-mode camera drift.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    reduce_motion: bool,
 }
 
 fn default_weather_effects() -> bool {
@@ -115,6 +168,14 @@ fn default_minimap_open() -> bool {
     true
 }
 
+fn default_ui_scale() -> f32 {
+    UI_SCALE_DEFAULT
+}
+
+fn is_colorblind_off(c: &ConfigColorblind) -> bool {
+    *c == ConfigColorblind::Off
+}
+
 impl Default for ConfigFile {
     fn default() -> Self {
         ConfigFile {
@@ -124,12 +185,15 @@ impl Default for ConfigFile {
             weather_effects: true,
             autosave_interval_days: default_autosave_interval_days(),
             minimap_open: true,
+            ui_scale: UI_SCALE_DEFAULT,
+            colorblind: ConfigColorblind::Off,
+            reduce_motion: false,
         }
     }
 }
 
 /// Loaded/persisted client config. A Bevy `Resource` so `hud.rs`'s quality,
-/// theme, and weather selectors can read/write it directly.
+/// theme, and accessibility selectors can read/write it directly.
 #[derive(Resource, Debug, Clone)]
 pub struct MfConfig {
     pub quality_override: Option<QualityTier>,
@@ -149,6 +213,12 @@ pub struct MfConfig {
     /// (verified unclaimed by grep before wiring it up, same convention
     /// `map_mode.rs`'s module doc uses for `M`).
     pub minimap_open: bool,
+    /// egui UI scale (clamped to [`UI_SCALE_MIN`]..=[`UI_SCALE_MAX`]).
+    pub ui_scale: f32,
+    /// Colorblind palette remapping preference.
+    pub colorblind: ColorblindMode,
+    /// When true, skip UI fades and attract camera yaw drift.
+    pub reduce_motion: bool,
     path: Option<PathBuf>,
 }
 
@@ -161,6 +231,9 @@ impl Default for MfConfig {
             weather_effects: true,
             autosave_interval_days: crate::saves::DEFAULT_AUTOSAVE_INTERVAL_DAYS,
             minimap_open: true,
+            ui_scale: UI_SCALE_DEFAULT,
+            colorblind: ColorblindMode::Off,
+            reduce_motion: false,
             path: None,
         }
     }
@@ -202,6 +275,15 @@ impl MfConfig {
             .map(|f| f.autosave_interval_days)
             .unwrap_or_else(default_autosave_interval_days);
         let minimap_open = parsed.as_ref().map(|f| f.minimap_open).unwrap_or(true);
+        let ui_scale = parsed
+            .as_ref()
+            .map(|f| clamp_ui_scale(f.ui_scale))
+            .unwrap_or(UI_SCALE_DEFAULT);
+        let colorblind = parsed
+            .as_ref()
+            .map(|f| ColorblindMode::from(f.colorblind))
+            .unwrap_or(ColorblindMode::Off);
+        let reduce_motion = parsed.as_ref().map(|f| f.reduce_motion).unwrap_or(false);
         MfConfig {
             quality_override,
             theme_override,
@@ -209,6 +291,9 @@ impl MfConfig {
             weather_effects,
             autosave_interval_days,
             minimap_open,
+            ui_scale,
+            colorblind,
+            reduce_motion,
             path: Some(path),
         }
     }
@@ -229,6 +314,9 @@ impl MfConfig {
             weather_effects: self.weather_effects,
             autosave_interval_days: self.autosave_interval_days,
             minimap_open: self.minimap_open,
+            ui_scale: clamp_ui_scale(self.ui_scale),
+            colorblind: ConfigColorblind::from(self.colorblind),
+            reduce_motion: self.reduce_motion,
         };
         let toml_str = toml::to_string_pretty(&file)?;
         std::fs::write(path, toml_str)?;
@@ -281,22 +369,50 @@ impl MfConfig {
             tracing::warn!("mf-game: failed to persist config.toml: {e}");
         }
     }
+
+    pub fn set_ui_scale(&mut self, scale: f32) {
+        self.ui_scale = clamp_ui_scale(scale);
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
+
+    pub fn set_colorblind(&mut self, mode: ColorblindMode) {
+        self.colorblind = mode;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
+
+    pub fn set_reduce_motion(&mut self, enabled: bool) {
+        self.reduce_motion = enabled;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn config_quality_roundtrips_through_toml() {
-        let file = ConfigFile {
+    fn sample_file() -> ConfigFile {
+        ConfigFile {
             quality_override: Some(ConfigQuality::High),
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
             autosave_interval_days: 10,
             minimap_open: true,
-        };
+            ui_scale: 1.0,
+            colorblind: ConfigColorblind::Off,
+            reduce_motion: false,
+        }
+    }
+
+    #[test]
+    fn config_quality_roundtrips_through_toml() {
+        let file = sample_file();
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("high"));
         let back: ConfigFile = toml::from_str(&s).unwrap();
@@ -305,39 +421,32 @@ mod tests {
 
     #[test]
     fn missing_override_serializes_weather_default() {
-        let file = ConfigFile {
-            quality_override: None,
-            theme_override: None,
-            tutorial_completed: false,
-            weather_effects: true,
-            autosave_interval_days: 10,
-            minimap_open: true,
-        };
+        let file = ConfigFile::default();
         let s = toml::to_string_pretty(&file).unwrap();
         let back: ConfigFile = toml::from_str(&s).unwrap();
         assert_eq!(back.quality_override, None);
         assert_eq!(back.theme_override, None);
         assert!(back.weather_effects);
+        assert!((back.ui_scale - 1.0).abs() < f32::EPSILON);
+        assert_eq!(back.colorblind, ConfigColorblind::Off);
+        assert!(!back.reduce_motion);
     }
 
     #[test]
-    fn legacy_config_without_weather_defaults_on() {
+    fn legacy_config_without_a11y_defaults() {
         let back: ConfigFile = toml::from_str("quality_override = \"medium\"\n").unwrap();
         assert!(back.weather_effects);
         assert_eq!(back.quality_override, Some(ConfigQuality::Medium));
         assert_eq!(back.autosave_interval_days, 10);
+        assert!((back.ui_scale - 1.0).abs() < f32::EPSILON);
+        assert_eq!(back.colorblind, ConfigColorblind::Off);
+        assert!(!back.reduce_motion);
     }
 
     #[test]
     fn weather_effects_roundtrips_off() {
-        let file = ConfigFile {
-            quality_override: None,
-            theme_override: None,
-            tutorial_completed: false,
-            weather_effects: false,
-            autosave_interval_days: 10,
-            minimap_open: true,
-        };
+        let mut file = sample_file();
+        file.weather_effects = false;
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("false"));
         let back: ConfigFile = toml::from_str(&s).unwrap();
@@ -346,14 +455,9 @@ mod tests {
 
     #[test]
     fn config_theme_roundtrips_through_toml() {
-        let file = ConfigFile {
-            quality_override: None,
-            theme_override: Some(ConfigTheme::Purple),
-            tutorial_completed: false,
-            weather_effects: true,
-            autosave_interval_days: 10,
-            minimap_open: true,
-        };
+        let mut file = sample_file();
+        file.quality_override = None;
+        file.theme_override = Some(ConfigTheme::Purple);
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("purple"));
         let back: ConfigFile = toml::from_str(&s).unwrap();
@@ -362,14 +466,8 @@ mod tests {
 
     #[test]
     fn tutorial_completed_roundtrips_through_toml() {
-        let file = ConfigFile {
-            quality_override: None,
-            theme_override: None,
-            tutorial_completed: true,
-            weather_effects: true,
-            autosave_interval_days: 10,
-            minimap_open: true,
-        };
+        let mut file = sample_file();
+        file.tutorial_completed = true;
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("tutorial_completed"));
         let back: ConfigFile = toml::from_str(&s).unwrap();
@@ -396,14 +494,38 @@ mod tests {
     }
 
     #[test]
+    fn colorblind_conversion_roundtrips_every_variant() {
+        for mode in ColorblindMode::ALL {
+            let cfg: ConfigColorblind = mode.into();
+            let back: ColorblindMode = cfg.into();
+            assert_eq!(mode, back);
+        }
+    }
+
+    #[test]
+    fn a11y_settings_roundtrip() {
+        let mut file = sample_file();
+        file.ui_scale = 1.25;
+        file.colorblind = ConfigColorblind::Deuteranopia;
+        file.reduce_motion = true;
+        let s = toml::to_string_pretty(&file).unwrap();
+        let back: ConfigFile = toml::from_str(&s).unwrap();
+        assert!((back.ui_scale - 1.25).abs() < f32::EPSILON);
+        assert_eq!(back.colorblind, ConfigColorblind::Deuteranopia);
+        assert!(back.reduce_motion);
+    }
+
+    #[test]
+    fn clamp_ui_scale_respects_range() {
+        assert!((clamp_ui_scale(0.5) - UI_SCALE_MIN).abs() < f32::EPSILON);
+        assert!((clamp_ui_scale(2.0) - UI_SCALE_MAX).abs() < f32::EPSILON);
+        assert!((clamp_ui_scale(1.1) - 1.1).abs() < f32::EPSILON);
+    }
+
+    #[test]
     fn autosave_interval_roundtrips_and_defaults() {
-        let file = ConfigFile {
-            quality_override: None,
-            theme_override: None,
-            tutorial_completed: false,
-            weather_effects: true,
-            autosave_interval_days: 5,
-        };
+        let mut file = sample_file();
+        file.autosave_interval_days = 5;
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("5"));
         let back: ConfigFile = toml::from_str(&s).unwrap();
