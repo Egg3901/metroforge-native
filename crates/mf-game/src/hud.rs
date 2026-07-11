@@ -1154,6 +1154,12 @@ fn settings_screen_ui(
                     .color(muted_text()),
             );
 
+            let mut pos = settings.config.pause_on_start;
+            if ui.checkbox(&mut pos, s.pause_on_start).changed() {
+                settings.config.set_pause_on_start(pos);
+                sfx.write(PlaySfx(Sfx::Confirm));
+            }
+
             ui.add_space(14.0);
             field_label(ui, s.weather);
             let tier_allows = settings.quality.knobs().atmosphere_enabled;
