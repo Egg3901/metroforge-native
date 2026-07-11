@@ -788,11 +788,19 @@ fn draw_distance_system(
             None => true,
             Some(limit) => cam_xz.distance(chunk.center) <= limit,
         };
-        *vis = if visible {
+        let desired = if visible {
             Visibility::Visible
         } else {
             Visibility::Hidden
         };
+        // Only write when it actually changes: `DerefMut` on `Visibility`
+        // flags the component as changed, and an unconditional write every
+        // frame (64 chunks × every frame) makes Bevy re-propagate visibility
+        // and re-extract those entities even when nothing moved. Compare
+        // first so a static camera costs nothing here.
+        if *vis != desired {
+            *vis = desired;
+        }
     }
 }
 

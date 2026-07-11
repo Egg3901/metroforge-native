@@ -212,10 +212,17 @@ fn tree_draw_distance_system(
             None => true,
             Some(limit) => cam_xz.distance(chunk.center) <= limit,
         };
-        *vis = if visible {
+        let desired = if visible {
             Visibility::Visible
         } else {
             Visibility::Hidden
         };
+        // Skip the write when unchanged: an unconditional per-frame `*vis =`
+        // marks the component changed and forces Bevy to re-propagate/extract
+        // visibility every frame even for a still camera (see the matching
+        // note in `buildings.rs`'s `draw_distance_system`).
+        if *vis != desired {
+            *vis = desired;
+        }
     }
 }
