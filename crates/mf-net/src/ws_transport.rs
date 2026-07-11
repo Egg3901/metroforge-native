@@ -28,13 +28,12 @@ use tungstenite::{Message, WebSocket};
 use crate::transport::SimTransport;
 
 /// How long with zero inbound traffic before the transport calls itself dead
-/// (spec §1.4: "No inbound traffic for 10 s -> client declares sim dead").
-/// This is measured against `last_inbound_millis` (wall-clock, set only on
-/// actual inbound frames/pings/pongs — see `mark_alive`), so it's independent
-/// of `POLL_INTERVAL`: tightening the poll below doesn't change this math.
-/// `plugin.rs` pings every 5s, i.e. at half this window, so one dropped pong
-/// still leaves a full ping-interval of slack before `is_alive()` would flap.
-const LIVENESS_WINDOW: Duration = Duration::from_secs(10);
+/// (1.0: websocket silence > 5 s). Measured against `last_inbound_millis`
+/// (wall-clock, set only on actual inbound frames/pings/pongs — see
+/// `mark_alive`), so it's independent of `POLL_INTERVAL`. `plugin.rs` pings
+/// every 2.5 s (half this window) so one dropped pong still leaves slack
+/// before `is_alive()` would flap.
+pub const LIVENESS_WINDOW: Duration = Duration::from_secs(5);
 /// Read-timeout granularity for the worker loop: on every timeout (no inbound
 /// frame arrived within the window) the loop falls through to drain the
 /// outbound queue, so this both bounds worst-case outbound-send latency and
@@ -120,14 +119,18 @@ impl SimTransport for WsTransport {
         if self.closed.load(Ordering::Relaxed) {
             return false;
         }
+        self.silence_duration() < LIVENESS_WINDOW
+    }
+
+    fn silence_duration(&self) -> Duration {
         let last = self.last_inbound_millis.load(Ordering::Relaxed);
         if last == 0 {
-            // Nothing received yet; alive as long as we're still inside the
-            // liveness window since connect (hello should arrive immediately).
-            return self.started_at.elapsed() < LIVENESS_WINDOW;
+            // Nothing received yet; measure silence from connect time
+            // (hello should arrive immediately).
+            return self.started_at.elapsed();
         }
         let elapsed_ms = self.started_at.elapsed().as_millis() as u64;
-        elapsed_ms.saturating_sub(last) < LIVENESS_WINDOW.as_millis() as u64
+        Duration::from_millis(elapsed_ms.saturating_sub(last))
     }
 }
 

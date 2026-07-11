@@ -427,6 +427,29 @@ impl SaveManager {
         self.pending_load.is_some()
     }
 
+    /// Read the autosave slot and return its opaque sim JSON for an
+    /// immediate mid-game `LoadSave` (reconnect path). Returns `None` when
+    /// missing/unreadable so the caller can fall back to a fresh `Init`.
+    pub fn take_autosave_json_for_reconnect(&mut self) -> Option<String> {
+        // The autosave ring holds up to `AUTOSAVE_RING_SIZE` entries; pick the
+        // newest readable one by `saved_at_epoch_secs` so reconnect restores
+        // the most recent state regardless of where the write cursor sits.
+        let newest = (0..AUTOSAVE_RING_SIZE)
+            .filter_map(|n| {
+                Self::try_load(SaveSlot::Autosave(n))
+                    .ok()
+                    .map(|(meta, sim_json)| (meta.saved_at_epoch_secs, sim_json))
+            })
+            .max_by_key(|(ts, _)| *ts);
+        match newest {
+            Some((_ts, sim_json)) => Some(sim_json),
+            None => {
+                tracing::info!("mf-game: no autosave for reconnect");
+                None
+            }
+        }
+    }
+
     /// Start a save into `slot`: sends `ToSim::RequestSave` and remembers
     /// the metadata snapshotted at click time.
     pub fn request_save(
@@ -611,11 +634,18 @@ fn autosave_system(
     manager.last_autosave_day = Some(state.day);
 }
 
+/// Sends the actual `ToSim::LoadSave` for whatever [`SaveManager::load`]
+/// (or [`SaveManager::stage_autosave_for_reconnect`]) queued. Runs in
+/// `Loading` (menu continue) and `InGame` (sidecar reconnect restore). See
+/// the module doc's CRITICAL section for why this is deferred here instead
+/// of sent directly from `load`.
 fn send_pending_load_system(mut manager: ResMut<SaveManager>, link: Option<Res<SimLink>>) {
     if manager.pending_load.is_none() {
         return;
     }
     let Some(link) = link else {
+        // No transport yet — retry next frame rather than dropping the
+        // queued load (reconnect may still be swapping SimLink).
         return;
     };
     if let Some(sim_json) = manager.pending_load.take() {
@@ -676,7 +706,8 @@ impl Plugin for MfSavesPlugin {
                     capture_saved_system,
                     autosave_system.run_if(in_state(AppState::InGame)),
                     tick_playtime_system.run_if(in_state(AppState::InGame)),
-                    send_pending_load_system.run_if(in_state(AppState::Loading)),
+                    send_pending_load_system
+                        .run_if(in_state(AppState::Loading).or(in_state(AppState::InGame))),
                     apply_pending_load_meta_system.run_if(in_state(AppState::Loading)),
                 ),
             );
