@@ -34,11 +34,12 @@ fn scrim_color() -> egui::Color32 {
 /// each get their own plain-language line rather than echoing the wire
 /// enum's name.
 fn verdict_heading(outcome: ScenarioOutcome) -> &'static str {
+    let s = crate::strings::current();
     match outcome {
-        ScenarioOutcome::Failed(FailReason::Bankrupt) => "Bankrupt",
-        ScenarioOutcome::Failed(FailReason::Approval) => "The city lost faith",
-        ScenarioOutcome::Failed(FailReason::Time) => "Time is up",
-        ScenarioOutcome::Finished => "Scenario complete",
+        ScenarioOutcome::Failed(FailReason::Bankrupt) => s.verdict_bankrupt,
+        ScenarioOutcome::Failed(FailReason::Approval) => s.verdict_lost_faith,
+        ScenarioOutcome::Failed(FailReason::Time) => s.verdict_time_up,
+        ScenarioOutcome::Finished => s.verdict_complete,
         // Not shown by `report_ui_system` (only Failed/Finished trigger the
         // overlay) - present so the match stays exhaustive rather than
         // needing a wildcard arm that could silently swallow a future
@@ -185,22 +186,23 @@ fn report_ui_system(
                             }
                         }
 
+                        let s = crate::strings::current();
                         ui.add_space(ds::SPACE_MD);
                         thin_separator(ui);
                         ui.add_space(ds::SPACE_XS);
 
-                        key_number_row(ui, "Day", format!("{}", state.day));
-                        key_number_row(ui, "Population served", format_thousands(state.population));
+                        key_number_row(ui, s.day, format!("{}", state.day));
+                        key_number_row(ui, s.population_served, format_thousands(state.population));
                         key_number_row(
                             ui,
-                            "Daily transit trips",
+                            s.daily_transit_trips,
                             format_thousands(state.daily_transit_trips),
                         );
-                        key_number_row(ui, "Approval", format!("{:.0}%", state.approval));
-                        key_number_row(ui, "Coverage", format!("{:.0}%", state.coverage * 100.0));
+                        key_number_row(ui, s.approval, format!("{:.0}%", state.approval));
+                        key_number_row(ui, s.coverage, format!("{:.0}%", state.coverage * 100.0));
                         key_number_row(
                             ui,
-                            "Net (last day)",
+                            s.net_last_day,
                             format_signed_cash(last_day_net(state)),
                         );
 
@@ -210,7 +212,7 @@ fn report_ui_system(
                             let keep_playing = ui.add_sized(
                                 [220.0, 40.0],
                                 egui::Button::new(
-                                    egui::RichText::new("Keep playing")
+                                    egui::RichText::new(s.keep_playing)
                                         .color(egui::Color32::WHITE)
                                         .strong(),
                                 )
@@ -225,7 +227,7 @@ fn report_ui_system(
                         }
 
                         let back_to_menu =
-                            ui.add_sized([220.0, 40.0], egui::Button::new("Back to menu"));
+                            ui.add_sized([220.0, 40.0], egui::Button::new(s.back_to_menu));
                         hover_tick(&back_to_menu, &mut hovered, &mut sfx);
                         if back_to_menu.clicked() {
                             sfx.write(PlaySfx(Sfx::Cancel));

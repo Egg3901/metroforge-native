@@ -112,11 +112,12 @@ fn vivid_route_color(idx: usize) -> egui::Color32 {
 }
 
 fn mode_word(mode: TransitMode) -> &'static str {
+    let s = crate::strings::current();
     match mode {
-        TransitMode::Bus => "bus",
-        TransitMode::Tram => "tram",
-        TransitMode::Metro => "metro",
-        TransitMode::Rail => "rail",
+        TransitMode::Bus => s.mode_bus,
+        TransitMode::Tram => s.mode_tram,
+        TransitMode::Metro => s.mode_metro,
+        TransitMode::Rail => s.mode_rail,
     }
 }
 
@@ -262,6 +263,7 @@ fn build_toolbar_system(
     mut hovered: Local<Option<egui::Id>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
+    let s = crate::strings::current();
     let tram_ok = tram_unlocked(&ui_state);
     // Copied out once so the click-branches below can freely write
     // `tools.active` without fighting a live borrow from the comparisons
@@ -287,7 +289,7 @@ fn build_toolbar_system(
                     current_tool == ActiveTool::None,
                     true,
                     false,
-                    "Select",
+                    s.tool_select,
                     &mut hovered,
                     &mut sfx,
                 ) {
@@ -301,7 +303,7 @@ fn build_toolbar_system(
                     current_tool == ActiveTool::PlaceStation(TransitMode::Bus),
                     true,
                     false,
-                    "Bus station (1)",
+                    s.tool_bus_station,
                     &mut hovered,
                     &mut sfx,
                 ) {
@@ -310,9 +312,9 @@ fn build_toolbar_system(
                 }
 
                 let tram_tooltip = if tram_ok {
-                    "Tram station (2)"
+                    s.tool_tram_station
                 } else {
-                    "Tram station (2). Locked until Tram unlocks."
+                    s.tool_tram_station_locked
                 };
                 if icon_button(
                     ui,
@@ -334,7 +336,7 @@ fn build_toolbar_system(
                     current_tool == ActiveTool::Route,
                     true,
                     false,
-                    "Route (3)",
+                    s.tool_route,
                     &mut hovered,
                     &mut sfx,
                 ) {
@@ -348,7 +350,7 @@ fn build_toolbar_system(
                     current_tool == ActiveTool::Bulldoze,
                     true,
                     false,
-                    "Bulldoze (4)",
+                    s.tool_bulldoze,
                     &mut hovered,
                     &mut sfx,
                 ) {
@@ -366,7 +368,7 @@ fn build_toolbar_system(
                     false,
                     bus.can_undo(),
                     false,
-                    "Undo",
+                    s.tool_undo,
                     &mut hovered,
                     &mut sfx,
                 ) {
@@ -379,7 +381,7 @@ fn build_toolbar_system(
                 ui.add_space(ds::SPACE_SM);
 
                 let routes_button = ui.add(
-                    egui::Button::new(egui::RichText::new("Routes").color(if panel.open {
+                    egui::Button::new(egui::RichText::new(s.routes).color(if panel.open {
                         egui::Color32::WHITE
                     } else {
                         ds::text()
@@ -424,16 +426,13 @@ fn contextual_strip_text(
     tools: &ToolState,
     ui_state: &LatestUi,
 ) -> Option<(String, egui::Color32)> {
+    let s = crate::strings::current();
     match tools.active {
         ActiveTool::None => None,
         ActiveTool::PlaceStation(mode) => {
-            let cash = ui_state.0.as_ref().map(|s| s.cash).unwrap_or(0.0);
+            let cash = ui_state.0.as_ref().map(|st| st.cash).unwrap_or(0.0);
             Some((
-                format!(
-                    "Click to place a {} station. Cash on hand: {}",
-                    mode_word(mode),
-                    format_cash(cash)
-                ),
+                s.place_station_context(mode_word(mode), &format_cash(cash)),
                 ds::text(),
             ))
         }
@@ -442,18 +441,10 @@ fn contextual_strip_text(
             let quote = tools
                 .last_cost_quote
                 .map(format_cash)
-                .unwrap_or_else(|| "not quoted yet".to_string());
-            Some((
-                format!(
-                    "Click stations to add. Enter confirms, Esc cancels. {count} station(s) selected. Estimated cost: {quote}."
-                ),
-                ds::text(),
-            ))
+                .unwrap_or_else(|| s.not_quoted_yet.to_string());
+            Some((s.route_context(count, &quote), ds::text()))
         }
-        ActiveTool::Bulldoze => Some((
-            "Click a station or track to demolish.".to_string(),
-            ds::WARN,
-        )),
+        ActiveTool::Bulldoze => Some((s.bulldoze_context.to_string(), ds::WARN)),
     }
 }
 
@@ -477,6 +468,7 @@ fn route_panel_system(
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;
+    let s = crate::strings::current();
     let Some(state) = &ui_state.0 else {
         return Ok(());
     };
@@ -494,13 +486,11 @@ fn route_panel_system(
         .min_width(240.0)
         .resizable(true)
         .show(ctx, |ui| {
-            ui.label(ds::heading("Routes"));
+            ui.label(ds::heading(s.routes));
             ui.add_space(ds::SPACE_XS);
 
             if state.routes.is_empty() {
-                ui.label(ds::label_muted(
-                    "No routes yet. Use the Route tool to string stations together.",
-                ));
+                ui.label(ds::label_muted(s.no_routes_yet));
                 return;
             }
 
@@ -527,7 +517,7 @@ fn route_panel_system(
                     );
 
                     let display_name = if route.name.trim().is_empty() {
-                        format!("Line {}", idx + 1)
+                        s.line(idx + 1)
                     } else {
                         route.name.clone()
                     };
@@ -550,17 +540,15 @@ fn route_panel_system(
                                 egui::CornerRadius::same(5),
                                 ds::crowding_color(crowding),
                             );
-                            dot_resp.on_hover_text(format!(
-                                "Live crowding {:.0}%",
-                                crowding.clamp(0.0, 1.0) * 100.0
-                            ));
+                            dot_resp.on_hover_text(
+                                s.live_crowding_pct(crowding.clamp(0.0, 1.0) * 100.0),
+                            );
                         });
                     }
                 });
-                ui.label(ds::label_small(format!(
-                    "{} station(s), {} vehicle(s), mode {}",
+                ui.label(ds::label_small(s.route_list_subtitle(
                     route.station_ids.len(),
-                    route.vehicle_count,
+                    route.vehicle_count as usize,
                     mode_word(route.mode),
                 )));
 
@@ -649,9 +637,10 @@ fn route_editor(
     // a live-crowding readout. Each row is drawn only when the sidecar sends
     // the matching field, so an old sidecar (which omits all three) shows the
     // editor exactly as before.
+    let s = crate::strings::current();
     if let Some(crowding) = route.live_crowding {
         ui.horizontal(|ui| {
-            ui.label(ds::label_muted("Live crowding"));
+            ui.label(ds::label_muted(s.live_crowding));
             let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
             ui.painter().rect_filled(
                 dot,
@@ -666,13 +655,13 @@ fn route_editor(
     }
     if let Some(farebox) = route.farebox {
         ui.horizontal(|ui| {
-            ui.label(ds::label_muted("Farebox / day"));
+            ui.label(ds::label_muted(s.farebox_per_day));
             ui.label(ds::value_strong(format_cash(farebox)).color(ds::GOOD));
         });
     }
     if let Some(cost) = route.operating_cost {
         ui.horizontal(|ui| {
-            ui.label(ds::label_muted("Operating cost / day"));
+            ui.label(ds::label_muted(s.operating_cost_per_day));
             ui.label(ds::value_strong(format_cash(cost)).color(ds::BAD));
         });
     }
@@ -683,7 +672,7 @@ fn route_editor(
         let good = net >= 0.0;
         let prefix = if good { "+" } else { "-" };
         ui.horizontal(|ui| {
-            ui.label(ds::label_muted("Net / day"));
+            ui.label(ds::label_muted(s.net_per_day));
             ui.label(
                 ds::value_strong(format!("{prefix}{}", format_cash(net.abs()))).color(if good {
                     ds::GOOD
@@ -696,7 +685,7 @@ fn route_editor(
     ui.add_space(ds::SPACE_XXS);
 
     ui.horizontal(|ui| {
-        ui.label(ds::label_muted("Vehicles"));
+        ui.label(ds::label_muted(s.vehicles));
         let minus = ui.small_button("-");
         hover_tick(&minus, hovered, sfx);
         if minus.clicked() && route.vehicle_count > 0 {
@@ -727,7 +716,7 @@ fn route_editor(
     });
 
     ui.horizontal(|ui| {
-        ui.label(ds::label_muted("Fare"));
+        ui.label(ds::label_muted(s.fare));
         let resp = ui.add(
             egui::DragValue::new(&mut panel.fare_edit)
                 .range(0.0..=50.0)
@@ -746,11 +735,11 @@ fn route_editor(
                 },
             );
         }
-        ui.label(ds::label_small(format!("now {}", format_fare(route.fare))));
+        ui.label(ds::label_small(s.now_fare(&format_fare(route.fare))));
     });
 
     ui.horizontal(|ui| {
-        ui.label(ds::label_muted("Name"));
+        ui.label(ds::label_muted(s.name));
         let resp = ui.add(egui::TextEdit::singleline(&mut panel.name_edit).desired_width(140.0));
         if resp.lost_focus() {
             let trimmed = panel.name_edit.trim();
@@ -772,7 +761,7 @@ fn route_editor(
     let armed = panel.delete_armed == Some(route.id);
     let delete_resp = ui.add(
         egui::Button::new(
-            egui::RichText::new(if armed { "Confirm delete" } else { "Delete" }).color(if armed {
+            egui::RichText::new(if armed { s.confirm_delete } else { s.delete }).color(if armed {
                 egui::Color32::WHITE
             } else {
                 ds::text()
@@ -844,12 +833,9 @@ fn command_feedback_listener_system(
 ) {
     for fb in feedback.read() {
         if !fb.ok {
-            let detail = fb.error.as_deref().unwrap_or("unknown error");
-            push_toast(
-                &mut toasts,
-                format!("Cannot build there: {detail}"),
-                ToastTone::Warn,
-            );
+            let s = crate::strings::current();
+            let detail = fb.error.as_deref().unwrap_or(s.unknown_error);
+            push_toast(&mut toasts, s.cannot_build(detail), ToastTone::Warn);
             sfx.write(PlaySfx(Sfx::Error));
         } else if matches!(fb.meta, CmdMeta::CreateRoute { .. }) {
             sfx.write(PlaySfx(Sfx::Confirm));

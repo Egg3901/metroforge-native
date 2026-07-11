@@ -91,11 +91,12 @@ fn format_cash(value: f64) -> String {
 }
 
 fn mode_word(mode: TransitMode) -> &'static str {
+    let s = crate::strings::current();
     match mode {
-        TransitMode::Bus => "bus",
-        TransitMode::Tram => "tram",
-        TransitMode::Metro => "metro",
-        TransitMode::Rail => "rail",
+        TransitMode::Bus => s.mode_bus,
+        TransitMode::Tram => s.mode_tram,
+        TransitMode::Metro => s.mode_metro,
+        TransitMode::Rail => s.mode_rail,
     }
 }
 
@@ -182,22 +183,23 @@ fn day_ledger_net(ledger: &DayLedger) -> f64 {
 /// never race against each other by a frame). Copy is deliberately plain
 /// sentences, no dashes, matching the sim's own `computeInsights` style.
 fn fail_banner_text(ui: &UiState) -> Option<&'static str> {
+    let s = crate::strings::current();
     if let Some(reason) = ui.failed {
         return Some(match reason {
-            FailReason::Bankrupt => "Bankrupt. The city has taken over your network.",
-            FailReason::Approval => "Approval collapsed. Your network has been shut down.",
-            FailReason::Time => "Time is up. This scenario has ended.",
+            FailReason::Bankrupt => s.bankrupt_banner,
+            FailReason::Approval => s.approval_collapsed_banner,
+            FailReason::Time => s.time_up_banner,
         });
     }
     if ui.bankrupt {
-        return Some("Bankrupt. The city has taken over your network.");
+        return Some(s.bankrupt_banner);
     }
     None
 }
 
 fn station_title(station: &UiStation) -> String {
     if station.name.trim().is_empty() {
-        format!("Station {}", station.id)
+        crate::strings::current().station(station.id)
     } else {
         station.name.clone()
     }
@@ -205,7 +207,7 @@ fn station_title(station: &UiStation) -> String {
 
 fn route_display_name(route: &UiRoute, idx: usize) -> String {
     if route.name.trim().is_empty() {
-        format!("Line {}", idx + 1)
+        crate::strings::current().line(idx + 1)
     } else {
         route.name.clone()
     }
@@ -278,13 +280,14 @@ fn station_upgrade_button(
     link: Option<&SimLink>,
     bus: &mut CommandBus,
 ) {
+    let s = crate::strings::current();
     if station.level >= MAX_STATION_LEVEL {
-        ui.label(ds::label_small("This station is at its maximum level."));
+        ui.label(ds::label_small(s.station_max_level));
         return;
     }
     let resp = ui.add(
         egui::Button::new(
-            egui::RichText::new(format!("Upgrade to level {}", station.level + 1))
+            egui::RichText::new(s.upgrade_to_level(station.level + 1))
                 .color(egui::Color32::WHITE),
         )
         .fill(ds::accent())
@@ -364,6 +367,7 @@ fn station_panel_system(
                 )),
         )
         .show(ctx, |ui| {
+            let s = crate::strings::current();
             ui.horizontal(|ui| {
                 let (icon_rect, _) =
                     ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
@@ -376,21 +380,17 @@ fn station_panel_system(
                 );
                 ui.label(ds::heading(station_title(station)));
             });
-            ui.label(ds::label_small(format!(
-                "Level {} {}",
-                station.level,
-                mode_word(station.mode)
-            )));
+            ui.label(ds::label_small(s.level_mode(station.level, mode_word(station.mode))));
             ui.add_space(ds::SPACE_SM);
 
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
-                    ui.label(ds::label_muted("Boarding / day"));
+                    ui.label(ds::label_muted(s.boarding_per_day));
                     ui.label(ds::value_strong(format_thousands(station.ridership)));
                 });
                 ui.add_space(ds::SPACE_MD);
                 ui.vertical(|ui| {
-                    ui.label(ds::label_muted("Arriving / day"));
+                    ui.label(ds::label_muted(s.arriving_per_day));
                     ui.label(ds::value_strong(format_thousands(station.alightings)));
                 });
             });
@@ -402,16 +402,16 @@ fn station_panel_system(
                 ui.add_space(ds::SPACE_SM);
                 ui.separator();
                 ui.add_space(ds::SPACE_XXS);
-                ui.label(ds::label_muted("Catchment district"));
+                ui.label(ds::label_muted(s.catchment_district));
                 ui.label(ds::value_strong(district.name.clone()));
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(ds::label_muted("People"));
+                        ui.label(ds::label_muted(s.people));
                         ui.label(ds::value_strong(format_thousands(district.population)));
                     });
                     ui.add_space(ds::SPACE_MD);
                     ui.vertical(|ui| {
-                        ui.label(ds::label_muted("Jobs"));
+                        ui.label(ds::label_muted(s.jobs));
                         ui.label(ds::value_strong(format_thousands(district.jobs)));
                     });
                 });
@@ -421,12 +421,10 @@ fn station_panel_system(
             ui.separator();
             ui.add_space(ds::SPACE_XXS);
 
-            ui.label(ds::label_muted("Routes serving this station"));
+            ui.label(ds::label_muted(s.routes_serving_station));
             let serving = routes_serving_station(&state.routes, station.id);
             if serving.is_empty() {
-                ui.label(ds::label_small(
-                    "No routes reach this station yet. Use the Route tool to connect it.",
-                ));
+                ui.label(ds::label_small(s.no_routes_reach_station));
             } else {
                 for idx in serving {
                     let route = &state.routes[idx];
@@ -489,7 +487,8 @@ fn finance_panel_system(
         return Ok(());
     };
 
-    egui::Window::new("Finance")
+    let s = crate::strings::current();
+    egui::Window::new(s.finance)
         .id(egui::Id::new("mf_finance_panel"))
         .collapsible(false)
         .resizable(false)
@@ -531,12 +530,12 @@ fn finance_panel_system(
 
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
-                    ui.label(ds::label_muted("Cash"));
+                    ui.label(ds::label_muted(s.cash));
                     ui.label(ds::value_strong(format_cash(state.cash)));
                 });
                 ui.add_space(ds::SPACE_MD);
                 ui.vertical(|ui| {
-                    ui.label(ds::label_muted("Loan balance"));
+                    ui.label(ds::label_muted(s.loan_balance));
                     ui.label(ds::value_strong(format_cash(state.loan_balance)));
                 });
             });
@@ -545,19 +544,19 @@ fn finance_panel_system(
             ui.separator();
             ui.add_space(ds::SPACE_XXS);
 
-            ui.label(ds::label_muted("Yesterday"));
+            ui.label(ds::label_muted(s.yesterday));
             let ld = &state.last_day;
-            money_row(ui, "Fares", ld.fares);
-            money_row(ui, "Subsidy", ld.subsidy);
-            money_row(ui, "Operations", -ld.operations);
-            money_row(ui, "Maintenance", -ld.maintenance);
-            money_row(ui, "Interest", -ld.interest);
+            money_row(ui, s.fares, ld.fares);
+            money_row(ui, s.subsidy, ld.subsidy);
+            money_row(ui, s.operations, -ld.operations);
+            money_row(ui, s.maintenance, -ld.maintenance);
+            money_row(ui, s.interest, -ld.interest);
             ui.add_space(ds::SPACE_XXS);
             ui.separator();
-            money_row(ui, "Net", day_ledger_net(ld));
+            money_row(ui, s.net, day_ledger_net(ld));
 
             ui.add_space(ds::SPACE_SM);
-            ui.label(ds::label_muted("Net, last 7 days"));
+            ui.label(ds::label_muted(s.net_last_7_days));
             ds::sparkline(
                 ui,
                 &state.net_history,
@@ -569,13 +568,13 @@ fn finance_panel_system(
             ui.add_space(ds::SPACE_XXS);
             stat_row(
                 ui,
-                "Transit share",
+                s.transit_share,
                 format!("{:.0}%", state.transit_share * 100.0),
             );
-            stat_row(ui, "Coverage", format!("{:.0}%", state.coverage * 100.0));
+            stat_row(ui, s.coverage, format!("{:.0}%", state.coverage * 100.0));
             stat_row(
                 ui,
-                "Daily transit trips",
+                s.daily_transit_trips,
                 format_thousands(state.daily_transit_trips),
             );
 
@@ -583,17 +582,17 @@ fn finance_panel_system(
             // only when the sidecar actually sends them (old sidecars omit
             // both, so these rows simply don't appear rather than reading 0).
             if let Some(recovery) = state.farebox_recovery {
-                stat_row(ui, "Farebox recovery", format!("{:.0}%", recovery * 100.0));
+                stat_row(ui, s.farebox_recovery, format!("{:.0}%", recovery * 100.0));
             }
             if let Some(lifetime) = state.lifetime {
-                stat_row(ui, "Lifetime earnings", format_cash(lifetime));
+                stat_row(ui, s.lifetime_earnings, format_cash(lifetime));
             }
 
             if !state.insights.is_empty() {
                 ui.add_space(ds::SPACE_SM);
                 ui.separator();
                 ui.add_space(ds::SPACE_XXS);
-                ui.label(ds::label_muted("Insights"));
+                ui.label(ds::label_muted(s.insights));
                 for insight in &state.insights {
                     insight_row(ui, insight);
                 }

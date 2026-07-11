@@ -78,25 +78,25 @@ impl TutorialStep {
 
     /// Terse, imperative title. No em/en dashes, no filler.
     pub fn title(self) -> &'static str {
+        let s = crate::strings::current();
         match self {
-            TutorialStep::MoveCamera => "Move the camera",
-            TutorialStep::SelectStationTool => "Pick the Station tool",
-            TutorialStep::PlaceStations => "Place two stations",
-            TutorialStep::OpenRoute => "Open a route",
-            TutorialStep::WatchVehicles => "Watch it run",
+            TutorialStep::MoveCamera => s.tutorial_move_camera_title,
+            TutorialStep::SelectStationTool => s.tutorial_select_station_title,
+            TutorialStep::PlaceStations => s.tutorial_place_stations_title,
+            TutorialStep::OpenRoute => s.tutorial_open_route_title,
+            TutorialStep::WatchVehicles => s.tutorial_watch_vehicles_title,
         }
     }
 
     /// One-line instruction. Same copy rules as [`TutorialStep::title`].
     pub fn body(self) -> &'static str {
+        let s = crate::strings::current();
         match self {
-            TutorialStep::MoveCamera => "Drag to pan. Scroll to zoom.",
-            TutorialStep::SelectStationTool => "Click Station in the toolbar below.",
-            TutorialStep::PlaceStations => "Click a road to drop a station. Place two.",
-            TutorialStep::OpenRoute => {
-                "Pick the Route tool. Click both stations. Double click to open the line."
-            }
-            TutorialStep::WatchVehicles => "Vehicles now serve your line. You are ready.",
+            TutorialStep::MoveCamera => s.tutorial_move_camera_body,
+            TutorialStep::SelectStationTool => s.tutorial_select_station_body,
+            TutorialStep::PlaceStations => s.tutorial_place_stations_body,
+            TutorialStep::OpenRoute => s.tutorial_open_route_body,
+            TutorialStep::WatchVehicles => s.tutorial_watch_vehicles_body,
         }
     }
 }
@@ -356,11 +356,11 @@ fn tutorial_overlay_system(
                 .inner_margin(egui::Margin::symmetric(18, 14))
                 .show(ui, |ui| {
                     ui.set_max_width(360.0);
+                    let s = crate::strings::current();
                     ui.label(
-                        egui::RichText::new(format!(
-                            "Step {} of {}",
+                        egui::RichText::new(s.tutorial_step_of(
                             step.number(),
-                            TutorialStep::ALL.len()
+                            TutorialStep::ALL.len(),
                         ))
                         .size(11.0)
                         .color(tutorial_accent())
@@ -381,7 +381,7 @@ fn tutorial_overlay_system(
                     );
                     ui.add_space(10.0);
                     if ui
-                        .add(egui::Button::new(egui::RichText::new("Skip").size(12.0)))
+                        .add(egui::Button::new(egui::RichText::new(s.skip).size(12.0)))
                         .clicked()
                     {
                         skip_clicked = true;

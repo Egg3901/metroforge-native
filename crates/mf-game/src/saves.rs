@@ -91,9 +91,10 @@ impl SaveSlot {
 
     /// Human-readable label for menus.
     pub fn label(self) -> String {
+        let s = crate::strings::current();
         match self {
-            SaveSlot::Autosave(n) => format!("Autosave {}", n + 1),
-            SaveSlot::Slot(n) => format!("Slot {n}"),
+            SaveSlot::Autosave(n) => s.autosave_label(n + 1),
+            SaveSlot::Slot(n) => s.slot_label(n),
         }
     }
 }
@@ -445,7 +446,7 @@ impl SaveManager {
                 tracing::warn!("mf-game: failed to send requestSave: {e}");
                 toasts
                     .0
-                    .push((format!("Save failed: {e}"), ToastTone::Warn));
+                    .push((crate::strings::current().save_failed(&e.to_string()), ToastTone::Warn));
                 sfx.write(PlaySfx(Sfx::Error));
             }
         }
@@ -471,7 +472,7 @@ impl SaveManager {
                 tracing::warn!("mf-game: failed to load save slot: {e}");
                 toasts
                     .0
-                    .push((format!("Load failed: {e}"), ToastTone::Warn));
+                    .push((crate::strings::current().load_failed(&e.to_string()), ToastTone::Warn));
                 sfx.write(PlaySfx(Sfx::Error));
                 None
             }
@@ -538,9 +539,10 @@ fn read_meta(slot: SaveSlot) -> Option<SaveMeta> {
 }
 
 fn slot_saved_message(slot: SaveSlot) -> String {
+    let s = crate::strings::current();
     match slot {
-        SaveSlot::Autosave(_) => "Autosaved".to_string(),
-        SaveSlot::Slot(n) => format!("Saved to slot {n}"),
+        SaveSlot::Autosave(_) => s.autosaved.to_string(),
+        SaveSlot::Slot(n) => s.saved_to_slot(n),
     }
 }
 
@@ -572,7 +574,7 @@ fn capture_saved_system(
                 tracing::warn!("mf-game: failed to write save slot: {e}");
                 toasts
                     .0
-                    .push((format!("Save failed: {e}"), ToastTone::Warn));
+                    .push((crate::strings::current().save_failed(&e.to_string()), ToastTone::Warn));
                 sfx.write(PlaySfx(Sfx::Error));
             }
         }

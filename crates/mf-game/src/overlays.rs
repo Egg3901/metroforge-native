@@ -96,10 +96,6 @@ const STEEL_BLUE: (u8, u8, u8) = (0x4a, 0x7b, 0xa6);
 const AMBER: (u8, u8, u8) = (0xff, 0xbf, 0x00);
 const HOT_PINK: (u8, u8, u8) = (0xff, 0x2d, 0x95);
 
-const DEMAND_TOAST: &str =
-    "Demand overlay on. Arcs show where the city wants to travel. Press G again for unserved trips.";
-const UNSERVED_TOAST: &str =
-    "Unserved overlay on. These arcs are trips you are losing to cars right now.";
 
 // ---------------------------------------------------------------------
 // Shared line type (world-space, f32 — protocol/field data converted into
@@ -446,13 +442,18 @@ fn overlay_toggle_system(
         return;
     }
     overlay.cycle();
+    let s = crate::strings::current();
     match overlay.mode {
         OverlayMode::Demand if !*demand_toast_shown => {
-            toasts.0.push((DEMAND_TOAST.to_string(), ToastTone::Info));
+            toasts
+                .0
+                .push((s.demand_overlay_toast.to_string(), ToastTone::Info));
             *demand_toast_shown = true;
         }
         OverlayMode::Unserved if !*unserved_toast_shown => {
-            toasts.0.push((UNSERVED_TOAST.to_string(), ToastTone::Info));
+            toasts
+                .0
+                .push((s.unserved_overlay_toast.to_string(), ToastTone::Info));
             *unserved_toast_shown = true;
         }
         _ => {}

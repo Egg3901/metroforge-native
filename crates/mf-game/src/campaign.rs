@@ -53,16 +53,13 @@ pub enum StarGoal {
 /// evaluation system's "Star earned" toast and (via [`CityObjectives`])
 /// anywhere a future objectives panel wants to list what's left.
 pub fn describe_goal(goal: StarGoal) -> String {
+    let s = crate::strings::current();
     match goal {
-        StarGoal::Coverage(frac) => format!("Cover {:.0}% of the city", frac * 100.0),
-        StarGoal::Approval(pct) => format!("Keep approval at {:.0}% or higher", pct),
-        StarGoal::DailyTrips(trips) => {
-            format!("Carry {} daily transit trips", format_thousands(trips))
-        }
-        StarGoal::TransitShare(frac) => format!("Reach {:.0}% transit mode share", frac * 100.0),
-        StarGoal::NetPositiveDays(days) => {
-            format!("Run {days} days in a row without losing money")
-        }
+        StarGoal::Coverage(frac) => s.star_cover_city(frac * 100.0),
+        StarGoal::Approval(pct) => s.star_keep_approval(pct),
+        StarGoal::DailyTrips(trips) => s.star_carry_trips(&format_thousands(trips)),
+        StarGoal::TransitShare(frac) => s.star_transit_share(frac * 100.0),
+        StarGoal::NetPositiveDays(days) => s.star_net_positive_days(days),
     }
 }
 
@@ -451,9 +448,10 @@ fn evaluate_progress_system(
         let previous = progress.stars(&pending.preset_key);
         let earned = evaluate_earned_stars(objectives, state);
         if earned > previous {
+            let s = crate::strings::current();
             for goal in &objectives.stars[previous as usize..earned as usize] {
                 toasts.0.push((
-                    format!("Star earned: {}", describe_goal(*goal)),
+                    s.star_earned(&describe_goal(*goal)),
                     ToastTone::Good,
                 ));
             }
