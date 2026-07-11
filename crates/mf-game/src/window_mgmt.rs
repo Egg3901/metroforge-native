@@ -35,9 +35,23 @@ impl Plugin for MfWindowPlugin {
         // Continuous while focused (game); essentially pause when
         // alt-tabbed / minimized. `Duration::MAX` means "only wake on a
         // window event" — no periodic redraw, so the GPU idles.
+        //
+        // Harness/CI escape hatch: under Xvfb there is no window manager,
+        // the window is never focused, and `Duration::MAX` parks the main
+        // loop forever right after boot (v0.5.1 release-gate finding - the
+        // in-city CI smoke froze at "Loading city"). Any of the harness env
+        // vars forces Continuous regardless of focus.
+        let harness = std::env::var_os("MF_AUTOSTART").is_some()
+            || std::env::var_os("MF_VERIFY_DIR").is_some()
+            || std::env::var_os("MF_QUALITY").is_some();
+        let unfocused_mode = if harness {
+            UpdateMode::Continuous
+        } else {
+            UpdateMode::reactive_low_power(Duration::MAX)
+        };
         app.insert_resource(WinitSettings {
             focused_mode: UpdateMode::Continuous,
-            unfocused_mode: UpdateMode::reactive_low_power(Duration::MAX),
+            unfocused_mode,
         })
         .add_systems(
             Update,
