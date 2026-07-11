@@ -282,6 +282,54 @@ pub fn menu_wash() -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 38)
 }
 
+/// Horizontal gradient wash over the attract diorama: opaque behind the
+/// menu column on the left, fading to fully transparent on the far right so
+/// the city stays visible and moody instead of milked out by a flat scrim.
+///
+/// Painted as overlapping vertical strips (no Mesh dependency) — cheap even
+/// on Potato. Callers should use a transparent `CentralPanel` frame and
+/// paint this into `ui.max_rect()` before drawing widgets.
+pub fn paint_menu_gradient_scrim(painter: &egui::Painter, rect: egui::Rect) {
+    let c = current_colors().panel_bg;
+    const STRIPS: i32 = 48;
+    let w = rect.width() / STRIPS as f32;
+    if w <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    for i in 0..STRIPS {
+        let t = i as f32 / (STRIPS - 1) as f32;
+        let alpha = (menu_gradient_alpha(t) * 255.0).round().clamp(0.0, 255.0) as u8;
+        if alpha == 0 {
+            continue;
+        }
+        let x0 = rect.left() + w * i as f32;
+        let strip = egui::Rect::from_min_max(
+            egui::pos2(x0, rect.top()),
+            // Slight overlap kills 1px seams between strips.
+            egui::pos2(x0 + w + 1.0, rect.bottom()),
+        );
+        painter.rect_filled(
+            strip,
+            egui::CornerRadius::ZERO,
+            egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha),
+        );
+    }
+}
+
+/// Alpha at normalized horizontal position `t` ∈ [0, 1] for
+/// [`paint_menu_gradient_scrim`] — pure so the falloff is unit-testable.
+pub fn menu_gradient_alpha(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    // Plateau of readability through the left/center menu column, then a
+    // steep falloff so the right half of the city reads clearly.
+    if t < 0.38 {
+        0.72 - t * 0.25
+    } else {
+        let u = ((t - 0.38) / 0.62).clamp(0.0, 1.0);
+        (0.62 * (1.0 - u).powf(1.55)).max(0.0)
+    }
+}
+
 // ---------------------------------------------------------------------
 // Corner radius
 // ---------------------------------------------------------------------
@@ -791,6 +839,17 @@ mod tests {
         for pair in SPACING.windows(2) {
             assert!(pair[0] < pair[1]);
         }
+    }
+
+    #[test]
+    fn menu_gradient_is_opaque_on_the_left_and_clear_on_the_right() {
+        let left = menu_gradient_alpha(0.0);
+        let mid = menu_gradient_alpha(0.35);
+        let right = menu_gradient_alpha(1.0);
+        assert!(left > 0.55, "left column should stay readable, got {left}");
+        assert!(mid > 0.4, "menu column plateau too thin, got {mid}");
+        assert!(right < 0.05, "far side should be nearly clear, got {right}");
+        assert!(left > right);
     }
 
     // --- route_line_diagram: tick_offsets --------------------------------

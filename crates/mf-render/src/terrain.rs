@@ -16,9 +16,11 @@ use bevy::prelude::*;
 
 use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, Theme};
 
+use crate::atmosphere::CloudShadowParams;
 use crate::mesh_utils::MeshBuffers;
 use crate::palette;
 use crate::roads::{ARTERIAL_WIDTH, COLLECTOR_WIDTH, LOCAL_WIDTH};
+use crate::terrain_material::{TerrainExtension, TerrainMaterial};
 use crate::water::{
     make_water_material, water_bundle, WaterMaterial, WaterMeshBuffers, WATER_SURFACE_Y,
 };
@@ -41,14 +43,21 @@ pub struct MfTerrainPlugin;
 
 impl Plugin for MfTerrainPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<TerrainState>().add_systems(
-            Update,
-            (
-                build_terrain_system,
-                apply_quality_to_terrain_material_system,
+        app.init_resource::<TerrainState>()
+            .add_systems(
+                Update,
+                (
+                    build_terrain_system,
+                    apply_quality_to_terrain_material_system,
+                )
+                    .in_set(crate::MfRenderSet::Terrain),
             )
-                .in_set(crate::MfRenderSet::Terrain),
-        );
+            .add_systems(
+                Update,
+                apply_cloud_shadow_to_terrain_system
+                    .in_set(crate::MfRenderSet::Dynamic)
+                    .after(crate::atmosphere::AtmosphereReady),
+            );
     }
 }
 
@@ -65,7 +74,7 @@ struct TerrainState {
     key: Option<(u32, u32, Theme, bool)>,
     entity: Option<Entity>,
     water_entity: Option<Entity>,
-    material: Option<Handle<StandardMaterial>>,
+    material: Option<Handle<TerrainMaterial>>,
 }
 
 /// Real bilinear terrain sampler (replaces `mf_state::HeightAt`'s flat-
@@ -138,8 +147,9 @@ fn build_terrain_system(
     theme: Res<Theme>,
     mut state: ResMut<TerrainState>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<TerrainMaterial>>,
     mut water_materials: ResMut<Assets<WaterMaterial>>,
+    cloud_shadows: Res<CloudShadowParams>,
     mut height_at: ResMut<HeightAt>,
 ) {
     let Some(city_json) = &city.static_city else {
@@ -329,12 +339,23 @@ fn build_terrain_system(
     // system` there. This material's own `unlit` already updates reactively
     // via `apply_quality_to_terrain_material_system` below, so it was never
     // actually the source.)
-    let material = materials.add(StandardMaterial {
-        base_color: Color::WHITE,
-        unlit,
-        perceptual_roughness: 1.0,
-        reflectance: 0.0,
-        ..default()
+    let material = materials.add(TerrainMaterial {
+        base: StandardMaterial {
+            base_color: Color::WHITE,
+            unlit,
+            perceptual_roughness: 1.0,
+            reflectance: 0.0,
+            ..default()
+        },
+        extension: TerrainExtension {
+            cloud: Vec4::new(
+                cloud_shadows.offset.x,
+                cloud_shadows.offset.y,
+                cloud_shadows.strength,
+                cloud_shadows.inv_scale,
+            ),
+            cloud_noise: Some(cloud_shadows.texture.clone()),
+        },
     });
     state.material = Some(material.clone());
 
@@ -593,7 +614,7 @@ fn grade_terrain(
 fn apply_quality_to_terrain_material_system(
     quality: Res<QualityTier>,
     state: Res<TerrainState>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<TerrainMaterial>>,
 ) {
     if !quality.is_changed() {
         return;
@@ -602,6 +623,27 @@ fn apply_quality_to_terrain_material_system(
         return;
     };
     if let Some(mat) = materials.get_mut(handle) {
-        mat.unlit = quality.knobs().unlit_material;
+        mat.base.unlit = quality.knobs().unlit_material;
+    }
+}
+
+fn apply_cloud_shadow_to_terrain_system(
+    shadows: Res<CloudShadowParams>,
+    state: Res<TerrainState>,
+    mut materials: ResMut<Assets<TerrainMaterial>>,
+) {
+    let Some(handle) = &state.material else {
+        return;
+    };
+    if let Some(mat) = materials.get_mut(handle) {
+        mat.extension.cloud = Vec4::new(
+            shadows.offset.x,
+            shadows.offset.y,
+            shadows.strength,
+            shadows.inv_scale,
+        );
+        if mat.extension.cloud_noise.is_none() && shadows.texture != Handle::default() {
+            mat.extension.cloud_noise = Some(shadows.texture.clone());
+        }
     }
 }

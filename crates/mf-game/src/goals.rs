@@ -157,8 +157,7 @@ struct GoalsFile {
 }
 
 fn goals_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("com", "ahousedivided", "MetroForge")
-        .map(|dirs| dirs.config_dir().join("goals.toml"))
+    crate::paths::goals_toml_path()
 }
 
 /// Per-city goal completion, persisted to `goals.toml` next to
@@ -244,6 +243,7 @@ impl Plugin for MfGoalsPlugin {
                 bevy_egui::EguiPrimaryContextPass,
                 goals_panel_system
                     .run_if(in_state(AppState::InGame))
+                    .run_if(crate::egui_idle::egui_content_active)
                     .run_if(|| !crate::design_system::hud_hidden()),
             );
     }
@@ -274,15 +274,8 @@ fn goals_eval_system(
     for id in newly {
         goals.completed.insert(id);
         let title = goal_def(id).title;
-        toasts
-            .0
-            .push((format!("Goal complete: {title}"), ToastTone::Good));
+        toasts.push(format!("Goal complete: {title}"), ToastTone::Good);
         sfx.write(PlaySfx(Sfx::GoalComplete));
-        const TOAST_LOG_CAP: usize = 20;
-        if toasts.0.len() > TOAST_LOG_CAP {
-            let overflow = toasts.0.len() - TOAST_LOG_CAP;
-            toasts.0.drain(0..overflow);
-        }
     }
     goals.save();
 }
@@ -395,7 +388,7 @@ mod tests {
             farebox_recovery: None,
             lifetime: None,
             districts: Vec::new(),
-            overcrowded_routes: Vec::new(),
+            overcrowded_routes: None,
         }
     }
 

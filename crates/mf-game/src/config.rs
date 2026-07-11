@@ -1,14 +1,17 @@
 //! Persistent client config (spec §3.4 `config.rs`): a `config.toml` under
-//! the OS config dir (`directories::ProjectDirs("com","[REDACTED]",
-//! "MetroForge")`), holding a quality-tier override, a theme override
-//! (issue #32), and the weather-effects toggle. Auto-detection (spec §4) is
-//! used whenever no quality override is set; `Theme::Light` is used whenever
-//! no theme override is set. Either override always wins over its default.
+//! the OS config dir (see [`crate::paths`]), holding a quality-tier
+//! override, a theme override (issue #32), the weather-effects toggle, and
+//! window chrome (size/position/borderless-fullscreen). Auto-detection
+//! (spec §4) is used whenever no quality override is set; `Theme::Light` is
+//! used whenever no theme override is set. Either override always wins over
+//! its default.
 
 use bevy::prelude::*;
 use mf_state::{QualityTier, Theme};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+use crate::paths;
 
 /// TOML-serializable mirror of [`QualityTier`] — kept local to `mf-game` so
 /// `mf-state` doesn't need a `serde` dependency for the sake of one config
@@ -91,6 +94,17 @@ struct ConfigFile {
     /// config.toml files keep the new Medium+ atmosphere without an edit.
     #[serde(default = "default_weather_effects")]
     weather_effects: bool,
+    /// Borderless-fullscreen preference (F11 / Alt+Enter). Defaults off.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    borderless_fullscreen: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    window_width: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    window_height: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    window_x: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    window_y: Option<i32>,
     /// Autosave cadence in sim-days. `0` disables autosave. Defaults to
     /// [`crate::saves::DEFAULT_AUTOSAVE_INTERVAL_DAYS`] for legacy configs.
     #[serde(default = "default_autosave_interval_days")]
@@ -135,6 +149,11 @@ impl Default for ConfigFile {
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
+            borderless_fullscreen: false,
+            window_width: None,
+            window_height: None,
+            window_x: None,
+            window_y: None,
             autosave_interval_days: default_autosave_interval_days(),
             minimap_open: true,
             master_volume: default_master_volume(),
@@ -156,6 +175,15 @@ pub struct MfConfig {
     /// Player preference for atmospheric weather (fog/cloud). Still gated
     /// by quality tier at render time.
     pub weather_effects: bool,
+    /// Borderless-fullscreen toggle (persisted; applied at window create
+    /// and when the player hits F11 / Alt+Enter).
+    pub borderless_fullscreen: bool,
+    /// Last windowed logical size / position. `None` means "use defaults /
+    /// let the OS place the window".
+    pub window_width: Option<f32>,
+    pub window_height: Option<f32>,
+    pub window_x: Option<i32>,
+    pub window_y: Option<i32>,
     /// Autosave every N sim-days (`0` = off). See
     /// [`crate::saves::DEFAULT_AUTOSAVE_INTERVAL_DAYS`].
     pub autosave_interval_days: u32,
@@ -178,6 +206,11 @@ impl Default for MfConfig {
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
+            borderless_fullscreen: false,
+            window_width: None,
+            window_height: None,
+            window_x: None,
+            window_y: None,
             autosave_interval_days: crate::saves::DEFAULT_AUTOSAVE_INTERVAL_DAYS,
             minimap_open: true,
             master_volume: 1.0,
@@ -189,8 +222,7 @@ impl Default for MfConfig {
 
 impl MfConfig {
     fn config_path() -> Option<PathBuf> {
-        directories::ProjectDirs::from("com", "[REDACTED]", "MetroForge")
-            .map(|dirs| dirs.config_dir().join("config.toml"))
+        paths::config_toml_path()
     }
 
     /// Load from disk, falling back to defaults (no override) if the file is
@@ -205,38 +237,21 @@ impl MfConfig {
         let parsed = std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| toml::from_str::<ConfigFile>(&s).ok());
-        let quality_override = parsed
-            .as_ref()
-            .and_then(|f| f.quality_override)
-            .map(QualityTier::from);
-        let theme_override = parsed
-            .as_ref()
-            .and_then(|f| f.theme_override)
-            .map(Theme::from);
-        let tutorial_completed = parsed
-            .as_ref()
-            .map(|f| f.tutorial_completed)
-            .unwrap_or(false);
-        let weather_effects = parsed.as_ref().map(|f| f.weather_effects).unwrap_or(true);
-        let autosave_interval_days = parsed
-            .as_ref()
-            .map(|f| f.autosave_interval_days)
-            .unwrap_or_else(default_autosave_interval_days);
-        let minimap_open = parsed.as_ref().map(|f| f.minimap_open).unwrap_or(true);
-        let master_volume = parsed
-            .as_ref()
-            .map(|f| f.master_volume.clamp(0.0, 1.0))
-            .unwrap_or_else(default_master_volume);
-        let mute = parsed.as_ref().map(|f| f.mute).unwrap_or(false);
+        let file = parsed.unwrap_or_default();
         MfConfig {
-            quality_override,
-            theme_override,
-            tutorial_completed,
-            weather_effects,
-            autosave_interval_days,
-            minimap_open,
-            master_volume,
-            mute,
+            quality_override: file.quality_override.map(QualityTier::from),
+            theme_override: file.theme_override.map(Theme::from),
+            tutorial_completed: file.tutorial_completed,
+            weather_effects: file.weather_effects,
+            borderless_fullscreen: file.borderless_fullscreen,
+            window_width: file.window_width,
+            window_height: file.window_height,
+            window_x: file.window_x,
+            window_y: file.window_y,
+            autosave_interval_days: file.autosave_interval_days,
+            minimap_open: file.minimap_open,
+            master_volume: file.master_volume.clamp(0.0, 1.0),
+            mute: file.mute,
             path: Some(path),
         }
     }
@@ -255,6 +270,11 @@ impl MfConfig {
             theme_override: self.theme_override.map(ConfigTheme::from),
             tutorial_completed: self.tutorial_completed,
             weather_effects: self.weather_effects,
+            borderless_fullscreen: self.borderless_fullscreen,
+            window_width: self.window_width,
+            window_height: self.window_height,
+            window_x: self.window_x,
+            window_y: self.window_y,
             autosave_interval_days: self.autosave_interval_days,
             minimap_open: self.minimap_open,
             master_volume: self.master_volume.clamp(0.0, 1.0),
@@ -291,6 +311,13 @@ impl MfConfig {
 
     pub fn set_weather_effects(&mut self, enabled: bool) {
         self.weather_effects = enabled;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
+
+    pub fn set_borderless_fullscreen(&mut self, enabled: bool) {
+        self.borderless_fullscreen = enabled;
         if let Err(e) = self.save() {
             tracing::warn!("mf-game: failed to persist config.toml: {e}");
         }
@@ -336,10 +363,15 @@ mod tests {
 
     fn sample_file() -> ConfigFile {
         ConfigFile {
-            quality_override: None,
+            quality_override: Some(ConfigQuality::High),
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
+            borderless_fullscreen: false,
+            window_width: None,
+            window_height: None,
+            window_x: None,
+            window_y: None,
             autosave_interval_days: 10,
             minimap_open: true,
             master_volume: 1.0,
@@ -349,10 +381,7 @@ mod tests {
 
     #[test]
     fn config_quality_roundtrips_through_toml() {
-        let file = ConfigFile {
-            quality_override: Some(ConfigQuality::High),
-            ..sample_file()
-        };
+        let file = sample_file();
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("high"));
         let back: ConfigFile = toml::from_str(&s).unwrap();
@@ -361,12 +390,13 @@ mod tests {
 
     #[test]
     fn missing_override_serializes_weather_default() {
-        let file = sample_file();
+        let file = ConfigFile::default();
         let s = toml::to_string_pretty(&file).unwrap();
         let back: ConfigFile = toml::from_str(&s).unwrap();
         assert_eq!(back.quality_override, None);
         assert_eq!(back.theme_override, None);
         assert!(back.weather_effects);
+        assert!(!back.borderless_fullscreen);
     }
 
     #[test]
@@ -374,6 +404,8 @@ mod tests {
         let back: ConfigFile = toml::from_str("quality_override = \"medium\"\n").unwrap();
         assert!(back.weather_effects);
         assert_eq!(back.quality_override, Some(ConfigQuality::Medium));
+        assert!(!back.borderless_fullscreen);
+        assert_eq!(back.window_width, None);
         assert_eq!(back.autosave_interval_days, 10);
         assert!((back.master_volume - 1.0).abs() < f32::EPSILON);
         assert!(!back.mute);
@@ -383,7 +415,7 @@ mod tests {
     fn weather_effects_roundtrips_off() {
         let file = ConfigFile {
             weather_effects: false,
-            ..sample_file()
+            ..ConfigFile::default()
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("false"));
@@ -395,7 +427,7 @@ mod tests {
     fn config_theme_roundtrips_through_toml() {
         let file = ConfigFile {
             theme_override: Some(ConfigTheme::Purple),
-            ..sample_file()
+            ..ConfigFile::default()
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("purple"));
@@ -407,7 +439,7 @@ mod tests {
     fn tutorial_completed_roundtrips_through_toml() {
         let file = ConfigFile {
             tutorial_completed: true,
-            ..sample_file()
+            ..ConfigFile::default()
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("tutorial_completed"));
@@ -426,6 +458,25 @@ mod tests {
     }
 
     #[test]
+    fn window_geometry_and_fullscreen_roundtrip() {
+        let file = ConfigFile {
+            borderless_fullscreen: true,
+            window_width: Some(1920.0),
+            window_height: Some(1080.0),
+            window_x: Some(100),
+            window_y: Some(50),
+            ..ConfigFile::default()
+        };
+        let s = toml::to_string_pretty(&file).unwrap();
+        let back: ConfigFile = toml::from_str(&s).unwrap();
+        assert!(back.borderless_fullscreen);
+        assert_eq!(back.window_width, Some(1920.0));
+        assert_eq!(back.window_height, Some(1080.0));
+        assert_eq!(back.window_x, Some(100));
+        assert_eq!(back.window_y, Some(50));
+    }
+
+    #[test]
     fn theme_conversion_roundtrips_every_variant() {
         for theme in Theme::ALL {
             let cfg: ConfigTheme = theme.into();
@@ -438,7 +489,7 @@ mod tests {
     fn autosave_interval_roundtrips_and_defaults() {
         let file = ConfigFile {
             autosave_interval_days: 5,
-            ..sample_file()
+            ..ConfigFile::default()
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("5"));
