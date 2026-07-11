@@ -436,11 +436,49 @@ pub struct ReplayPayload {
     pub score_hint: f64,
 }
 
-/// One entry of the sidecar `hello.cityList`.
+/// Compact north-up map preview carried on an enriched `hello.cityList`
+/// entry so the city-select screen can paint a miniature without loading
+/// the city. Older sidecars omit this entirely (`None`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CityMapPreview {
+    /// World edge length in meters (same units as [`StaticCityJson::world_size`]).
+    pub world_size: f64,
+    /// Side length of the square [`water`] grid.
+    pub res: u32,
+    /// Row-major water flags (`0` land, nonzero water), length `res * res`.
+    /// Sidecars may also send bit-packed previews via a parallel channel;
+    /// the JSON form stays byte-per-cell for simplicity.
+    pub water: Vec<u8>,
+    /// Arterial polylines as flat x,y world-meter pairs (same convention as
+    /// [`RoadDto::points`]).
+    #[serde(default)]
+    pub arterials: Vec<Vec<f64>>,
+}
+
+/// One entry of the sidecar `hello.cityList`.
+///
+/// Additive fields (`country`, `population`, `building_count`, `size_km`,
+/// `map_preview`) are optional so older sidecars that only send `{key,label}`
+/// keep deserializing; the city-select UI fills gaps from its local catalog.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CityListEntry {
     pub key: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    /// City-proper population when the sidecar knows one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub population: Option<f64>,
+    /// Count of vector building footprints in the city bundle, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub building_count: Option<u32>,
+    /// World edge length in kilometers (`worldSize / 1000`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_km: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_preview: Option<CityMapPreview>,
 }
 
 /// Sidecar -> client `hello` payload — spec §1.1.

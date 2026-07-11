@@ -66,7 +66,13 @@ Every text frame is exactly:
 
 | type | seq | payload (`p`) | notes |
 |---|---|---|---|
-| `hello` | no | `{ protocolVersion: 1, gameVersion: string, cityList: {key,label}[], defaultWorldSize: number }` | sent immediately on connect, before any client message |
+| `hello` | no | `{ protocolVersion: 1, gameVersion: string, cityList: CityListEntry[], defaultWorldSize: number }` | sent immediately on connect, before any client message |
+
+`CityListEntry` is `{ key, label }` plus optional additive fields the city-select
+screen consumes when present: `country?`, `population?`, `buildingCount?`,
+`sizeKm?`, and `mapPreview?` (`{ worldSize, res, water: number[], arterials:
+number[][] }`). Older sidecars that only send `{key,label}` remain valid; the
+native client fills gaps from its local catalog.
 | `ready` | no | `{ staticCity: StaticCityJson }` | static city geometry, **minus** the three mask byte arrays (see `StaticMask` binary frame) |
 | `demand` | no | `{ lines: {x1,y1,x2,y2,weight,share}[], maxWeight: number }` | droppable under backpressure |
 | `ui` | no | the `UiState` struct directly as `p` | sent at 2 Hz; budget, approval, stations/tracks/routes, active events, etc. |

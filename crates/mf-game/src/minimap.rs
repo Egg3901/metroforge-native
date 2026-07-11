@@ -36,16 +36,15 @@ use mf_state::{CurrentCity, LatestFields, LatestUi, Theme};
 
 use crate::camera::CameraRig;
 use crate::config::MfConfig;
+use crate::map_paint::{
+    self, arterial_polylines_from_points, build_water_land_image, paint_water_land_and_arterials,
+    square_map_rect, world_to_map, WorldPolyline, BASE_IMAGE_RES,
+};
 use crate::state::AppState;
 
 /// Minimap window side length in egui points. Small and fixed, per the
 /// mission's "~220px" target.
 const MINIMAP_SIZE: f32 = 220.0;
-/// Low-res base image side length in texels. City shape reads fine at this
-/// resolution and it keeps the per-rebuild cost (and the uploaded texture)
-/// tiny; rebuilds are already gated to fields-version/theme changes, not
-/// per-frame, so this isn't even on the hot path.
-const BASE_IMAGE_RES: usize = 96;
 
 pub struct MfMinimapPlugin;
 
@@ -65,11 +64,6 @@ impl Plugin for MfMinimapPlugin {
         );
     }
 }
-
-/// One cached arterial road polyline in world space (points only; color is
-/// resolved from the active theme at draw time so a theme switch doesn't
-/// need a rebuild).
-type WorldPolyline = Vec<Vec2>;
 
 /// One cached transit route: pre-resolved color and world-space station
 /// path, both already vivid-palette-indexed so `minimap_ui_system` doesn't
@@ -142,24 +136,14 @@ fn rebuild_base_image_system(
         return;
     };
 
-    let ground = color32_from(palette::ground());
-    let water = color32_from(palette::water());
-    let mut pixels = Vec::with_capacity(BASE_IMAGE_RES * BASE_IMAGE_RES);
-    for py in 0..BASE_IMAGE_RES {
-        // Nearest-neighbor downsample; flip Y so the base image is
-        // north-up like everything else drawn on the minimap.
-        let gy = ((BASE_IMAGE_RES - 1 - py) * field_h / BASE_IMAGE_RES).min(field_h - 1);
-        for px in 0..BASE_IMAGE_RES {
-            let gx = (px * field_w / BASE_IMAGE_RES).min(field_w - 1);
-            let is_water = fields.water[gy * field_w + gx] != 0;
-            pixels.push(if is_water { water } else { ground });
-        }
-    }
-    let image = egui::ColorImage {
-        size: [BASE_IMAGE_RES, BASE_IMAGE_RES],
-        source_size: egui::vec2(BASE_IMAGE_RES as f32, BASE_IMAGE_RES as f32),
-        pixels,
-    };
+    let image = build_water_land_image(
+        &fields.water,
+        field_w,
+        field_h,
+        BASE_IMAGE_RES,
+        color32_from(palette::ground()),
+        color32_from(palette::water()),
+    );
     let handle = ctx.load_texture("minimap_base", image, egui::TextureOptions::NEAREST);
     cache.base_texture = Some(handle);
     cache.base_key = Some(key);
@@ -189,17 +173,12 @@ fn rebuild_roads_cache_system(
     if cache.roads_built_for == Some(fingerprint) {
         return;
     }
-    cache.roads = static_city
-        .roads
-        .iter()
-        .filter(|r| r.cls == "arterial")
-        .map(|r| {
-            r.points
-                .chunks_exact(2)
-                .map(|xy| Vec2::new(xy[0] as f32, xy[1] as f32))
-                .collect::<Vec<_>>()
-        })
-        .collect();
+    cache.roads = arterial_polylines_from_points(
+        static_city
+            .roads
+            .iter()
+            .map(|r| (r.cls.as_str(), r.points.as_slice())),
+    );
     cache.roads_built_for = Some(fingerprint);
 }
 
@@ -284,28 +263,16 @@ fn minimap_ui_system(
             let map_rect = square_map_rect(rect);
             let painter = ui.painter_at(rect);
 
-            if let Some(tex) = &cache.base_texture {
-                painter.image(
-                    tex.id(),
-                    map_rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-            } else {
-                painter.rect_filled(map_rect, 0.0, color32_from(palette::ground()));
-            }
-
             let road_color = color32_from(palette::road()).gamma_multiply(0.35);
-            for road in &cache.roads {
-                if road.len() < 2 {
-                    continue;
-                }
-                let pts: Vec<egui::Pos2> = road
-                    .iter()
-                    .map(|w| world_to_minimap(*w, world_half, map_rect))
-                    .collect();
-                painter.add(egui::Shape::line(pts, egui::Stroke::new(1.0, road_color)));
-            }
+            paint_water_land_and_arterials(
+                &painter,
+                map_rect,
+                cache.base_texture.as_ref(),
+                color32_from(palette::ground()),
+                &cache.roads,
+                world_half,
+                road_color,
+            );
 
             for route in &cache.routes {
                 if route.points.len() < 2 {
@@ -314,13 +281,13 @@ fn minimap_ui_system(
                 let pts: Vec<egui::Pos2> = route
                     .points
                     .iter()
-                    .map(|w| world_to_minimap(*w, world_half, map_rect))
+                    .map(|w| world_to_map(*w, world_half, map_rect))
                     .collect();
                 painter.add(egui::Shape::line(pts, egui::Stroke::new(1.6, route.color)));
             }
 
             for station in &cache.stations {
-                let p = world_to_minimap(station.pos, world_half, map_rect);
+                let p = world_to_map(station.pos, world_half, map_rect);
                 let color = color32_from(palette::mode_accent(station.mode));
                 painter.circle_filled(p, 2.2, color);
             }
@@ -336,7 +303,7 @@ fn minimap_ui_system(
             // doc for why that distinction matters.
             if response.clicked() || response.dragged() {
                 if let Some(pos) = response.interact_pointer_pos() {
-                    let world = minimap_to_world(pos, world_half, map_rect);
+                    let world = map_paint::map_to_world(pos, world_half, map_rect);
                     let clamped = world.clamp(Vec2::splat(-world_half), Vec2::splat(world_half));
                     if let Ok(mut rig) = rigs.single_mut() {
                         rig.target_goal = clamped;
@@ -386,7 +353,7 @@ fn draw_viewport_indicator(
         .iter()
         .map(|c| {
             let rotated = Vec2::new(c.x * cos - c.y * sin, c.x * sin + c.y * cos);
-            world_to_minimap(rig.target + rotated, world_half, map_rect)
+            world_to_map(rig.target + rotated, world_half, map_rect)
         })
         .collect();
     painter.add(egui::Shape::closed_line(
@@ -396,32 +363,6 @@ fn draw_viewport_indicator(
             egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
         ),
     ));
-}
-
-/// The largest centered square that fits inside `rect` — the minimap always
-/// draws into this, letterboxing if `rect` itself isn't square (it always
-/// is today at `MINIMAP_SIZE`x`MINIMAP_SIZE`, but the mapping stays correct
-/// either way, which is what the coordinate-mapping unit tests below rely
-/// on).
-fn square_map_rect(rect: egui::Rect) -> egui::Rect {
-    let size = rect.width().min(rect.height());
-    egui::Rect::from_center_size(rect.center(), egui::vec2(size, size))
-}
-
-/// World -> minimap point mapping (see module doc for the axis
-/// convention). `world_half` is half the square world extent
-/// (`world_size / 2`), matching `camera.rs`'s pan-clamp bounds.
-fn world_to_minimap(world: Vec2, world_half: f32, map_rect: egui::Rect) -> egui::Pos2 {
-    let scale = map_rect.width() / (world_half * 2.0);
-    let center = map_rect.center();
-    egui::pos2(center.x + world.x * scale, center.y - world.y * scale)
-}
-
-/// Inverse of [`world_to_minimap`].
-fn minimap_to_world(pos: egui::Pos2, world_half: f32, map_rect: egui::Rect) -> Vec2 {
-    let scale = map_rect.width() / (world_half * 2.0);
-    let center = map_rect.center();
-    Vec2::new((pos.x - center.x) / scale, -(pos.y - center.y) / scale)
 }
 
 fn color32_from(color: Color) -> egui::Color32 {
@@ -437,6 +378,7 @@ fn color32_from(color: Color) -> egui::Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map_paint::{map_to_world, world_to_map};
 
     fn rect() -> egui::Rect {
         egui::Rect::from_min_size(egui::pos2(100.0, 200.0), egui::vec2(220.0, 220.0))
@@ -452,8 +394,8 @@ mod tests {
             Vec2::new(-4999.0, 4999.0),
             Vec2::new(2500.0, 2500.0),
         ] {
-            let p = world_to_minimap(w, world_half, map_rect);
-            let back = minimap_to_world(p, world_half, map_rect);
+            let p = world_to_map(w, world_half, map_rect);
+            let back = map_to_world(p, world_half, map_rect);
             assert!((back.x - w.x).abs() < 0.01, "x: {back:?} vs {w:?}");
             assert!((back.y - w.y).abs() < 0.01, "y: {back:?} vs {w:?}");
         }
@@ -462,7 +404,7 @@ mod tests {
     #[test]
     fn world_origin_maps_to_map_rect_center() {
         let map_rect = rect();
-        let p = world_to_minimap(Vec2::ZERO, 5_000.0, map_rect);
+        let p = world_to_map(Vec2::ZERO, 5_000.0, map_rect);
         assert!((p.x - map_rect.center().x).abs() < 0.001);
         assert!((p.y - map_rect.center().y).abs() < 0.001);
     }
@@ -473,12 +415,12 @@ mod tests {
         let world_half = 5_000.0;
 
         // North-west corner (min x, max y) -> minimap top-left.
-        let nw = world_to_minimap(Vec2::new(-world_half, world_half), world_half, map_rect);
+        let nw = world_to_map(Vec2::new(-world_half, world_half), world_half, map_rect);
         assert!((nw.x - map_rect.left()).abs() < 0.01);
         assert!((nw.y - map_rect.top()).abs() < 0.01);
 
         // South-east corner (max x, min y) -> minimap bottom-right.
-        let se = world_to_minimap(Vec2::new(world_half, -world_half), world_half, map_rect);
+        let se = world_to_map(Vec2::new(world_half, -world_half), world_half, map_rect);
         assert!((se.x - map_rect.right()).abs() < 0.01);
         assert!((se.y - map_rect.bottom()).abs() < 0.01);
     }
@@ -509,8 +451,8 @@ mod tests {
         // world<->minimap mapping).
         let map_rect = rect();
         let world_half = 3_333.0;
-        let px = world_to_minimap(Vec2::new(world_half, 0.0), world_half, map_rect);
-        let py = world_to_minimap(Vec2::new(0.0, world_half), world_half, map_rect);
+        let px = world_to_map(Vec2::new(world_half, 0.0), world_half, map_rect);
+        let py = world_to_map(Vec2::new(0.0, world_half), world_half, map_rect);
         let dx = (px.x - map_rect.center().x).abs();
         let dy = (map_rect.center().y - py.y).abs();
         assert!((dx - dy).abs() < 0.01, "dx={dx} dy={dy}");
