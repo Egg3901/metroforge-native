@@ -12,11 +12,13 @@ mod agents;
 mod buildings;
 mod daynight;
 mod mesh_utils;
+mod outline;
 /// Public so `mf-game` ghost previews can share the same vivid route table
 /// (and theme) as finished transit — see `tools.rs` route_ghost_color.
 pub mod palette;
 mod reveal;
 mod roads;
+mod sky;
 mod subway;
 mod terrain;
 mod transit;
@@ -58,6 +60,7 @@ impl Plugin for MfRenderPlugin {
         .insert_resource(DirectionalLightShadowMap { size: 2048 })
         .add_plugins((
             reveal::MfRevealPlugin,
+            sky::MfSkyPlugin,
             terrain::MfTerrainPlugin,
             roads::MfRoadsPlugin,
             buildings::MfBuildingsPlugin,
@@ -67,6 +70,7 @@ impl Plugin for MfRenderPlugin {
             agents::MfAgentsPlugin,
             daynight::MfDayNightPlugin,
             subway::MfSubwayPlugin,
+            outline::MfOutlinePlugin,
         ))
         .add_systems(
             Update,
