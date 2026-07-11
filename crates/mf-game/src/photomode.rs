@@ -14,6 +14,7 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
@@ -163,7 +164,7 @@ fn photo_mode_toggle_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut state: ResMut<PhotoModeState>,
     mut render: ResMut<PhotoModeRender>,
-    mut rigs: Query<(&mut CameraRig, &Transform, &Projection)>,
+    mut rigs: Query<(&mut CameraRig, &mut Transform, &mut Projection)>,
     link: Option<Res<SimLink>>,
     ui: Res<LatestUi>,
 ) {
@@ -180,15 +181,15 @@ fn photo_mode_toggle_system(
 fn enter_photo_mode(
     state: &mut PhotoModeState,
     render: &mut PhotoModeRender,
-    rigs: &mut Query<(&mut CameraRig, &Transform, &Projection)>,
+    rigs: &mut Query<(&mut CameraRig, &mut Transform, &mut Projection)>,
     link: Option<&SimLink>,
     ui: &LatestUi,
 ) {
     let Ok((rig, transform, projection)) = rigs.single_mut() else {
         return;
     };
-    let fov_y = match projection {
-        Projection::Perspective(p) => p.fov,
+    let fov_y = match *projection {
+        Projection::Perspective(ref p) => p.fov,
         _ => DEFAULT_FOV_Y,
     };
     state.saved = Some(SavedView {
@@ -237,7 +238,7 @@ fn enter_photo_mode(
 fn exit_photo_mode(
     state: &mut PhotoModeState,
     render: &mut PhotoModeRender,
-    rigs: &mut Query<(&mut CameraRig, &Transform, &Projection)>,
+    rigs: &mut Query<(&mut CameraRig, &mut Transform, &mut Projection)>,
     link: Option<&SimLink>,
 ) {
     if let (Some(saved), Ok((mut rig, mut transform, mut projection))) =
@@ -245,7 +246,7 @@ fn exit_photo_mode(
     {
         *rig = saved.rig;
         *transform = saved.transform;
-        if let Projection::Perspective(p) = projection.into_inner() {
+        if let Projection::Perspective(p) = &mut *projection {
             p.fov = saved.fov_y;
         }
     }
@@ -320,7 +321,8 @@ fn photo_mode_fly_system(
     let dt = time.delta_secs();
     let t = 1.0 - (-FLY_SMOOTH_RATE * dt).exp();
     state.velocity = state.velocity.lerp(wish_vel, t);
-    state.eye += state.velocity * dt;
+    let delta = state.velocity * dt;
+    state.eye += delta;
 }
 
 fn photo_mode_cinematic_system(time: Res<Time>, mut state: ResMut<PhotoModeState>) {
@@ -364,7 +366,7 @@ fn photo_mode_apply_camera_system(
     };
     state.fov_y = state.fov_y.clamp(MIN_FOV_Y, MAX_FOV_Y);
     *transform = fly_transform(state.eye, state.yaw, state.pitch);
-    if let Projection::Perspective(p) = projection.into_inner() {
+    if let Projection::Perspective(p) = &mut *projection {
         p.fov = state.fov_y;
     }
 }
@@ -461,12 +463,13 @@ fn photo_mode_ui_system(mut contexts: EguiContexts, mut state: ResMut<PhotoModeS
                     .add_enabled(can_add, egui::Button::new("Drop keyframe"))
                     .clicked()
                 {
-                    state.keyframes.push(CameraKeyframe {
+                    let kf = CameraKeyframe {
                         position: state.eye,
                         yaw: state.yaw,
                         pitch: state.pitch,
                         fov_y: state.fov_y,
-                    });
+                    };
+                    state.keyframes.push(kf);
                 }
                 if ui
                     .add_enabled(
