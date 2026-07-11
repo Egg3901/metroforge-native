@@ -515,6 +515,12 @@ mod tests {
             max_day: None,
             era_label: None,
             command_count: 0,
+            hour_of_day: None,
+            demand_factor: None,
+            farebox_recovery: None,
+            lifetime: None,
+            districts: Vec::new(),
+            overcrowded_routes: Vec::new(),
         }
     }
 

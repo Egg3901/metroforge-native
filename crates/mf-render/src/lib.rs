@@ -28,6 +28,7 @@ mod terrain;
 mod transit;
 mod trees;
 mod vehicles;
+mod water;
 
 pub use stats::RenderCacheStats;
 
@@ -81,6 +82,7 @@ impl Plugin for MfRenderPlugin {
             reveal::MfRevealPlugin,
             sky::MfSkyPlugin,
             terrain::MfTerrainPlugin,
+            water::MfWaterPlugin,
             roads::MfRoadsPlugin,
             buildings::MfBuildingsPlugin,
             transit::MfTransitPlugin,
@@ -136,6 +138,16 @@ fn sync_theme_system(theme: Res<Theme>) {
 /// else in the table (materials, draw distances, agent caps, terrain
 /// subdivision, day/night on/off) is consumed directly by the relevant
 /// layer module from `QualityTier::knobs()`.
+/// True if `falloff` is already the linear `start..end` we'd set — lets the
+/// per-frame fog reconcile skip a redundant write (and its change-detection
+/// trigger) when the camera's fog is already correct for the tier.
+fn fog_falloff_matches(falloff: &FogFalloff, start: f32, end: f32) -> bool {
+    matches!(
+        falloff,
+        FogFalloff::Linear { start: s, end: e } if *s == start && *e == end
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_quality_render_settings_system(
     quality: Res<QualityTier>,
@@ -144,6 +156,11 @@ fn apply_quality_render_settings_system(
     cameras: Query<Entity, With<Camera3d>>,
     cameras_missing_msaa: Query<Entity, (With<Camera3d>, Without<Msaa>)>,
     cameras_missing_fog: Query<Entity, (With<Camera3d>, Without<DistanceFog>)>,
+    // Cameras that ALREADY have a `DistanceFog` (the in-game camera spawns
+    // with one at `Startup`, see `mf-game`'s `camera.rs`). Needed so the
+    // per-tier fog knob can *override* that spawn-time falloff — see the fog
+    // reconcile block below.
+    mut cameras_with_fog: Query<(Entity, &mut DistanceFog, Option<&Tonemapping>), With<Camera3d>>,
     cameras_missing_bloom: Query<Entity, (With<Camera3d>, Without<Bloom>)>,
     mut camera_hdr: Query<&mut Camera, With<Camera3d>>,
 ) {
@@ -183,7 +200,30 @@ fn apply_quality_render_settings_system(
     // no HDR lighting to compress, so bypassing the tonemapper both fixes
     // the seam exactly (fully-fogged pixel == sky pixel) and renders the
     // palette faithfully. Lit tiers (Medium/High) keep Bevy's default.
+    //
+    // IMPORTANT (horizon "paper map" fix): `mf-game`'s `camera.rs` spawns the
+    // in-game camera at `Startup` *already carrying* a long-range
+    // `DistanceFog` (start 8km / end 55km) tuned for the Medium/High framing.
+    // On the fog tiers (Potato/Low) the draw distance is only 3-6km, so that
+    // 8km fog never engages and the horizon renders raw un-fogged terrain and
+    // aliased road scribbles — exactly the reported bug. The old backfill
+    // only touched cameras `Without<DistanceFog>`, so a camera that already
+    // had the spawn-time fog was never corrected to the per-tier knob values,
+    // and `daynight` only syncs fog *color*, never the falloff. Reconcile the
+    // falloff (and `Tonemapping::None`, see note above) on EVERY camera every
+    // frame when the tier wants fog — cheap, one camera — so the knob is
+    // authoritative regardless of any spawn-time or Medium-default fog.
     if let Some((start, end)) = knobs.fog {
+        for (camera, mut fog, tonemapping) in &mut cameras_with_fog {
+            if !fog_falloff_matches(&fog.falloff, start, end) {
+                fog.falloff = FogFalloff::Linear { start, end };
+            }
+            // Guarded so we only re-insert (and respecialize the pipeline)
+            // when it isn't already `None`, not every frame.
+            if tonemapping != Some(&Tonemapping::None) {
+                commands.entity(camera).insert(Tonemapping::None);
+            }
+        }
         for camera in &cameras_missing_fog {
             commands.entity(camera).insert((
                 DistanceFog {

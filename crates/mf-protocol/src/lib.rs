@@ -25,7 +25,7 @@ pub use types::{
     ActiveEventDto, CityListEntry, CitySize, Command, CommandLogEntry, CommandResult, DayLedger,
     DemandLine, DemandPayload, Difficulty, FailReason, HelloInfo, MapLabel, MapLabelKind,
     ReplayPayload, RoadDto, ScenarioRules, StaticCityJson, ToastTone, TrackGrade, TransitMode,
-    UiRoute, UiState, UiStation, UiTrack, Vec2,
+    UiDistrict, UiRoute, UiState, UiStation, UiTrack, Vec2,
 };
 
 use std::sync::Arc;
