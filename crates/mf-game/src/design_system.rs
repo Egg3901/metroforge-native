@@ -118,6 +118,27 @@ pub const BAD: egui::Color32 = egui::Color32::from_rgb(0xff, 0x3b, 0x30);
 /// De-emphasized secondary text (same role as `hud.rs`'s `MUTED_TEXT`).
 pub const MUTED: egui::Color32 = egui::Color32::from_rgb(0x5c, 0x5e, 0x63);
 
+/// Semantic crowding ramp for a `0.0..1.0` live-crowding value (sim-depth,
+/// PR #31): interpolates [`GOOD`] (empty) -> [`WARN`] (filling) -> [`BAD`]
+/// (packed) so a route stripe/row reads its load at a glance. Values are
+/// clamped, so out-of-range inputs saturate at the endpoints rather than
+/// wrapping. Kept as a plain color helper (no theme lookup) since
+/// `GOOD`/`WARN`/`BAD` are the fixed status colors that read on every theme.
+pub fn crowding_color(crowding: f64) -> egui::Color32 {
+    let t = crowding.clamp(0.0, 1.0) as f32;
+    let lerp = |a: u8, b: u8, t: f32| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    let (from, to, seg_t) = if t < 0.5 {
+        (GOOD, WARN, t / 0.5)
+    } else {
+        (WARN, BAD, (t - 0.5) / 0.5)
+    };
+    egui::Color32::from_rgb(
+        lerp(from.r(), to.r(), seg_t),
+        lerp(from.g(), to.g(), seg_t),
+        lerp(from.b(), to.b(), seg_t),
+    )
+}
+
 /// Fill for an inactive/idle toggle-style control (`hud.rs` uses this same
 /// value for its speed/subway toggle buttons' resting state).
 pub const INACTIVE_BG: egui::Color32 = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
@@ -251,6 +272,14 @@ pub fn border() -> egui::Color32 {
 pub fn scrim() -> egui::Color32 {
     let c = current_colors().extreme_bg;
     egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 140)
+}
+
+/// Soft menu wash over the attract diorama: enough contrast for body copy
+/// without painting an opaque slab over the white-city (art-direction:
+/// the world is the brand). Top/bottom chrome bars stay fully opaque.
+pub fn menu_wash() -> egui::Color32 {
+    let c = current_colors().panel_bg;
+    egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 38)
 }
 
 /// Horizontal gradient wash over the attract diorama: opaque behind the
@@ -754,6 +783,29 @@ pub fn sparkline(ui: &mut egui::Ui, values: &[f64], size: egui::Vec2) -> egui::R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crowding_color_hits_the_semantic_endpoints() {
+        assert_eq!(crowding_color(0.0), GOOD);
+        assert_eq!(crowding_color(0.5), WARN);
+        assert_eq!(crowding_color(1.0), BAD);
+    }
+
+    #[test]
+    fn crowding_color_clamps_out_of_range_inputs() {
+        assert_eq!(crowding_color(-3.0), GOOD);
+        assert_eq!(crowding_color(9.0), BAD);
+    }
+
+    #[test]
+    fn crowding_color_interpolates_between_endpoints() {
+        // A quarter of the way is between GOOD and WARN, distinct from both.
+        let mid = crowding_color(0.25);
+        assert_ne!(mid, GOOD);
+        assert_ne!(mid, WARN);
+        // Red channel rises monotonically as crowding climbs (GOOD..BAD).
+        assert!(crowding_color(0.2).r() <= crowding_color(0.8).r());
+    }
 
     /// Every `IconKind` should paint without panicking against a plain
     /// headless `egui::Context` - no window/render backend needed, this

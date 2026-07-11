@@ -131,6 +131,16 @@ const ATTRACT_HOLD_SECS: f32 = 20.0;
 const ATTRACT_CROSSFADE_SECS: f32 = 4.0;
 /// Slow yaw drift (rad/s) inside a hold — enough to feel alive, not dizzy.
 const ATTRACT_DRIFT_YAW_RATE: f32 = 0.012;
+/// Steep pitch floor for the fog tiers (Potato/Low). Deliberately steeper
+/// than the oblique Medium+ vantages: on the fog tiers the building draw
+/// distance is short (3-6km) and the terrain keeps going past it, so a
+/// shallow camera stares straight down a long recession of raw un-built
+/// terrain and partial-fog road scribbles at the horizon (the "paper map"
+/// the owner flagged). Flooring the applied pitch to this on Potato/Low keeps
+/// that far horizon out of frame — the diorama reads as the city massing
+/// under sky and distance fog cleanly fades the frame edges — while Medium+
+/// keeps the full oblique cinematic vantages.
+const ATTRACT_PITCH_GOAL: f32 = 0.82;
 /// Goal-chase settle rate for pitch/distance/target/yaw (see
 /// `attract_smooth`/`attract_smooth_yaw`): deliberately gentler than
 /// `camera.rs`'s own `ORBIT_SMOOTH_RATE`/`DOLLY_SMOOTH_RATE` (~150-250ms
@@ -441,6 +451,17 @@ fn attract_orbit_system(
         cam.phase_t = phase_t;
         cam.index = index;
         sample_attract_path(phase_t, index, dense_center.0, cap, true)
+    };
+
+    // Fog tiers (Potato/Low) have a short building-draw distance with raw
+    // terrain past it; the oblique vantage pitches would let that far horizon
+    // into frame (the "paper map" #76 fixed). Floor the applied pitch to the
+    // steep goal on those tiers so the frame looks down onto the city massing
+    // and the horizon stays out — Medium+ keeps the full oblique framing.
+    let pitch = if matches!(*quality, QualityTier::Potato | QualityTier::Low) {
+        pitch.max(ATTRACT_PITCH_GOAL)
+    } else {
+        pitch
     };
 
     rig.yaw_goal = yaw;

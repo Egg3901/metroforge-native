@@ -13,11 +13,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Fast-fail preflight gate: runs clippy to catch lint/type errors in ~3 min
+  # before spending 20+ min on full builds. Both linux-and-windows and macos
+  # depend on this gate, so a clippy failure fails fast.
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout metroforge-native
+        uses: actions/checkout@v4
+        with:
+          path: metroforge-native
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96"
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: metroforge-native
+
+      - name: Install Bevy Linux system deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev pkg-config
+
+      - name: cargo clippy --workspace -D warnings
+        working-directory: metroforge-native
+        run: cargo clippy --workspace -j 4 -- -D warnings
+
   # Linux + Windows both build on ubuntu-latest: the Windows client is
   # cross-compiled with cargo-xwin (no windows-latest runner needed/paid
   # for), and both Bun sidecar targets cross-compile from Linux too.
   linux-and-windows:
     runs-on: ubuntu-latest
+    needs: gate
     steps:
       - name: Checkout metroforge-native
         uses: actions/checkout@v4
@@ -34,7 +64,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Egg3901/metroforge
-          ref: 2c812bed3a2da92783d86dd47be445241365aac8
+          ref: e576cc90712cb6a19fc58a348bb18ae9d3388f46
           path: metroforge
 
       - name: Derive version from tag
@@ -171,9 +201,12 @@ jobs:
 
   macos:
     runs-on: macos-latest
-    # The linux job carries the cold-player smoke test; if the packaged build
-    # is a void, no platform's assets should reach the release.
-    needs: linux-and-windows
+    # This job runs in parallel with linux-and-windows (both depend on the
+    # fast preflight gate). The linux job carries the cold-player smoke test;
+    # if that test fails, the release is marked failed and no assets reach
+    # the release. macos assets upload independently via softprops which
+    # handles concurrent uploads to the same tag.
+    needs: gate
     steps:
       - name: Checkout metroforge-native
         uses: actions/checkout@v4
@@ -186,7 +219,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Egg3901/metroforge
-          ref: 2c812bed3a2da92783d86dd47be445241365aac8
+          ref: e576cc90712cb6a19fc58a348bb18ae9d3388f46
           path: metroforge
 
       - name: Derive version from tag
