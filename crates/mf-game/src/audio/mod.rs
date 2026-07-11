@@ -283,6 +283,12 @@ fn start_ambience_system(
     config: Option<Res<MfConfig>>,
     existing: Query<Entity, With<CityAmbience>>,
 ) {
+    // Ambience bed is opt-in (config `ambience_enabled`, default off): the
+    // looping noise bed read as harsh. One-shot SFX are unaffected. A missing
+    // config resolves to off, matching the default.
+    if !config.as_deref().is_some_and(|c| c.ambience_enabled) {
+        return;
+    }
     if device.is_some_and(|d| !d.0) {
         return;
     }
