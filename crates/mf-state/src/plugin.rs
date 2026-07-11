@@ -21,6 +21,7 @@ use crate::theme::Theme;
 use crate::ui::LatestUi;
 use crate::weather::WeatherEffects;
 
+/// Registers shared sim-mirror resources and applies inbound `SimEvent`s.
 pub struct MfStatePlugin;
 
 impl Plugin for MfStatePlugin {

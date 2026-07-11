@@ -19,6 +19,7 @@ impl Default for HeightAt {
 }
 
 impl HeightAt {
+    /// Sample ground height (Bevy Y) at world `(x, z)` meters.
     pub fn sample(&self, x: f32, z: f32) -> f32 {
         (self.0)(x, z)
     }

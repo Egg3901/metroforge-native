@@ -9,6 +9,7 @@ use mf_protocol::{MaskWhich, StaticBuildings, StaticCityJson, StaticMask};
 /// advancing to `InGame`.
 #[derive(Resource, Default)]
 pub struct CurrentCity {
+    /// Static city JSON from the latest `ready` message, if any.
     pub static_city: Option<StaticCityJson>,
     /// `res*res` bytes, row-major, present iff `static_city.has_water_mask`.
     pub water_mask: Option<Vec<u8>>,
