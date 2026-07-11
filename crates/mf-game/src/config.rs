@@ -80,6 +80,13 @@ struct ConfigFile {
     quality_override: Option<ConfigQuality>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     theme_override: Option<ConfigTheme>,
+    /// Whether the first-launch tutorial (`tutorial.rs`) has been completed
+    /// or skipped. `false` (the default for a missing key / fresh install)
+    /// arms the flow on the next city load; `true` suppresses it. A plain
+    /// bool rather than an `Option` since "never seen it" and "explicitly
+    /// not done" are the same state to the flow.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    tutorial_completed: bool,
 }
 
 /// Loaded/persisted client config. A Bevy `Resource` so `hud.rs`'s quality
@@ -88,6 +95,10 @@ struct ConfigFile {
 pub struct MfConfig {
     pub quality_override: Option<QualityTier>,
     pub theme_override: Option<Theme>,
+    /// Whether the first-launch tutorial has been completed or skipped (see
+    /// `tutorial.rs`). Read at `InGame` entry to decide whether to arm the
+    /// flow; the "Replay tutorial" setting clears it back to `false`.
+    pub tutorial_completed: bool,
     path: Option<PathBuf>,
 }
 
@@ -117,9 +128,14 @@ impl MfConfig {
             .as_ref()
             .and_then(|f| f.theme_override)
             .map(Theme::from);
+        let tutorial_completed = parsed
+            .as_ref()
+            .map(|f| f.tutorial_completed)
+            .unwrap_or(false);
         MfConfig {
             quality_override,
             theme_override,
+            tutorial_completed,
             path: Some(path),
         }
     }
@@ -136,6 +152,7 @@ impl MfConfig {
         let file = ConfigFile {
             quality_override: self.quality_override.map(ConfigQuality::from),
             theme_override: self.theme_override.map(ConfigTheme::from),
+            tutorial_completed: self.tutorial_completed,
         };
         let toml_str = toml::to_string_pretty(&file)?;
         std::fs::write(path, toml_str)?;
@@ -155,6 +172,16 @@ impl MfConfig {
             tracing::warn!("mf-game: failed to persist config.toml: {e}");
         }
     }
+
+    /// Persist whether the first-launch tutorial is done. `true` on
+    /// completion/skip suppresses the flow; the "Replay tutorial" setting
+    /// passes `false` to re-arm it on the next city load.
+    pub fn set_tutorial_completed(&mut self, completed: bool) {
+        self.tutorial_completed = completed;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -166,6 +193,7 @@ mod tests {
         let file = ConfigFile {
             quality_override: Some(ConfigQuality::High),
             theme_override: None,
+            tutorial_completed: false,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("high"));
@@ -178,6 +206,7 @@ mod tests {
         let file = ConfigFile {
             quality_override: None,
             theme_override: None,
+            tutorial_completed: false,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         let back: ConfigFile = toml::from_str(&s).unwrap();
@@ -190,11 +219,35 @@ mod tests {
         let file = ConfigFile {
             quality_override: None,
             theme_override: Some(ConfigTheme::Purple),
+            tutorial_completed: false,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("purple"));
         let back: ConfigFile = toml::from_str(&s).unwrap();
         assert_eq!(back.theme_override, Some(ConfigTheme::Purple));
+    }
+
+    #[test]
+    fn tutorial_completed_roundtrips_through_toml() {
+        let file = ConfigFile {
+            quality_override: None,
+            theme_override: None,
+            tutorial_completed: true,
+        };
+        let s = toml::to_string_pretty(&file).unwrap();
+        assert!(s.contains("tutorial_completed"));
+        let back: ConfigFile = toml::from_str(&s).unwrap();
+        assert!(back.tutorial_completed);
+    }
+
+    #[test]
+    fn tutorial_completed_defaults_false_and_is_omitted_when_unset() {
+        let file = ConfigFile::default();
+        let s = toml::to_string_pretty(&file).unwrap();
+        // Skipped when false, so a fresh install writes no tutorial key.
+        assert!(!s.contains("tutorial_completed"));
+        let back: ConfigFile = toml::from_str(&s).unwrap();
+        assert!(!back.tutorial_completed);
     }
 
     #[test]

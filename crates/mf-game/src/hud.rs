@@ -651,7 +651,11 @@ fn main_menu_hud_system(
         )?,
         MenuScreen::Settings => {
             let mut screen = screen;
-            if settings_screen_ui(contexts, quality, theme, config, sfx, hovered)? {
+            // Title-screen Settings: no live `TutorialState` needed — clearing
+            // the persisted flag (the Replay button does that) re-arms the flow
+            // on the next city load, which is the only way to reach `InGame`
+            // from here anyway.
+            if settings_screen_ui(contexts, quality, theme, config, None, sfx, hovered)? {
                 *screen = MenuScreen::Title;
             }
         }
@@ -1041,11 +1045,15 @@ fn city_select_screen_ui(
 /// what "Back" means for them (return to `MenuScreen::Title` vs. close
 /// the pause-menu settings panel) via this function's `bool` return
 /// (true == Back was clicked this frame).
+#[allow(clippy::too_many_arguments)]
 fn settings_screen_ui(
     mut contexts: EguiContexts,
     mut quality: ResMut<QualityTier>,
     mut theme: ResMut<Theme>,
     mut config: ResMut<MfConfig>,
+    // `None` on the title screen (no live flow to restart), `Some` from the
+    // in-game pause menu (so Replay restarts the flow immediately).
+    mut tutorial: Option<ResMut<crate::tutorial::TutorialState>>,
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
 ) -> Result<bool> {
@@ -1085,6 +1093,23 @@ fn settings_screen_ui(
                             });
 
                         ui.add_space(28.0);
+                        let replay = ui.add_sized(
+                            [220.0, 36.0],
+                            egui::Button::new(egui::RichText::new("Replay tutorial").size(13.0)),
+                        );
+                        hover_tick(&replay, &mut hovered, &mut sfx);
+                        if replay.clicked() {
+                            sfx.write(PlaySfx(Sfx::Confirm));
+                            // Re-arm the flow and clear the persisted "done"
+                            // flag, so it shows on the next city load (or
+                            // immediately, if this was opened mid-game).
+                            config.set_tutorial_completed(false);
+                            if let Some(tutorial) = tutorial.as_mut() {
+                                tutorial.request_replay();
+                            }
+                        }
+
+                        ui.add_space(10.0);
                         let back = ui.add_sized(
                             [220.0, 40.0],
                             egui::Button::new(egui::RichText::new("Back").size(14.0)),
@@ -1309,6 +1334,7 @@ fn pause_overlay_system(
     quality: ResMut<QualityTier>,
     theme: ResMut<Theme>,
     config: ResMut<MfConfig>,
+    tutorial: ResMut<crate::tutorial::TutorialState>,
     mut save_manager: ResMut<SaveManager>,
     mut toasts: ResMut<ToastLog>,
     pending: Res<PendingInit>,
@@ -1326,7 +1352,15 @@ fn pause_overlay_system(
     // (same quality/theme controls, same widget layout) rather than a
     // second copy of the ComboBoxes bolted onto the pause panel.
     if *pause_settings_open {
-        if settings_screen_ui(contexts, quality, theme, config, sfx, hovered)? {
+        if settings_screen_ui(
+            contexts,
+            quality,
+            theme,
+            config,
+            Some(tutorial),
+            sfx,
+            hovered,
+        )? {
             *pause_settings_open = false;
         }
         return Ok(());
