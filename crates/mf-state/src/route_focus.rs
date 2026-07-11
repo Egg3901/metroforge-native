@@ -13,11 +13,14 @@ use bevy_ecs::prelude::*;
 /// stronger chevrons); dimming itself only keys off `route_id`.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RouteFocus {
+    /// Selected route id, or `None` when nothing is focused.
     pub route_id: Option<i64>,
+    /// Soft hint that the routes panel is in edit mode (gizmos only).
     pub editing: bool,
 }
 
 impl RouteFocus {
+    /// Drop focus and leave edit mode.
     pub fn clear(&mut self) {
         self.route_id = None;
         self.editing = false;

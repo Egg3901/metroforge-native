@@ -1,82 +1,92 @@
 # Architecture
 
-MetroForge Desktop is a Rust/Bevy renderer and input layer sitting in front of a
-simulation it does not own. Every rule about how a city grows, how budgets balance,
-how passengers route, and how a game ends lives in the existing deterministic
-TypeScript sim core (`metroforge/src/core/`). This client's job is: connect to that
-sim, mirror its state, and draw it in 3D. No game logic is duplicated here.
+MetroForge Desktop (`metroforge-native`) is a Rust/Bevy renderer and input layer
+in front of a simulation it does not own. Economy, routing, demand, and fail
+conditions live in the TypeScript sim core (sibling `metroforge` repo), reached
+through the wire protocol in [`PROTOCOL.md`](PROTOCOL.md). This client connects,
+mirrors state, draws it, and forwards player commands. No sim rules are
+reimplemented here.
 
-## Why sidecar, not rewrite
+---
 
-The obvious alternative to what's here was porting the sim to Rust. That was
-rejected: it would mean two independent implementations of the same economy,
-routing, and demand model, which inevitably drift apart under maintenance, and a
-years-old bug class (client says one thing, server-authoritative logic says another)
-that this project has no reason to invite. Instead, the sidecar wraps the *existing*
-sim loop (`sim.worker.ts`, unmodified in its core logic) behind a small process
-boundary and speaks a wire protocol shaped like a future native FFI call. One sim
-implementation serves the web build, this desktop client, and any future client,
-forever in lockstep.
-
-The cost of this choice is a process boundary and a wire protocol (see
-[`PROTOCOL.md`](PROTOCOL.md)) instead of a function call. That cost is paid once,
-here, rather than paid continuously as two sims silently diverge.
-
-## Crate-by-crate
+## Crate map
 
 ```
-mf-protocol   (no Bevy dependency)
-mf-net        (Bevy: Resource/Event only)
-mf-state      (Bevy: Resource/Event only)
-mf-render     (Bevy: full)
-mf-game       (Bevy: full; binary `metroforge`)
+mf-protocol   (no Bevy)
+mf-net        (bevy_app / bevy_ecs)
+mf-state      (bevy_app / bevy_ecs / bevy_math; depends on mf-net + mf-protocol)
+mf-render     (full bevy; depends on mf-state + mf-protocol)
+mf-game       (full bevy + egui; binary `metroforge`; depends on all of the above)
 ```
 
-Dependencies flow one way: `mf-game` depends on `mf-net`, `mf-state`, and
-`mf-render`; `mf-render` and `mf-net` both depend on `mf-state` and `mf-protocol`;
-nothing depends on `mf-game`. This is what lets `mf-render` (owned by a separate
-agent/session in this project's workflow) be developed against `mf-state`'s shared
-resources without ever depending on, or being depended on by, `mf-game` directly.
+### Dependency rule
 
-### mf-protocol
+Dependencies flow **one way toward `mf-game`**:
 
-Pure serde mirrors of every type that crosses the wire, plus the binary frame codec.
-Deliberately has no Bevy dependency: it is the one crate that could be reused by a
-non-Bevy consumer (a headless test harness, a future server, a different engine) with
-zero changes. Two halves:
+```
+mf-protocol
+    ↑
+ mf-net ──────────────┐
+    ↑                 │
+ mf-state ←───────────┘
+    ↑
+ mf-render
+    ↑
+ mf-game
+```
 
-- `types.rs` / `envelope.rs`: the JSON control channel. `Command`, `UiState`,
-  `StaticCityJson`, and every other JSON-shaped type, plus the `{t, seq?, p?}`
-  envelope and the `ToSim` / `FromSimJson` message enums.
-- `binary.rs`: the four binary hot-path frame layouts (`FrameSnapshot`, `Fields`,
-  `Traffic`, `StaticMask`). Scalars are read via `from_le_bytes`; arrays are always
-  copied out through `chunks_exact(4)` rather than cast in place, because an inbound
-  WebSocket buffer is not guaranteed 4-byte aligned.
+**`mf-render` never depends on `mf-game`.** Confirmed in
+`crates/mf-render/Cargo.toml` (only `mf-state`, `mf-protocol`, `bevy`). Shared
+toggles that both shells need (`SubwayView`, `OverlayState`, `RevealState`,
+`Theme`, `QualityTier`, `HeightAt`) live in `mf-state` so render can read them
+without importing the game shell. Comments in `roads.rs` / `overlays.rs`
+restate this edge explicitly.
 
-`lib.rs` unifies both halves into one `FromSimMsg` enum so downstream crates funnel
-every inbound message, JSON or binary, through a single event type.
+`mf-state` **does** depend on `mf-net` (for `SimEvent` and `NetSet::Drain`
+ordering in `plugin.rs`).
 
-Full wire reference: [`PROTOCOL.md`](PROTOCOL.md).
+### Responsibilities
 
-### mf-net
+| Crate | Owns | Key paths |
+|---|---|---|
+| **mf-protocol** | Serde JSON mirrors + binary codec; `PROTOCOL_VERSION`; `FromSimMsg` | `types.rs`, `envelope.rs`, `binary.rs` |
+| **mf-net** | `SimTransport`, `WsTransport`, `SidecarProcess`, ping/liveness/reconnect | `transport.rs`, `ws_transport.rs`, `sidecar.rs`, `reconnect.rs`, `plugin.rs` |
+| **mf-state** | Shared `Resource`s filled from `SimEvent` | `city.rs`, `fields.rs`, `frame.rs`, `ui.rs`, `quality.rs`, … |
+| **mf-render** | 3D layers under `MfRenderPlugin` / `MfRenderSet` | `lib.rs` + per-layer modules |
+| **mf-game** | App state machine, camera, input→commands, egui HUD, config, campaign | `state.rs`, `hud.rs`, `config.rs`, `campaign.rs` |
 
-Owns the fact that the sim is reachable at all, and is the *only* crate allowed to
-know it's a separate OS process today. Its central seam is one trait:
+---
+
+## mf-protocol
+
+Pure wire types. No Bevy. Two halves unified as `FromSimMsg`:
+
+- JSON: `ToSim` / `FromSimJson` + payload structs.
+- Binary: `FrameSnapshot`, `Fields`, `Traffic`, `StaticMask`, `StaticBuildings`.
+
+`Frame` / `Fields` variants wrap payloads in `Arc` so `mf-state` can retain
+"latest" without deep-cloning ~20 Hz / 7-day arrays.
+
+Full contract: [`PROTOCOL.md`](PROTOCOL.md).
+
+---
+
+## mf-net
+
+Only crate allowed to know the sim is a separate OS process today.
 
 ```rust
 pub trait SimTransport: Send + Sync {
-    fn send(&self, msg: ToSim) -> anyhow::Result<()>;   // non-blocking enqueue
-    fn try_recv(&self) -> Option<FromSimMsg>;            // non-blocking drain
+    fn send(&self, msg: ToSim) -> anyhow::Result<()>;
+    fn try_recv(&self) -> Option<FromSimMsg>;
     fn is_alive(&self) -> bool;
 }
 ```
 
-Bevy isn't tokio-native, so the concrete desktop implementation (`WsTransport`) runs
-a blocking `tungstenite` WebSocket client on a dedicated background thread and
-bridges it into the ECS through two `crossbeam-channel`s (outbound queue, inbound
-queue). A Bevy system (`drain_inbound_system`) drains the inbound channel into
-`Events<SimEvent>` once per frame; nothing in Bevy-land ever touches a socket
-directly.
+`WsTransport` runs blocking `tungstenite` on a background thread; two
+crossbeam channels bridge to ECS. `drain_inbound_system` pushes
+`Events<SimEvent>` each frame. Ping every 5 s; 10 s silence → dead; reconnect
+policy in `reconnect.rs` (500 ms → 4 s, 5 attempts).
 
 `SidecarProcess` locates and spawns the sidecar binary (lookup order: env var, then
 next to the running executable, then a dev fallback of `bun run sidecar/index.ts`
@@ -90,124 +100,146 @@ reaped on every spawn. `reconnect.rs` implements the liveness policy: process ex
 causes are distinguished); respawn and reconnect with backoff from 500 ms up to 4 s,
 for up to 3 attempts. Mid-game recovery re-handshakes and restores from autosave
 without returning to MainMenu; exhausting attempts surfaces a diagnostics screen
-with the sidecar log tail.
+with the sidecar log tail. Sidecar spawn / `--port 0` / `$MF_SIDECAR_PATH` rules:
+[`PROTOCOL.md` §4](PROTOCOL.md).
 
-**The mobile constraint this is built around:** iOS forbids spawning subprocesses.
-`mf-net` is structured so that on a future iOS/Android port, `SimTransport` is
-implemented by an in-process engine instead (an embedded JS runtime running the same
-sim bundle, or a native port of the sim logic) with the trait's contract unchanged.
-Every call site elsewhere in the workspace (`mf-state`'s event consumer, `mf-game`'s
-state machine, every `mf-render` layer) only ever sees `Events<SimEvent>` and
-`Res<SimLink>`; none of them know or care whether there's a subprocess underneath.
-That is the entire reason this crate boundary exists where it does, rather than
-folding transport concerns into `mf-game` directly.
+---
 
-### mf-state
+## mf-state
 
-Shared Bevy `Resource`s, filled from `mf-net`'s event stream by one system, and read
-by both `mf-render` and `mf-game` without either depending on the other:
+Resources filled by `apply_sim_events_system` (after `NetSet::Drain`):
 
-- `CurrentCity`: the `StaticCityJson` from `ready`, plus the 0-3 mask byte arrays
-  that arrive right after it as binary `StaticMask` frames.
-- `LatestFields`: the most recent `Fields` binary frame (terrain/population/jobs/
-  land value/water/parks), sent at init and every 7 sim-days.
-- `LatestFrame`: the most recent `FrameSnapshot` binary frame (vehicles, agents,
-  color table), sent every 50 ms sim tick. No interpolation buffer in v1; only
-  "latest" is retained.
-- `LatestUi`: the most recent `UiState`, sent at 2 Hz (budget, approval, stations,
-  tracks, routes, active events).
-- `QualityTier`: the active quality tier and its knob table (see below).
-- `SubwayView`: the subway-view toggle's target state and eased transition
-  progress; `mf-game`'s input layer only flips the target, `mf-render`'s `subway.rs`
-  is what actually steps the animation each frame (it's the module with per-frame
-  delta time and the geometry to animate).
-- `HeightAt`: a `Fn(x, z) -> y` ground-height sampler, defaulting to flat ground at
-  `y = 0` until `mf-render`'s `terrain.rs` replaces it with a real bilinear sample
-  once fields have loaded. Every layer that places something on the ground (roads,
-  buildings, transit, vehicles, agents, the camera's ground raycast) depends on this
-  resource rather than on `mf-render` directly, which is what lets it live in
-  `mf-state` instead of creating a `mf-render` dependency for crates that shouldn't
-  need one.
+| Resource | Source | Cadence / notes |
+|---|---|---|
+| `CurrentCity` | `ready` + `StaticMask` + optional `StaticBuildings` | Masks gate Loading; buildings do not |
+| `LatestFields` | msgType=2 | Init + every 7 sim-days; `Arc` |
+| `LatestFrame` | msgType=1 | Every 50 ms (~20 Hz); `Arc`; no interpolation buffer |
+| `LatestUi` | `t:"ui"` | 2 Hz |
+| `LatestDemand` | `t:"demand"` | Assignment-driven (see `demand.rs`) |
+| `QualityTier` | Boot / HUD | Knob table via `knobs()` |
+| `Theme` | Boot / HUD | Consumed by `palette.rs` |
+| `SubwayView` | Input flips `active`; render steps `t` | |
+| `HeightAt` | Default flat 0; terrain replaces sampler | |
+| `RevealState` | Game input drives; render copies to shader | |
+| `OverlayState` | Game cycles; render dims transit | |
+| `WeatherEffects` | Settings checkbox | Gated by quality atmosphere knob |
 
-### mf-render
+`Traffic` and control-plane JSON (`commandResult`, `toast`, …) are **not**
+mirrored here; consumers read `SimEvent` directly (`plugin.rs`).
 
-The 3D renderer, composed as `MfRenderPlugin` from one sub-plugin per visual layer,
-ordered by a `MfRenderSet` system-set chain: `Terrain` (must run first and own any
-`HeightAt` rebuild) then `Statics` (roads/buildings/transit: cache-checked every
-frame against a version counter, only rebuilt on change) then `Dynamic`
-(vehicles/agents/day-night/atmosphere/subway-view: run unconditionally every frame).
+---
 
-Buildings are the layer worth calling out specifically: 20 to 60 thousand static
-cuboids per city are baked into **merged per-chunk meshes** (an 8x8 grid of world
-chunks, one mesh per chunk), not GPU instancing. The buildings never move, so a
-merged mesh gets whole-chunk frustum culling and a single draw call per visible
-chunk for free, with no custom render pipeline required in Bevy. Instancing would
-buy nothing here since there's no per-instance state to vary at draw time beyond
-what's already baked into per-vertex color.
+## mf-render — pipeline stages
 
-Vehicles are the inverse case: at most a few hundred at once, each one an entity with
-its own `Transform`, so a grow-only entity pool with zero per-frame heap allocation
-in steady state is simpler and just as fast as instancing would be at this count.
+`MfRenderSet` chain (`lib.rs`):
 
-Every color in the renderer comes from `palette.rs`, the single source of truth for
-the Mirror's Edge art direction (see `art-direction.md` at the repo root: it is
-binding and overrides any conflicting guidance elsewhere). Full quality-tier knob
-table: see the README, or `mf-state/src/quality.rs` for the source of truth.
+```
+sync_theme_system  (before Terrain)
+    → Terrain
+    → Statics
+    → Dynamic
+```
 
-### mf-game
+| Set | Systems (representative) | Rebuild policy |
+|---|---|---|
+| **Terrain** | `build_terrain_system`, terrain material quality | Rebuild on signature change; owns `HeightAt` replacement |
+| **Statics** | roads, buildings, transit, trees, street_lamps | Cache-check every frame; rebuild only on signature/key change |
+| **Dynamic** | vehicles, agents, daynight, atmosphere, subway, sky, water uniforms, outline, MSAA/fog/bloom | Per-frame (with quantized early-outs) |
 
-The game shell (binary `metroforge`): the app state machine
-(`Boot -> ConnectingSim -> MainMenu -> Loading -> InGame`, plus `SimError` after
-exhausted sidecar reconnects), the RTS camera rig, input-to-command translation,
-the egui HUD, and persistent config
-(`config.toml` under the OS config directory, holding a quality-tier override that
-always wins over auto-detection). This is the only crate that maps `mf-net`'s
-`NetStatus` and `mf-state`'s readiness resources onto a concrete state machine;
-neither of those crates knows these states exist.
+### Rebuild-signature pattern
 
-## Determinism guarantee and the smoke-test gate
+Each static layer stores a key and early-returns when unchanged:
 
-The sim core is deterministic: `(seed, command stream)` fully determines a game,
-independent of wall-clock timing, frame rate, or which client issued the commands.
-This client never simulates anything itself; it only renders what the sidecar sends
-and forwards player input as commands. That means the determinism guarantee the sim
-core already carries (golden replay tests in the `metroforge` repo) extends to this
-client automatically, with one added risk: does the sidecar, once compiled with
-`bun build --compile` into a single-file executable, still behave identically to the
-interpreted `bun run` version, especially given that all city data is statically
-embedded at compile time (see [`PROTOCOL.md`](PROTOCOL.md) and the sidecar README for
-why dynamic imports don't survive `--compile`)?
+| Layer | Signature (from code) |
+|---|---|
+| Terrain | `(fields.version, subdiv_divisor, theme, shader_water)` |
+| Roads | `(fields.version, roads.len(), total_points, theme, densify_step_bits)` |
+| Buildings | `rebuild_key(fields.version, buildings_count)` + `theme` |
+| Transit | `u64` hash of structural `UiState` ⊕ densify ⊕ theme ⊕ unlit |
+| Trees | `(fields.version, theme, tree_enabled)` |
+| Street lamps | `(fields.version, roads.len(), total_points, theme, enabled, densify_bits)` |
 
-That question is answered by the sidecar's own CI gate, not by anything in this
-repo: `sidecar/smoke-test.ts` runs two independent sessions against the same seed,
-builds an identical small bus network via commands, drives the sim forward several
-hundred ticks, and asserts both that vehicles actually moved between consecutive
-frames (the sim isn't stalled) and that `requestReplay`'s `stateHash` agrees between
-the two runs at the same tick. It is run once interpreted and, in release CI, once
-against a `bun build --compile` binary, so a divergence introduced by compilation
-would be caught. `mf-net`'s `live_sidecar.rs` integration test is the complementary
-check on this side of the boundary: it exercises the real Boot-to-Loading handshake
-against a live sidecar process to confirm `mf-protocol`'s types actually decode real
-sidecar output, not just the fixtures in `mf-protocol/tests/roundtrip.rs`. It is
-`#[ignore]`d by default (the sidecar may not be built in every environment that runs
-`cargo test`) and is meant to be run explicitly with
-`cargo test -p mf-net --test live_sidecar -- --ignored`.
+Buildings geometry paths (`buildings.rs`): real `StaticBuildings` footprints →
+mask → procedural density. Late-arriving footprints force one extra rebuild.
+
+Vehicles: grow-only entity pool; materials shared by paint key
+`(color_idx, brightness_bucket, unlit, overlay_dimmed)` (`vehicles.rs`).
+
+### Quality knob flow
+
+1. `mf-game/quality_boot.rs`: `config.toml` → `MF_QUALITY` → GPU `detect()` →
+   default `Medium`.
+2. `QualityTier` resource; HUD can change it at runtime.
+3. `QualityTier::knobs()` → `QualityKnobs` (`mf-state/src/quality.rs`).
+4. Render-global: MSAA, shadow map size, fog, bloom (`lib.rs`).
+5. Per-layer: materials, draw distances, agent cap, terrain subdiv, day/night,
+   ribbons, trees, water tier, street lamps.
+
+---
+
+## mf-game — shell and sim-facing behavior
+
+### App state machine (`state.rs`)
+
+```
+Boot → ConnectingSim → MainMenu → Loading → InGame
+                                                 ↓
+                                             SimError  (exhausted sidecar reconnects)
+```
+
+- **Boot**: load config, spawn sidecar + WS.
+- **ConnectingSim**: client `hello`; version check; store `SimHello`.
+- **MainMenu**: city pick / load / settings (`MenuScreen` resource).
+- **Loading**: send `init` (or save load); gate
+  `masks_complete && fields && ui` → InGame.
+- **Fatal net**: any non-Boot/MainMenu state → MainMenu.
+
+### Tick model (as mirrored by this client)
+
+| Signal | Cadence | Source in this repo |
+|---|---|---|
+| Sim frame snapshot | 50 ms (~20 Hz) | `binary.rs`, `frame.rs` |
+| UI state | 2 Hz | `ui.rs`, `types.rs` |
+| Fields | init + every 7 sim-days | `fields.rs` |
+| Day length | `TICKS_PER_DAY = 1200` | `UiState::display_hour` |
+| Demand | ~assignment interval (300 ticks / dirty) | `demand.rs` comments |
+| Client render | Bevy frame rate (60+) | camera / vehicles comments |
+| WS poll | 4 ms | `ws_transport.rs` |
+
+### Determinism
+
+This client does not run the sim. Determinism of gameplay outcomes is a
+property of the sidecar: `(seed, command stream)` → state, verified there via
+`requestReplay` / `stateHash` (types in `ReplayPayload`). Client-side
+"determinism" comments cover only local cosmetics (audio LFSR, tree jitter
+hashes, verify-harness fixed cursor) — not economy or routing.
+
+`init` seeds from wall-clock nanos (`state.rs` `rand_seed`); replays use the
+recorded seed from `ReplayPayload`.
+
+### Scenario layer
+
+**Wire:** `ScenarioRules` on `InitPayload.rules` / `ReplayPayload.rules`
+(`types.rs`). Current init paths in `state.rs` / `attract.rs` pass
+`rules: None`.
+
+**Client campaign** (`campaign.rs`): stars, unlocks, and end-of-scenario
+outcomes evaluated over `LatestUi` / `UiState` (including sidecar-provided
+`failed`, `max_day`, `bankrupt`). The sidecar is not required to know about
+stars; the client adds that layer. Separate alpha goals live in `goals.rs`.
+
+---
 
 ## Coordinate conventions
 
-All crates agree on one convention: world X maps to Bevy X, world Y maps to Bevy Z,
-and up is +Y. Units are meters throughout, with no unit scaling anywhere in the
-pipeline. The ground is the XZ plane; the origin is the city center. Every wire
-payload's `(x, y)` pair (vehicle positions, agent positions, station/track points,
-field grid cells) is a world `(x, y)` and gets placed at Bevy `(x, heightAt(x, y),
-y)` plus whatever per-layer vertical offset that layer needs (roads at
-`heightAt + 0.5`, route stripes at `heightAt + 0.6`, vehicles at `heightAt + 3`, and
-so on).
+World X → Bevy X; world Y → Bevy Z; up is +Y. Units are meters. Ground is the
+XZ plane; origin is city center. Wire `(x, y)` becomes Bevy
+`(x, heightAt(x, y), y)` plus per-layer vertical offsets.
 
-## Quality-tier knobs
+---
 
-`mf-state::QualityTier::knobs()` is the single source of truth; `mf-game`'s
-`config.rs` persists an override, `mf-render`'s per-layer plugins each read the
-fields relevant to them. See the table in the top-level README for the full
-potato/low/medium/high breakdown, or `crates/mf-state/src/quality.rs` for the exact
-values and the auto-detect heuristic (GPU adapter name and device kind).
+## Related docs
+
+- Wire contract: [`PROTOCOL.md`](PROTOCOL.md)
+- Dev/CI/release: [`DEVELOPMENT.md`](DEVELOPMENT.md)
+- PR house patterns: [`../CONTRIBUTING.md`](../CONTRIBUTING.md)

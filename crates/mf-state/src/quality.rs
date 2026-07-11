@@ -9,10 +9,14 @@ use bevy_ecs::prelude::*;
 /// `config.toml` override always winning (spec §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Resource, Default)]
 pub enum QualityTier {
+    /// Weakest tier (software raster / UHD-class): unlit, no day/night, fogged.
     Potato,
+    /// Integrated-GPU baseline: unlit, day/night on, limited draw distance.
     Low,
+    /// Default: lit materials, MSAA, atmosphere, bloom.
     #[default]
     Medium,
+    /// Discrete-GPU high: larger shadows, unlimited draw distance, denser fog steps.
     High,
 }
 
@@ -20,9 +24,13 @@ pub enum QualityTier {
 /// `RenderAdapterInfo` and feeds into [`detect`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuDeviceKind {
+    /// Discrete GPU adapter.
     Discrete,
+    /// Integrated GPU adapter.
     Integrated,
+    /// CPU / software device kind from the adapter info.
     Cpu,
+    /// Anything else (unknown / other).
     Other,
 }
 
@@ -51,9 +59,11 @@ pub struct QualityKnobs {
     pub unlit_material: bool,
     /// Building draw distance in meters; `None` means unlimited ("full").
     pub building_draw_distance_m: Option<f32>,
+    /// Max agents drawn from the latest frame (0 = none on Potato).
     pub agent_cap: u32,
     /// Terrain mesh subdivision divisor (higher = coarser mesh).
     pub terrain_subdiv_divisor: u32,
+    /// When `false`, day/night is pinned to noon (Potato).
     pub day_night_enabled: bool,
     /// Max spacing (meters) between densified ribbon samples for roads /
     /// transit tracks / route stripes. Higher = fewer vertices on rebuild
