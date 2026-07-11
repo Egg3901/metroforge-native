@@ -34,6 +34,11 @@ pub enum GpuDeviceKind {
 /// regardless of tier), so they were dead data rather than a knob anyone
 /// could turn. Re-add a knob only alongside the code that actually
 /// implements it.
+///
+/// `ribbon_densify_step_m` / `tree_enabled` / `tree_draw_distance_m` are
+/// client-only perf knobs (perf audit): coarser ribbons and tree culling on
+/// weak tiers, mirroring the existing `terrain_subdiv_divisor` /
+/// `building_draw_distance_m` pattern.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QualityKnobs {
     /// `true` = `AutoVsync`, `false` = `AutoNoVsync` (only Potato disables vsync).
@@ -50,9 +55,28 @@ pub struct QualityKnobs {
     /// Terrain mesh subdivision divisor (higher = coarser mesh).
     pub terrain_subdiv_divisor: u32,
     pub day_night_enabled: bool,
+    /// Max spacing (meters) between densified ribbon samples for roads /
+    /// transit tracks / route stripes. Higher = fewer vertices on rebuild
+    /// and at draw time (Potato/Low).
+    pub ribbon_densify_step_m: f32,
+    /// When `false`, park trees are not built (Potato).
+    pub tree_enabled: bool,
+    /// Tree-chunk draw distance in meters; `None` means unlimited.
+    pub tree_draw_distance_m: Option<f32>,
 }
 
 impl QualityTier {
+    /// Player-facing label for combo boxes (not `Debug` — "Potato" is fine,
+    /// but this keeps HUD copy intentional if variants are renamed later).
+    pub fn label(self) -> &'static str {
+        match self {
+            QualityTier::Potato => "Potato",
+            QualityTier::Low => "Low",
+            QualityTier::Medium => "Medium",
+            QualityTier::High => "High",
+        }
+    }
+
     /// The full knob table (spec §4), one method call per tier.
     pub fn knobs(self) -> QualityKnobs {
         match self {
@@ -65,6 +89,9 @@ impl QualityTier {
                 agent_cap: 0,
                 terrain_subdiv_divisor: 3,
                 day_night_enabled: false,
+                ribbon_densify_step_m: 48.0,
+                tree_enabled: false,
+                tree_draw_distance_m: Some(3_000.0),
             },
             QualityTier::Low => QualityKnobs {
                 vsync: true,
@@ -75,6 +102,9 @@ impl QualityTier {
                 agent_cap: 100,
                 terrain_subdiv_divisor: 2,
                 day_night_enabled: true,
+                ribbon_densify_step_m: 36.0,
+                tree_enabled: true,
+                tree_draw_distance_m: Some(6_000.0),
             },
             QualityTier::Medium => QualityKnobs {
                 vsync: true,
@@ -85,6 +115,9 @@ impl QualityTier {
                 agent_cap: 250,
                 terrain_subdiv_divisor: 1,
                 day_night_enabled: true,
+                ribbon_densify_step_m: 24.0,
+                tree_enabled: true,
+                tree_draw_distance_m: Some(12_000.0),
             },
             QualityTier::High => QualityKnobs {
                 vsync: true,
@@ -95,6 +128,9 @@ impl QualityTier {
                 agent_cap: 400,
                 terrain_subdiv_divisor: 1,
                 day_night_enabled: true,
+                ribbon_densify_step_m: 24.0,
+                tree_enabled: true,
+                tree_draw_distance_m: None,
             },
         }
     }
@@ -172,5 +208,11 @@ mod tests {
                 < QualityTier::Low.knobs().building_draw_distance_m.unwrap()
         );
         assert!(QualityTier::High.knobs().building_draw_distance_m.is_none());
+        assert!(!QualityTier::Potato.knobs().tree_enabled);
+        assert!(QualityTier::Low.knobs().tree_enabled);
+        assert!(
+            QualityTier::Potato.knobs().ribbon_densify_step_m
+                > QualityTier::High.knobs().ribbon_densify_step_m
+        );
     }
 }

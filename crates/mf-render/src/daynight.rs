@@ -25,6 +25,9 @@ pub struct DayNightState {
     pub hour: f32,
     /// 0 = full day, 1 = full night; smoothly ramps across dusk/dawn.
     pub night_factor: f32,
+    /// Last night_factor written to lights/clear color, quantized to 1/256
+    /// so steady-state frames skip dirtying render-world lighting uniforms.
+    applied_night_bucket: Option<u8>,
 }
 
 pub struct MfDayNightPlugin;
@@ -97,6 +100,11 @@ fn compute_day_night_system(
     // Until the first UiState arrives (ConnectingSim/MainMenu/Loading), hold
     // noon rather than treating tick 0 as midnight — otherwise every pre-game
     // screen sits on the near-black night sky.
+    // Gate on `ui.is_changed()` for Light theme: tick only advances with
+    // UiState (~2 Hz), so recomputing every render frame is wasted work.
+    if !ui.is_changed() && state.applied_night_bucket.is_some() {
+        return;
+    }
     let Some(u) = &ui.0 else {
         state.hour = 12.0;
         state.night_factor = 0.0;
@@ -109,12 +117,19 @@ fn compute_day_night_system(
 }
 
 fn apply_day_night_system(
-    state: Res<DayNightState>,
+    mut state: ResMut<DayNightState>,
     mut clear_color: ResMut<ClearColor>,
     mut ambient: ResMut<AmbientLight>,
     quality: Res<QualityTier>,
+    theme: Res<Theme>,
     mut suns: Query<(&mut DirectionalLight, &mut Transform), With<Sun>>,
 ) {
+    let bucket = (state.night_factor * 255.0).round() as u8;
+    if state.applied_night_bucket == Some(bucket) && !quality.is_changed() && !theme.is_changed() {
+        return;
+    }
+    state.applied_night_bucket = Some(bucket);
+
     let n = state.night_factor;
     let day_color = palette::sky_day();
     let night_color = palette::sky_night();

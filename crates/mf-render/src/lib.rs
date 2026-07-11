@@ -13,7 +13,9 @@ mod buildings;
 mod daynight;
 mod mesh_utils;
 mod outline;
-mod palette;
+/// Public so `mf-game` ghost previews can share the same vivid route table
+/// (and theme) as finished transit — see `tools.rs` route_ghost_color.
+pub mod palette;
 mod reveal;
 mod roads;
 mod sky;

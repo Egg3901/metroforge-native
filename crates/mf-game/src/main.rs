@@ -2,6 +2,7 @@
 // Windows: GUI subsystem in release so no console window opens behind the game.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app_icon;
 mod attract;
 mod audio;
 mod build_ui;
@@ -10,6 +11,7 @@ mod campaign;
 mod command_bus;
 mod config;
 mod design_system;
+mod goals;
 mod hud;
 mod input;
 mod map_mode;
@@ -63,6 +65,7 @@ fn main() {
             }),
         )
         .add_plugins((MfNetPlugin, MfStatePlugin, MfRenderPlugin))
+        .add_plugins(app_icon::MfAppIconPlugin)
         .add_plugins((
             state::MfGameStatePlugin,
             camera::MfCameraPlugin,
@@ -87,6 +90,7 @@ fn main() {
             report_ui::MfReportUiPlugin,
             attract::MfAttractPlugin,
             promo::MfPromoPlugin,
+            goals::MfGoalsPlugin,
         ));
     // MF_PERF_LOG=1: log frame-time diagnostics (avg/FPS) once per second.
     // Costs nothing when unset; gives players and CI a zero-setup way to

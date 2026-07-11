@@ -16,35 +16,50 @@ same deterministic TypeScript sim core, so a city plays out identically no matte
 which client you use. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for why, and
 for the determinism guarantee that keeps it true.
 
-## Download
+## Install
 
-Prebuilt binaries for Windows, macOS (Apple Silicon), and Linux are published on the
-[GitHub Releases page](https://github.com/Egg3901/metroforge-native/releases). Each
-release is a zip (Windows/macOS) or tar.gz (Linux) containing the game executable,
-the sidecar executable, and the bundled font license. No installer, no separate
-runtime to install.
+Prebuilt installers and archives for Windows, macOS (Apple Silicon), and Linux are
+published on the [GitHub Releases page](https://github.com/Egg3901/metroforge-native/releases).
+Each release includes the game executable, the sidecar executable, and the bundled
+font license. No separate runtime to install.
 
-## Quickstart (from a downloaded release)
+### Windows
+
+1. Download `metroforge-<version>-windows-x64-setup.exe` from
+   [GitHub Releases](https://github.com/Egg3901/metroforge-native/releases).
+2. Run the installer (Program Files, Start Menu shortcuts, Add/Remove Programs entry).
+3. If SmartScreen blocks it: click "More info", then "Run anyway".
+4. The game launches.
+
+Alternatively, download the `.zip` archive, extract it, and run `metroforge.exe`.
+
+### macOS
+
+1. Download the `.dmg` file from
+   [GitHub Releases](https://github.com/Egg3901/metroforge-native/releases).
+2. Open the DMG and drag `MetroForge` to Applications.
+3. First launch: right-click the app and select "Open" (not double-click).
+4. If Gatekeeper blocks it: open System Settings, go to Privacy and Security, find
+   the blocked message near the bottom, and click "Open Anyway" to confirm.
+5. The game launches.
+
+Alternatively, download the `.zip` archive, extract it, and run the executable.
 
 ### Linux
-1. Extract the archive: `tar xzf metroforge-<version>-linux-x64.tar.gz`
-2. Run `./metroforge` from the extracted directory.
+
+1. Download `metroforge-<version>-linux-x64.tar.gz` from
+   [GitHub Releases](https://github.com/Egg3901/metroforge-native/releases).
+2. Extract: `tar xzf metroforge-<version>-linux-x64.tar.gz`
+3. Run: `./metroforge` from the extracted directory.
 
 The `metroforge-sidecar` binary next to it is required and is used automatically.
 
-### macOS
-1. Extract the archive and open the folder.
-2. Right-click `metroforge` and choose Open (do not double-click the first time).
-3. If Gatekeeper blocks it: open System Settings, go to Privacy and Security, find
-   the blocked message near the bottom, and click Open Anyway, then confirm.
-4. The game launches.
-
-### Windows
-1. Extract the archive to a folder.
-2. Double-click `metroforge.exe`.
-3. If SmartScreen warns about an unrecognized app: click More info, then click Run
-   anyway.
-4. The game launches.
+**Optional desktop integration:** to add a menu entry, copy the bundled files:
+```sh
+mkdir -p ~/.local/share/applications ~/.local/share/icons
+cp metroforge.desktop ~/.local/share/applications/
+cp metroforge.png ~/.local/share/icons/
+```
 
 The game automatically detects your GPU and picks a graphics quality tier (see
 below). If it runs slowly, lower the quality tier from the in-game HUD.

@@ -22,13 +22,15 @@ const AGENT_SIZE: f32 = 2.2;
 const AGENT_Y_OFFSET: f32 = 0.8;
 
 // Phase: 0 walk, 1 ride, 2 wait (spec §1.2).
+// Art direction: vivid color is reserved for the transit network — agents
+// stay greyscale, with phase readable via brightness only.
 fn phase_color(phase: f32) -> Color {
     if phase < 0.5 {
-        Color::srgb(0.55, 0.57, 0.6) // walk: neutral grey
+        Color::srgb(0.55, 0.57, 0.6) // walk: mid grey
     } else if phase < 1.5 {
-        Color::srgb(0.20, 0.78, 0.35) // ride: green
+        Color::srgb(0.72, 0.74, 0.76) // ride: lighter grey
     } else {
-        Color::srgb(1.0, 0.6, 0.0) // wait: amber
+        Color::srgb(0.40, 0.42, 0.45) // wait: darker grey
     }
 }
 
@@ -55,6 +57,8 @@ struct AgentsState {
     /// reused for the rest of the app's life — its attributes are overwritten
     /// in place on each rebuild instead of allocating a new `Mesh` asset.
     mesh: Option<Handle<Mesh>>,
+    /// CPU scratch reused across ~20 Hz rebuilds (cleared, not reallocated).
+    scratch: MeshBuffers,
 }
 
 /// Flip the shared agents material's `unlit` flag when the quality tier
@@ -136,7 +140,9 @@ fn update_agents_system(
         return;
     }
 
-    let mut buf = MeshBuffers::new();
+    // Pre-size once for the current cap (4 verts / 6 indices per agent quad).
+    state.scratch.ensure_capacity(cap * 4, cap * 6);
+    state.scratch.clear();
     let half = AGENT_SIZE * 0.5;
     for i in 0..draw_count {
         let base = i * 3;
@@ -155,7 +161,7 @@ fn update_agents_system(
         // see the comment there for the derivation. Swapping the middle two
         // corners to ((x0,z0),(x0,z1),(x1,z1),(x1,z0)) reverses the quad and
         // flips the cross product to `+Y`, matching the declared normal.
-        buf.push_flat_quad(
+        state.scratch.push_flat_quad(
             Vec3::new(x - half, ground_y, y - half),
             Vec3::new(x - half, ground_y, y + half),
             Vec3::new(x + half, ground_y, y + half),
@@ -165,10 +171,9 @@ fn update_agents_system(
         );
     }
 
-    // Build the new attributes as a throwaway CPU-side `Mesh` (no asset
-    // registration, no GPU cost), then transplant them into the one
-    // long-lived asset via `get_mut` so this rebuild re-uploads the existing
-    // GPU buffers instead of allocating fresh ones and tearing down the old.
+    // Transplant scratch attributes into the one long-lived mesh asset via
+    // `get_mut` so this rebuild re-uploads existing GPU buffers instead of
+    // allocating fresh ones and tearing down the old.
     let is_new_mesh = state.mesh.is_none();
     let mesh_handle = state
         .mesh
@@ -182,20 +187,8 @@ fn update_agents_system(
     if is_new_mesh {
         commands.entity(entity).insert(Mesh3d(mesh_handle.clone()));
     }
-    let mut built = buf.build();
     if let Some(mesh) = meshes.get_mut(&mesh_handle) {
-        if let Some(v) = built.remove_attribute(Mesh::ATTRIBUTE_POSITION) {
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, v);
-        }
-        if let Some(v) = built.remove_attribute(Mesh::ATTRIBUTE_NORMAL) {
-            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, v);
-        }
-        if let Some(v) = built.remove_attribute(Mesh::ATTRIBUTE_COLOR) {
-            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, v);
-        }
-        if let Some(idx) = built.remove_indices() {
-            mesh.insert_indices(idx);
-        }
+        state.scratch.apply_to_mesh(mesh);
     }
     if let Ok(mut vis) = visibility.get_mut(entity) {
         *vis = Visibility::Visible;

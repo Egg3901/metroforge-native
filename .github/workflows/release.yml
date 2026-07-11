@@ -34,7 +34,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Egg3901/metroforge
-          ref: 58f5679f50e1b546cb2084891b09d2aa7a6a8c36
+          ref: 2c812bed3a2da92783d86dd47be445241365aac8
           path: metroforge
 
       - name: Derive version from tag
@@ -89,6 +89,11 @@ jobs:
 
       - name: Install cross-compile toolchain and Bevy Linux system deps
         run: sudo apt-get update && sudo apt-get install -y clang llvm lld libasound2-dev libudev-dev pkg-config
+
+      # makensis builds the Windows setup exe cross-platform; no Windows
+      # runner needed (packaging/windows/installer.nsi).
+      - name: Install NSIS (Windows installer)
+        run: sudo apt-get install -y nsis
 
       - name: Add Windows rustup target
         run: rustup target add x86_64-pc-windows-msvc
@@ -162,6 +167,7 @@ jobs:
           files: |
             metroforge-native/release-artifacts/metroforge-${{ steps.version.outputs.value }}-linux-x64.tar.gz
             metroforge-native/release-artifacts/metroforge-${{ steps.version.outputs.value }}-windows-x64.zip
+            metroforge-native/release-artifacts/metroforge-${{ steps.version.outputs.value }}-windows-x64-setup.exe
 
   macos:
     runs-on: macos-latest
@@ -180,7 +186,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Egg3901/metroforge
-          ref: 58f5679f50e1b546cb2084891b09d2aa7a6a8c36
+          ref: 2c812bed3a2da92783d86dd47be445241365aac8
           path: metroforge
 
       - name: Derive version from tag
@@ -229,3 +235,4 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             metroforge-native/release-artifacts/metroforge-${{ steps.version.outputs.value }}-macos-arm64.zip
+            metroforge-native/release-artifacts/metroforge-${{ steps.version.outputs.value }}-macos-arm64.dmg

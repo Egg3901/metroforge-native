@@ -58,6 +58,52 @@ impl MeshBuffers {
         }
     }
 
+    /// Clear lengths but keep capacity — for hot-path scratch buffers
+    /// (agents rebuild ~20 Hz) that would otherwise reallocate every tick.
+    pub fn clear(&mut self) {
+        self.positions.clear();
+        self.normals.clear();
+        self.colors.clear();
+        self.indices.clear();
+    }
+
+    /// Grow capacities if needed without discarding existing contents.
+    pub fn ensure_capacity(&mut self, vertex_capacity: usize, index_capacity: usize) {
+        if self.positions.capacity() < vertex_capacity {
+            self.positions
+                .reserve(vertex_capacity - self.positions.len());
+        }
+        if self.normals.capacity() < vertex_capacity {
+            self.normals.reserve(vertex_capacity - self.normals.len());
+        }
+        if self.colors.capacity() < vertex_capacity {
+            self.colors.reserve(vertex_capacity - self.colors.len());
+        }
+        if self.indices.capacity() < index_capacity {
+            self.indices.reserve(index_capacity - self.indices.len());
+        }
+    }
+
+    /// Move attributes into `mesh`, then re-reserve the previous capacities
+    /// so the next `clear`+fill cycle does not reallocate.
+    pub fn apply_to_mesh(&mut self, mesh: &mut Mesh) {
+        let pos_cap = self.positions.capacity();
+        let nrm_cap = self.normals.capacity();
+        let col_cap = self.colors.capacity();
+        let idx_cap = self.indices.capacity();
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            std::mem::take(&mut self.positions),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, std::mem::take(&mut self.normals));
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, std::mem::take(&mut self.colors));
+        mesh.insert_indices(Indices::U32(std::mem::take(&mut self.indices)));
+        self.positions = Vec::with_capacity(pos_cap);
+        self.normals = Vec::with_capacity(nrm_cap);
+        self.colors = Vec::with_capacity(col_cap);
+        self.indices = Vec::with_capacity(idx_cap);
+    }
+
     /// One quad (p0..p3 wound counter-clockwise when viewed from `normal`),
     /// one color per corner (lets callers bake a cheap top-to-base gradient
     /// instead of flat-shading every face).
@@ -196,6 +242,88 @@ pub fn append_cuboid(
     ];
     for (p0, p1, p2, p3, n) in walls {
         // p0,p1 = bottom corners (base color); p2,p3 = top corners (side color)
+        buf.push_quad(p0, p1, p2, p3, n, base, base, side, side);
+    }
+}
+
+/// Cel-shaded cuboid for mask/procedural buildings: same geometry as
+/// [`append_cuboid`], but each wall picks sunlit / shaded / plain from the
+/// fixed stylized sun direction (same thresholds as [`append_prism`]) so
+/// cities without vector footprints still get facade depth on unlit tiers.
+#[allow(clippy::too_many_arguments)]
+pub fn append_cuboid_cel(
+    buf: &mut MeshBuffers,
+    center_xz: Vec2,
+    ground_y: f32,
+    half_x: f32,
+    half_z: f32,
+    height: f32,
+    top: Color,
+    side_plain: Color,
+    side_sunlit: Color,
+    side_shaded: Color,
+    base: Color,
+) {
+    let x0 = center_xz.x - half_x;
+    let x1 = center_xz.x + half_x;
+    let z0 = center_xz.y - half_z;
+    let z1 = center_xz.y + half_z;
+    let y0 = ground_y;
+    let y1 = ground_y + height;
+
+    buf.push_flat_quad(
+        Vec3::new(x0, y1, z1),
+        Vec3::new(x1, y1, z1),
+        Vec3::new(x1, y1, z0),
+        Vec3::new(x0, y1, z0),
+        Vec3::Y,
+        top,
+    );
+
+    let sun_dir = wall_sun_dir();
+    let walls = [
+        (
+            Vec3::new(x0, y0, z1),
+            Vec3::new(x1, y0, z1),
+            Vec3::new(x1, y1, z1),
+            Vec3::new(x0, y1, z1),
+            Vec3::Z,
+            Vec2::new(0.0, 1.0),
+        ),
+        (
+            Vec3::new(x1, y0, z0),
+            Vec3::new(x0, y0, z0),
+            Vec3::new(x0, y1, z0),
+            Vec3::new(x1, y1, z0),
+            Vec3::NEG_Z,
+            Vec2::new(0.0, -1.0),
+        ),
+        (
+            Vec3::new(x1, y0, z1),
+            Vec3::new(x1, y0, z0),
+            Vec3::new(x1, y1, z0),
+            Vec3::new(x1, y1, z1),
+            Vec3::X,
+            Vec2::new(1.0, 0.0),
+        ),
+        (
+            Vec3::new(x0, y0, z0),
+            Vec3::new(x0, y0, z1),
+            Vec3::new(x0, y1, z1),
+            Vec3::new(x0, y1, z0),
+            Vec3::NEG_X,
+            Vec2::new(-1.0, 0.0),
+        ),
+    ];
+    for (p0, p1, p2, p3, n, outward_xz) in walls {
+        let facing = outward_xz.dot(sun_dir);
+        let side = if facing > 0.25 {
+            side_sunlit
+        } else if facing < -0.25 {
+            side_shaded
+        } else {
+            side_plain
+        };
         buf.push_quad(p0, p1, p2, p3, n, base, base, side, side);
     }
 }
