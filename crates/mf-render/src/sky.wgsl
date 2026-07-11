@@ -6,19 +6,25 @@
 // sampling any texture, matching the flat cel-shaded art direction instead
 // of physically-based scattering (see sky.rs module doc for the
 // Atmosphere-vs-dome tradeoff this was picked over).
+//
+// At night, a soft city-glow (light-pollution) band is mixed into the
+// horizon via `params.z` / `city_glow` — additive to the gradient, not a
+// rewrite of it.
 
 #import bevy_pbr::mesh_functions::{get_world_from_local, mesh_position_local_to_clip}
 
-// One bind-group-2 uniform buffer (three `Vec4` fields at the same
+// One bind-group-2 uniform buffer (four `Vec4` fields at the same
 // `#[uniform(0)]` binding get merged by `AsBindGroup`, same pattern as
 // `RevealExtension` in reveal.rs):
-//   horizon = sky color near the horizon (rgb, unused w)
-//   zenith  = sky color straight up (rgb, unused w)
-//   params  = (dome_radius, gradient curve power, reserved, reserved)
+//   horizon   = sky color near the horizon (rgb, unused w)
+//   zenith    = sky color straight up (rgb, unused w)
+//   params    = (dome_radius, gradient curve power, city_glow_strength, reserved)
+//   city_glow = warm light-pollution color (rgb, unused w)
 struct SkyUniform {
     horizon: vec4<f32>,
     zenith: vec4<f32>,
     params: vec4<f32>,
+    city_glow: vec4<f32>,
 }
 
 @group(2) @binding(0)
@@ -56,6 +62,15 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let radius = max(sky_uniform.params.x, 1.0);
     let t = clamp(in.local_position.y / radius, 0.0, 1.0);
     let curved = pow(t, max(sky_uniform.params.y, 0.01));
-    let color = mix(sky_uniform.horizon.rgb, sky_uniform.zenith.rgb, curved);
+    var color = mix(sky_uniform.horizon.rgb, sky_uniform.zenith.rgb, curved);
+
+    // Soft city-glow dome: strongest at the horizon (low curved), fades
+    // toward zenith. `params.z` is night_factor-scaled strength from Rust.
+    let glow_strength = sky_uniform.params.z;
+    if glow_strength > 0.001 {
+        let horizon_weight = pow(1.0 - curved, 1.8);
+        color = mix(color, sky_uniform.city_glow.rgb, horizon_weight * glow_strength);
+    }
+
     return vec4<f32>(color, 1.0);
 }

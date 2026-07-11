@@ -95,6 +95,12 @@ struct ConfigFile {
     /// [`crate::saves::DEFAULT_AUTOSAVE_INTERVAL_DAYS`] for legacy configs.
     #[serde(default = "default_autosave_interval_days")]
     autosave_interval_days: u32,
+    /// Whether the bottom-right HUD minimap (`minimap.rs`) is expanded.
+    /// Defaults to on so existing config.toml files (which predate the
+    /// minimap) still show it without an edit, same rationale as
+    /// `weather_effects` above.
+    #[serde(default = "default_minimap_open")]
+    minimap_open: bool,
 }
 
 fn default_weather_effects() -> bool {
@@ -105,6 +111,10 @@ fn default_autosave_interval_days() -> u32 {
     crate::saves::DEFAULT_AUTOSAVE_INTERVAL_DAYS
 }
 
+fn default_minimap_open() -> bool {
+    true
+}
+
 impl Default for ConfigFile {
     fn default() -> Self {
         ConfigFile {
@@ -113,6 +123,7 @@ impl Default for ConfigFile {
             tutorial_completed: false,
             weather_effects: true,
             autosave_interval_days: default_autosave_interval_days(),
+            minimap_open: true,
         }
     }
 }
@@ -133,6 +144,11 @@ pub struct MfConfig {
     /// Autosave every N sim-days (`0` = off). See
     /// [`crate::saves::DEFAULT_AUTOSAVE_INTERVAL_DAYS`].
     pub autosave_interval_days: u32,
+    /// Whether the HUD minimap (`minimap.rs`) is expanded. `M` toggles the
+    /// top-down map mode (`map_mode.rs`), so the minimap claims `N` instead
+    /// (verified unclaimed by grep before wiring it up, same convention
+    /// `map_mode.rs`'s module doc uses for `M`).
+    pub minimap_open: bool,
     path: Option<PathBuf>,
 }
 
@@ -144,6 +160,7 @@ impl Default for MfConfig {
             tutorial_completed: false,
             weather_effects: true,
             autosave_interval_days: crate::saves::DEFAULT_AUTOSAVE_INTERVAL_DAYS,
+            minimap_open: true,
             path: None,
         }
     }
@@ -184,12 +201,14 @@ impl MfConfig {
             .as_ref()
             .map(|f| f.autosave_interval_days)
             .unwrap_or_else(default_autosave_interval_days);
+        let minimap_open = parsed.as_ref().map(|f| f.minimap_open).unwrap_or(true);
         MfConfig {
             quality_override,
             theme_override,
             tutorial_completed,
             weather_effects,
             autosave_interval_days,
+            minimap_open,
             path: Some(path),
         }
     }
@@ -209,6 +228,7 @@ impl MfConfig {
             tutorial_completed: self.tutorial_completed,
             weather_effects: self.weather_effects,
             autosave_interval_days: self.autosave_interval_days,
+            minimap_open: self.minimap_open,
         };
         let toml_str = toml::to_string_pretty(&file)?;
         std::fs::write(path, toml_str)?;
@@ -252,6 +272,15 @@ impl MfConfig {
             tracing::warn!("mf-game: failed to persist config.toml: {e}");
         }
     }
+
+    /// Persist the minimap's collapsed/expanded state (`N` toggle, see
+    /// `minimap.rs`).
+    pub fn set_minimap_open(&mut self, open: bool) {
+        self.minimap_open = open;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -266,6 +295,7 @@ mod tests {
             tutorial_completed: false,
             weather_effects: true,
             autosave_interval_days: 10,
+            minimap_open: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("high"));
@@ -281,6 +311,7 @@ mod tests {
             tutorial_completed: false,
             weather_effects: true,
             autosave_interval_days: 10,
+            minimap_open: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         let back: ConfigFile = toml::from_str(&s).unwrap();
@@ -305,6 +336,7 @@ mod tests {
             tutorial_completed: false,
             weather_effects: false,
             autosave_interval_days: 10,
+            minimap_open: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("false"));
@@ -320,6 +352,7 @@ mod tests {
             tutorial_completed: false,
             weather_effects: true,
             autosave_interval_days: 10,
+            minimap_open: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("purple"));
@@ -335,6 +368,7 @@ mod tests {
             tutorial_completed: true,
             weather_effects: true,
             autosave_interval_days: 10,
+            minimap_open: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("tutorial_completed"));

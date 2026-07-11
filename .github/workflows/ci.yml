@@ -37,11 +37,11 @@ jobs:
 
       - name: cargo clippy -D warnings
         working-directory: metroforge-native
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -j 4 -- -D warnings
 
       - name: cargo test
         working-directory: metroforge-native
-        run: cargo test --workspace
+        run: cargo test --workspace -j 4
 
   sidecar-smoke:
     runs-on: ubuntu-latest
