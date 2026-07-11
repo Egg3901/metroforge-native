@@ -822,10 +822,23 @@ pub fn window<R>(
     })
 }
 
-/// Thin flat separator (no egui heavy rule).
+/// Thin flat separator (no egui heavy rule). Full-width horizontal rule for
+/// use BETWEEN ROWS in a vertical layout. Do NOT call this inside a horizontal
+/// row — it allocates the whole remaining width and would push every later
+/// item off the row (use [`vertical_divider`] there).
 pub fn thin_separator(ui: &mut egui::Ui) {
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(rect, CORNER_RADIUS, with_alpha(border(), 180));
+}
+
+/// Thin vertical divider for use BETWEEN ITEMS in a horizontal row (e.g. the
+/// in-game top bar). 1px wide so it takes negligible row width, unlike
+/// [`thin_separator`] which grabs the full available width.
+pub fn vertical_divider(ui: &mut egui::Ui) {
+    let height = (ui.spacing().interact_size.y).max(16.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, height), egui::Sense::hover());
     ui.painter()
         .rect_filled(rect, CORNER_RADIUS, with_alpha(border(), 180));
 }

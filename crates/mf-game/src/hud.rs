@@ -240,9 +240,13 @@ fn collect_toasts_system(mut events: EventReader<SimEvent>, mut log: ResMut<Toas
     }
 }
 
-/// A muted, near-invisible group divider. Visual owned by the design system.
+/// A muted group divider between items in the horizontal top bar. Must be a
+/// VERTICAL rule: the top bar lays out left-to-right, and the full-width
+/// horizontal `ds::thin_separator` grabbed the whole remaining row width,
+/// pushing the clock/speed/view/goals controls off-screen (they rendered as an
+/// empty bar with only the cash readout). Uses `ds::vertical_divider`.
 pub(crate) fn thin_separator(ui: &mut egui::Ui) {
-    ds::thin_separator(ui);
+    ds::vertical_divider(ui);
 }
 
 /// One hover tick the first frame the pointer lands on a widget; re-arms
