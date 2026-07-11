@@ -19,6 +19,8 @@ pub mod attract;
 pub mod city;
 /// Colorblind palette-remap mode (a11y Settings).
 pub mod colorblind;
+/// Player weather-effects Settings toggle.
+pub mod day_night;
 /// Latest unserved-demand payload from the sidecar.
 pub mod demand;
 /// Latest fields grid (terrain/population/jobs/…).
@@ -43,12 +45,12 @@ pub mod theme;
 pub mod traffic;
 /// Latest 2 Hz `UiState`.
 pub mod ui;
-/// Player weather-effects Settings toggle.
 pub mod weather;
 
 pub use attract::AttractLighting;
 pub use city::CurrentCity;
 pub use colorblind::ColorblindMode;
+pub use day_night::DayNightEnabled;
 pub use demand::LatestDemand;
 pub use fields::LatestFields;
 pub use frame::LatestFrame;
