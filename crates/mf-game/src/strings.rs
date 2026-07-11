@@ -81,6 +81,7 @@ pub struct Strings {
     pub colorblind_protanopia: &'static str,
     pub colorblind_tritanopia: &'static str,
     pub reduce_motion: &'static str,
+    pub pause_on_start: &'static str,
     pub reduce_motion_hint: &'static str,
 
     // --- Quality / theme / difficulty labels (mirrored for locale swap) -
@@ -377,6 +378,7 @@ pub static EN: Strings = Strings {
     colorblind_protanopia: "Protanopia",
     colorblind_tritanopia: "Tritanopia",
     reduce_motion: "Reduce motion",
+    pause_on_start: "Pause on start",
     reduce_motion_hint: "Disables UI fades and menu camera drift",
 
     quality_potato: "Potato",
@@ -940,6 +942,7 @@ pub fn all_static_strings(s: &Strings) -> Vec<&'static str> {
         s.colorblind_protanopia,
         s.colorblind_tritanopia,
         s.reduce_motion,
+        s.pause_on_start,
         s.reduce_motion_hint,
         s.quality_potato,
         s.quality_low,

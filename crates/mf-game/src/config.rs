@@ -291,6 +291,10 @@ struct ConfigFile {
     /// TOML when false, same pattern as `mute` / `show_fps`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     ambience_enabled: bool,
+    /// Start each city with the sim clock paused (Settings). Off by default;
+    /// omitted from TOML when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pause_on_start: bool,
 }
 
 fn default_weather_effects() -> bool {
@@ -344,6 +348,7 @@ impl Default for ConfigFile {
             colorblind: ConfigColorblind::Off,
             reduce_motion: false,
             ambience_enabled: false,
+            pause_on_start: false,
         }
     }
 }
@@ -397,6 +402,8 @@ pub struct MfConfig {
     /// Looping city ambience bed. Off by default (opt-in via config.toml);
     /// one-shot SFX are unaffected.
     pub ambience_enabled: bool,
+    /// Start each city with the sim clock paused.
+    pub pause_on_start: bool,
     path: Option<PathBuf>,
 }
 
@@ -423,6 +430,7 @@ impl Default for MfConfig {
             colorblind: ColorblindMode::Off,
             reduce_motion: false,
             ambience_enabled: false,
+            pause_on_start: false,
             path: None,
         }
     }
@@ -467,6 +475,7 @@ impl MfConfig {
             colorblind: ColorblindMode::from(file.colorblind),
             reduce_motion: file.reduce_motion,
             ambience_enabled: file.ambience_enabled,
+            pause_on_start: file.pause_on_start,
             path: Some(path),
         }
     }
@@ -501,6 +510,7 @@ impl MfConfig {
             colorblind: ConfigColorblind::from(self.colorblind),
             reduce_motion: self.reduce_motion,
             ambience_enabled: self.ambience_enabled,
+            pause_on_start: self.pause_on_start,
         };
         let toml_str = toml::to_string_pretty(&file)?;
         std::fs::write(path, toml_str)?;
@@ -571,6 +581,14 @@ impl MfConfig {
     /// `minimap.rs`).
     pub fn set_minimap_open(&mut self, open: bool) {
         self.minimap_open = open;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
+
+    /// Persist the pause-on-start preference (Settings checkbox).
+    pub fn set_pause_on_start(&mut self, on: bool) {
+        self.pause_on_start = on;
         if let Err(e) = self.save() {
             tracing::warn!("mf-game: failed to persist config.toml: {e}");
         }
@@ -652,6 +670,7 @@ mod tests {
             colorblind: ConfigColorblind::Off,
             reduce_motion: false,
             ambience_enabled: false,
+            pause_on_start: false,
         }
     }
 

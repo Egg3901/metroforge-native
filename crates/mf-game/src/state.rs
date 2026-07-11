@@ -237,10 +237,27 @@ fn boot_system(
     next_state.set(AppState::ConnectingSim);
 }
 
-fn on_enter_ingame_system(mut reconnect: ResMut<ReconnectState>) {
+fn on_enter_ingame_system(
+    mut reconnect: ResMut<ReconnectState>,
+    config: Res<crate::config::MfConfig>,
+    mut pause: ResMut<PauseState>,
+    link: Option<Res<SimLink>>,
+) {
     // From here on, a sidecar death must resume in place — not bounce to
     // MainMenu after a successful respawn.
     reconnect.resume_policy = ResumePolicy::InGameSession;
+
+    // Settings: start each city paused. Latch a 1x resume so the first
+    // unpause runs at normal speed, and tell the sim to hold at 0.
+    if config.pause_on_start && !pause.active {
+        pause.resume_speed = 1.0;
+        pause.active = true;
+        if let Some(link) = &link {
+            let _ = link
+                .transport
+                .send(ToSim::SetSpeed(SetSpeedPayload { speed: 0.0 }));
+        }
+    }
 }
 
 fn on_exit_ingame_system(mut pause: ResMut<PauseState>, mut reconnect: ResMut<ReconnectState>) {
