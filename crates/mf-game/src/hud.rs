@@ -1426,7 +1426,6 @@ fn advanced_settings_ui(
             sfx.write(PlaySfx(Sfx::Confirm));
         }
     }
-
 }
 
 fn loading_hud_system(

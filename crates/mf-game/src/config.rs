@@ -625,8 +625,7 @@ mod tests {
                 vsync: Some(false),
             },
             show_fps: true,
-            autosave_interval_days: 10,
-            minimap_open: true,
+            ..ConfigFile::default()
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("[graphics]"));

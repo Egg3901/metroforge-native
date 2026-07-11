@@ -14,11 +14,7 @@ use bevy::prelude::*;
 use bevy::render::mesh::MeshAabb;
 
 use mf_protocol::{TransitMode, UiState};
-<<<<<<< HEAD
-use mf_state::{EffectiveKnobs, HeightAt, LatestUi, Theme};
-=======
-use mf_state::{CurrentCity, HeightAt, LatestUi, QualityTier, RouteFocus, Theme};
->>>>>>> origin/master
+use mf_state::{CurrentCity, EffectiveKnobs, HeightAt, LatestUi, RouteFocus, Theme};
 
 use crate::mesh_utils::{
     append_cuboid, append_dashed_ribbon_at_heights, append_ribbon_at_heights, arc_length_table,
@@ -210,28 +206,20 @@ fn transit_update_system(
     let _timer = crate::perf::PerfSpan::start(&counters.transit_update_us);
     // Theme/quality changes recolor stations, tracks, and stripes — force a
     // structural rebuild even when UiState is unchanged (issue #32 gap).
-<<<<<<< HEAD
-    if !ui.is_changed() && !theme.is_changed() && !effective.is_changed() {
-=======
     // City arrival updates world_size for viaduct pier chunking.
-    if !ui.is_changed() && !theme.is_changed() && !quality.is_changed() && !city.is_changed() {
->>>>>>> origin/master
+    if !ui.is_changed() && !theme.is_changed() && !effective.is_changed() && !city.is_changed() {
         return;
     }
     let Some(u) = &ui.0 else {
         return;
     };
 
-<<<<<<< HEAD
     let densify_step = effective.0.ribbon_densify_step_m;
-=======
-    let densify_step = quality.knobs().ribbon_densify_step_m;
     let world_size = city
         .static_city
         .as_ref()
         .map(|c| c.world_size as f32)
         .unwrap_or(8_000.0);
->>>>>>> origin/master
     let mut sig = signature_of(u) ^ (u64::from(densify_step.to_bits()) << 1);
     // Fold theme + unlit into the gate so Settings switches repaint transit.
     sig ^= (*theme as u64) << 48;
@@ -651,16 +639,8 @@ fn rebuild_tracks(
     for e in old_entities.drain(..) {
         commands.entity(e).despawn();
     }
-<<<<<<< HEAD
-    // Group by mode+grade so each combination gets one merged mesh/material
-    // (small, fixed set: 4 modes x 3 grades).
-    let mut groups: HashMap<(TransitMode, String), MeshBuffers> = HashMap::new();
-=======
-    let unlit = quality.knobs().unlit_material;
-
     // Station -> grades present, for endpoint ramp / portal detection.
     let mut station_grades: HashMap<i64, Vec<String>> = HashMap::new();
->>>>>>> origin/master
     for t in &ui.tracks {
         for sid in [t.from_station_id, t.to_station_id] {
             let list = station_grades.entry(sid).or_default();

@@ -42,13 +42,17 @@ pub enum GpuDeviceKind {
 /// Player-facing shadow quality (maps to [`QualityKnobs::shadow_map_size`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ShadowQuality {
+    /// Shadows disabled (no shadow map).
     Off,
+    /// 2048px shadow map.
     #[default]
     Medium,
+    /// 4096px shadow map.
     High,
 }
 
 impl ShadowQuality {
+    /// Player-facing label for the Settings combo box.
     pub fn label(self) -> &'static str {
         match self {
             ShadowQuality::Off => "Off",
@@ -57,6 +61,7 @@ impl ShadowQuality {
         }
     }
 
+    /// Classify a knob-table shadow map size back into a quality bucket.
     pub fn from_map_size(size: Option<u32>) -> Self {
         match size {
             None => ShadowQuality::Off,
@@ -65,6 +70,7 @@ impl ShadowQuality {
         }
     }
 
+    /// The shadow map size this bucket selects (`None` = shadows off).
     pub fn map_size(self) -> Option<u32> {
         match self {
             ShadowQuality::Off => None,
@@ -164,15 +170,21 @@ pub struct QualityKnobs {
 /// Persisted under `[graphics]` in `config.toml` by `mf-game`.
 #[derive(Debug, Clone, Copy, PartialEq, Resource, Default)]
 pub struct QualityOverrides {
+    /// Shadow-quality override.
     pub shadows: Option<ShadowQuality>,
     /// Building (and matching tree) draw distance in meters. `Some(m)` with
     /// `m >= `[`DRAW_DISTANCE_UNLIMITED_M`] forces unlimited (`None` on the
     /// knob). `None` on this field means "use the preset".
     pub draw_distance_m: Option<f32>,
+    /// Park-tree rendering override.
     pub trees: Option<bool>,
+    /// Distance-fog override.
     pub fog: Option<bool>,
+    /// Sky cloud/atmosphere override.
     pub volumetric_clouds: Option<bool>,
+    /// Building cel-outline override.
     pub outlines: Option<bool>,
+    /// VSync (present-mode) override.
     pub vsync: Option<bool>,
 }
 
@@ -183,6 +195,7 @@ pub const DRAW_DISTANCE_UNLIMITED_M: f32 = 20_000.0;
 pub const DRAW_DISTANCE_MIN_M: f32 = 2_000.0;
 
 impl QualityOverrides {
+    /// `true` when no control is overridden (effective == preset).
     pub fn is_empty(self) -> bool {
         self == Self::default()
     }
@@ -218,6 +231,7 @@ impl Default for EffectiveKnobs {
 }
 
 impl EffectiveKnobs {
+    /// The merged knob set (preset + Advanced overrides).
     pub fn get(&self) -> &QualityKnobs {
         &self.0
     }
@@ -318,6 +332,7 @@ pub fn sync_effective_knobs_system(
     if effective.0 != merged {
         effective.0 = merged;
     }
+}
 
 impl QualityTier {
     /// Player-facing label for combo boxes (not `Debug` — "Potato" is fine,
