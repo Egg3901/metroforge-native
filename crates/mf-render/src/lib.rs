@@ -21,6 +21,7 @@ pub mod palette;
 mod reveal;
 mod roads;
 mod sky;
+mod street_lamps;
 mod subway;
 mod terrain;
 mod transit;
@@ -28,13 +29,24 @@ mod trees;
 mod vehicles;
 mod water;
 
+use bevy::core_pipeline::bloom::{Bloom, BloomCompositeMode, BloomPrefilter};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::pbr::{DirectionalLightShadowMap, DistanceFog, FogFalloff};
 use bevy::prelude::*;
 
 use mf_state::{QualityTier, Theme};
 
+use crate::daynight::DayNightState;
+
 pub use buildings::BuildingsDenseCenter;
+
+/// Peak bloom intensity at full night (Medium/High). Ramps linearly with
+/// `DayNightState.night_factor`; 0 during day so the bloom node early-outs.
+const BLOOM_INTENSITY_NIGHT: f32 = 0.18;
+/// Prefilter keeps the white-city albedo out of the bloom extract so only
+/// emissive transit / lamps / headlights contribute the night glow.
+const BLOOM_PREFILTER_THRESHOLD: f32 = 0.55;
+const BLOOM_PREFILTER_SOFTNESS: f32 = 0.3;
 
 /// Ordering backbone for the whole crate. `Terrain` must run (and, on a
 /// rebuild, replace `mf_state::HeightAt`) before anything that samples
@@ -71,6 +83,7 @@ impl Plugin for MfRenderPlugin {
             buildings::MfBuildingsPlugin,
             transit::MfTransitPlugin,
             trees::MfTreesPlugin,
+            street_lamps::MfStreetLampsPlugin,
             vehicles::MfVehiclesPlugin,
             agents::MfAgentsPlugin,
             daynight::MfDayNightPlugin,
@@ -90,6 +103,11 @@ impl Plugin for MfRenderPlugin {
                 apply_quality_render_settings_system
                     .in_set(MfRenderSet::Dynamic)
                     .before(daynight::apply_day_night_system),
+                // Bloom intensity tracks the smoothed night_factor; runs
+                // after daynight so the same-frame dusk ramp is visible.
+                sync_bloom_system
+                    .in_set(MfRenderSet::Dynamic)
+                    .after(daynight::apply_day_night_system),
             ),
         );
     }
@@ -116,6 +134,7 @@ fn sync_theme_system(theme: Res<Theme>) {
 /// else in the table (materials, draw distances, agent caps, terrain
 /// subdivision, day/night on/off) is consumed directly by the relevant
 /// layer module from `QualityTier::knobs()`.
+#[allow(clippy::too_many_arguments)]
 fn apply_quality_render_settings_system(
     quality: Res<QualityTier>,
     mut shadow_map: ResMut<DirectionalLightShadowMap>,
@@ -123,6 +142,8 @@ fn apply_quality_render_settings_system(
     cameras: Query<Entity, With<Camera3d>>,
     cameras_missing_msaa: Query<Entity, (With<Camera3d>, Without<Msaa>)>,
     cameras_missing_fog: Query<Entity, (With<Camera3d>, Without<DistanceFog>)>,
+    cameras_missing_bloom: Query<Entity, (With<Camera3d>, Without<Bloom>)>,
+    mut camera_hdr: Query<&mut Camera, With<Camera3d>>,
 ) {
     let knobs = quality.knobs();
     let msaa = match knobs.msaa_samples {
@@ -171,6 +192,20 @@ fn apply_quality_render_settings_system(
             ));
         }
     }
+    // Bloom backfill for Medium/High: camera may spawn after the tier's
+    // first change tick. Intensity starts at 0 (day); `sync_bloom_system`
+    // ramps it with night_factor. Mutate `Camera.hdr` in place — never
+    // replace the whole `Camera` component (would wipe viewport/order).
+    if knobs.bloom_enabled {
+        for camera in &cameras_missing_bloom {
+            commands
+                .entity(camera)
+                .insert(bloom_settings(0.0, *quality));
+            if let Ok(mut cam) = camera_hdr.get_mut(camera) {
+                cam.hdr = true;
+            }
+        }
+    }
     if !quality.is_changed() {
         return;
     }
@@ -193,6 +228,63 @@ fn apply_quality_render_settings_system(
                     .insert(Tonemapping::default());
             }
         }
+        if knobs.bloom_enabled {
+            commands
+                .entity(camera)
+                .insert(bloom_settings(0.0, *quality));
+            if let Ok(mut cam) = camera_hdr.get_mut(camera) {
+                cam.hdr = true;
+            }
+        } else {
+            commands.entity(camera).remove::<Bloom>();
+            if let Ok(mut cam) = camera_hdr.get_mut(camera) {
+                cam.hdr = false;
+            }
+        }
     }
     shadow_map.size = knobs.shadow_map_size.unwrap_or(2048) as usize;
+}
+
+fn bloom_settings(intensity: f32, tier: QualityTier) -> Bloom {
+    // Medium uses a smaller mip chain to keep the night bloom pass inside
+    // the ~1.5ms CI-smoke budget; High gets the default NATURAL resolution.
+    let max_mip = match tier {
+        QualityTier::High => 512,
+        _ => 256,
+    };
+    Bloom {
+        intensity,
+        low_frequency_boost: 0.55,
+        low_frequency_boost_curvature: 0.9,
+        high_pass_frequency: 1.0,
+        prefilter: BloomPrefilter {
+            threshold: BLOOM_PREFILTER_THRESHOLD,
+            threshold_softness: BLOOM_PREFILTER_SOFTNESS,
+        },
+        // Non-default prefilter requires Additive (Bevy bloom docs).
+        composite_mode: BloomCompositeMode::Additive,
+        max_mip_dimension: max_mip,
+        scale: Vec2::ONE,
+    }
+}
+
+/// Ramps `Bloom.intensity` with `night_factor` on bloom-enabled tiers.
+/// Intensity 0 skips the bloom node entirely (day / dusk start).
+/// Runs every frame (cheap f32 compare) so a late-spawned camera that just
+/// received its Bloom backfill picks up the current night intensity without
+/// waiting for the next day/night change tick.
+fn sync_bloom_system(
+    quality: Res<QualityTier>,
+    day_night: Res<DayNightState>,
+    mut blooms: Query<&mut Bloom, With<Camera3d>>,
+) {
+    if !quality.knobs().bloom_enabled {
+        return;
+    }
+    let intensity = BLOOM_INTENSITY_NIGHT * day_night.night_factor.clamp(0.0, 1.0);
+    for mut bloom in &mut blooms {
+        if (bloom.intensity - intensity).abs() > 1e-4 {
+            bloom.intensity = intensity;
+        }
+    }
 }
