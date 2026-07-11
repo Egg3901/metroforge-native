@@ -391,7 +391,10 @@ fn draw_viewport_indicator(
         .collect();
     painter.add(egui::Shape::closed_line(
         pts,
-        egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200)),
+        egui::Stroke::new(
+            1.5,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
+        ),
     ));
 }
 
@@ -411,10 +414,7 @@ fn square_map_rect(rect: egui::Rect) -> egui::Rect {
 fn world_to_minimap(world: Vec2, world_half: f32, map_rect: egui::Rect) -> egui::Pos2 {
     let scale = map_rect.width() / (world_half * 2.0);
     let center = map_rect.center();
-    egui::pos2(
-        center.x + world.x * scale,
-        center.y - world.y * scale,
-    )
+    egui::pos2(center.x + world.x * scale, center.y - world.y * scale)
 }
 
 /// Inverse of [`world_to_minimap`].

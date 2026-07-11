@@ -27,6 +27,7 @@ mod terrain;
 mod transit;
 mod trees;
 mod vehicles;
+mod water;
 
 use bevy::core_pipeline::bloom::{Bloom, BloomCompositeMode, BloomPrefilter};
 use bevy::core_pipeline::tonemapping::Tonemapping;
@@ -77,6 +78,7 @@ impl Plugin for MfRenderPlugin {
             reveal::MfRevealPlugin,
             sky::MfSkyPlugin,
             terrain::MfTerrainPlugin,
+            water::MfWaterPlugin,
             roads::MfRoadsPlugin,
             buildings::MfBuildingsPlugin,
             transit::MfTransitPlugin,
