@@ -28,14 +28,27 @@ pub use types::{
     UiRoute, UiState, UiStation, UiTrack, Vec2,
 };
 
+use std::sync::Arc;
+
 /// Unified inbound event stream from the sim, merging the JSON control
 /// channel and the binary hot-path channel into one type so `mf-net` can
 /// funnel everything through a single `Events<FromSimMsg>` in Bevy.
+///
+/// `Frame` and `Fields` are wrapped in [`Arc`] so `mf-state` can retain
+/// "latest" without deep-cloning the decoded arrays on every tick (Frame
+/// ~20 Hz) or fields bump (~every 7 sim-days). `EventReader` only yields
+/// references, so without Arc the apply path had to `.clone()` the whole
+/// payload; Arc clone is a refcount bump.
+///
+/// `Json` remains the largest stack variant (control-plane payloads); Arc
+/// already covers the hot binary paths. Boxing Json would churn the rare
+/// control messages for little gain.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum FromSimMsg {
     Json(FromSimJson),
-    Frame(FrameSnapshot),
-    Fields(Fields),
+    Frame(Arc<FrameSnapshot>),
+    Fields(Arc<Fields>),
     Traffic(Traffic),
     Mask(StaticMask),
     /// msgType=5, sent once. Additive/optional (see `BuildingFootprint`
@@ -52,8 +65,8 @@ impl From<FromSimJson> for FromSimMsg {
 impl From<BinaryMsg> for FromSimMsg {
     fn from(v: BinaryMsg) -> Self {
         match v {
-            BinaryMsg::Frame(f) => FromSimMsg::Frame(f),
-            BinaryMsg::Fields(f) => FromSimMsg::Fields(f),
+            BinaryMsg::Frame(f) => FromSimMsg::Frame(Arc::new(f)),
+            BinaryMsg::Fields(f) => FromSimMsg::Fields(Arc::new(f)),
             BinaryMsg::Traffic(t) => FromSimMsg::Traffic(t),
             BinaryMsg::Mask(m) => FromSimMsg::Mask(m),
             BinaryMsg::Buildings(b) => FromSimMsg::Buildings(b),

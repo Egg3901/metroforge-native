@@ -18,12 +18,12 @@
 //! already applied there.
 //!
 //! Color: per art-direction §4, the wire's `colorTable` is IGNORED — each
-//! vehicle's own material is repainted every frame from the client's vivid
-//! table (`palette::vivid_route_color`) indexed by `routeColorIdx`. Each
-//! vehicle gets its own material handle (created once, at pool-growth time)
-//! rather than sharing one handle per color index, so per-vehicle occupancy
-//! brightness doesn't fight between vehicles that happen to share a route
-//! color.
+//! vehicle is painted from the client's vivid table (`palette::vivid_route_color`)
+//! indexed by `routeColorIdx`. Materials are **shared by paint key**
+//! `(color_idx, brightness_bucket, unlit)` so Bevy can batch draws across
+//! vehicles that look identical; when a slot's paint changes, its
+//! `MeshMaterial3d` handle is swapped to the cached material rather than
+//! mutating a per-slot asset.
 //!
 //! **Mode (bus/tram/metro/rail), documented gap:** `FrameSnapshot.vehicles`
 //! carries no mode field. `sim.worker.ts`'s `sendFrame` sets
@@ -35,6 +35,8 @@
 //! look up `ui.routes[idx].mode` for tram elongation (art-direction §4:
 //! "trams 1.6x longer, 0.85x width"); an out-of-range index (e.g. one frame
 //! of skew right after a route is deleted) falls back to the standard box.
+
+use std::collections::HashMap;
 
 use bevy::prelude::*;
 
@@ -70,13 +72,36 @@ struct VehiclePool {
     entities: Vec<Entity>,
     box_mesh: Option<Handle<Mesh>>,
     tram_mesh: Option<Handle<Mesh>>,
-    /// Last-applied `(route_color_idx, quantized_brightness, unlit)` per
-    /// slot, parallel to `entities`. `materials.get_mut` marks the asset
-    /// dirty for GPU re-upload unconditionally, so we only call it when a
-    /// slot's paint actually needs to change — most vehicles keep the same
-    /// route color and a near-constant occupancy bucket for many ticks in a
-    /// row.
-    applied_paint: Vec<Option<(usize, i32, bool)>>,
+    /// Shared materials keyed by quantized paint. Finite set: ~8 route
+    /// colors × ~65 brightness buckets × 2 unlit states × 2 overlay-dim
+    /// states. Overlay dimming changes the mixed color, so it must be part
+    /// of the key or a material minted while an overlay is open serves the
+    /// washed-out color forever.
+    material_cache: HashMap<(usize, i32, bool, bool), Handle<StandardMaterial>>,
+    /// Last-applied paint key per slot, parallel to `entities`.
+    applied_paint: Vec<Option<(usize, i32, bool, bool)>>,
+}
+
+fn material_for_paint(
+    cache: &mut HashMap<(usize, i32, bool, bool), Handle<StandardMaterial>>,
+    materials: &mut Assets<StandardMaterial>,
+    paint_key: (usize, i32, bool, bool),
+    color: Color,
+    brightness: f32,
+) -> Handle<StandardMaterial> {
+    cache
+        .entry(paint_key)
+        .or_insert_with(|| {
+            let (color_idx, brightness_bucket, unlit, overlay_dimmed) = paint_key;
+            let _ = (color_idx, brightness_bucket, overlay_dimmed); // key already encodes these
+            materials.add(StandardMaterial {
+                base_color: color,
+                emissive: palette::emissive(color, (if unlit { 1.0 } else { 0.4 }) * brightness),
+                unlit,
+                ..default()
+            })
+        })
+        .clone()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -85,6 +110,7 @@ fn update_vehicles_system(
     ui: Res<LatestUi>,
     height_at: Res<HeightAt>,
     quality: Res<QualityTier>,
+    theme: Res<mf_state::Theme>,
     overlay: Res<mf_state::OverlayState>,
     mut pool: ResMut<VehiclePool>,
     mut commands: Commands,
@@ -94,25 +120,33 @@ fn update_vehicles_system(
         (
             &mut Transform,
             &mut Mesh3d,
-            &MeshMaterial3d<StandardMaterial>,
+            &mut MeshMaterial3d<StandardMaterial>,
             &mut Visibility,
         ),
         With<VehicleSlot>,
     >,
 ) {
     // `LatestFrame` arrives at the sim's ~20Hz tick while this system runs
-    // every render frame (60+ Hz); `QualityTier` changes independently and
-    // flips `unlit`. Neither changing means nothing about a vehicle's
-    // position, mesh choice or paint could possibly be different from what's
-    // already applied, so skip the whole pass.
+    // every render frame (60+ Hz); `QualityTier` / `Theme` / overlay change
+    // independently and flip paint. None changing means nothing about a
+    // vehicle's position, mesh choice or paint could possibly be different
+    // from what's already applied, so skip the whole pass.
     let frame_changed = frame.is_changed();
-    if !frame_changed && !quality.is_changed() && !overlay.is_changed() {
+    if !frame_changed && !quality.is_changed() && !theme.is_changed() && !overlay.is_changed() {
         return;
     }
     let Some(f) = &frame.0 else {
         return;
     };
     let unlit = quality.knobs().unlit_material;
+    // Theme switches change `vivid_route_color` for the same color_idx —
+    // drop the paint cache so vehicles pick up the new palette immediately.
+    if theme.is_changed() {
+        pool.material_cache.clear();
+        for slot in &mut pool.applied_paint {
+            *slot = None;
+        }
+    }
     let box_mesh = pool
         .box_mesh
         .get_or_insert_with(|| {
@@ -141,10 +175,12 @@ fn update_vehicles_system(
     // quality-only-changed pass.
     if frame_changed {
         while pool.entities.len() < vehicle_count {
+            // Placeholder material; first paint pass swaps to a cached handle.
+            let mat = materials.add(StandardMaterial::default());
             let e = commands
                 .spawn((
                     Mesh3d(box_mesh.clone()),
-                    MeshMaterial3d(materials.add(StandardMaterial::default())),
+                    MeshMaterial3d(mat),
                     Transform::IDENTITY,
                     Visibility::default(),
                     VehicleSlot,
@@ -158,7 +194,7 @@ fn update_vehicles_system(
     let slot_count = pool.entities.len();
     for i in 0..slot_count {
         let entity = pool.entities[i];
-        let Ok((mut transform, mut mesh, material_handle, mut visibility)) =
+        let Ok((mut transform, mut mesh, mut material_handle, mut visibility)) =
             vehicles.get_mut(entity)
         else {
             continue;
@@ -219,14 +255,17 @@ fn update_vehicles_system(
         // this cache on essentially every changed frame for a difference no
         // player could see.
         let brightness_bucket = (brightness * 64.0).round() as i32;
-        let paint_key = (color_idx, brightness_bucket, unlit);
+        let overlay_dimmed = overlay.mode != mf_state::OverlayMode::Off;
+        let paint_key = (color_idx, brightness_bucket, unlit, overlay_dimmed);
         if pool.applied_paint.get(i).copied().flatten() != Some(paint_key) {
-            if let Some(mat) = materials.get_mut(&material_handle.0) {
-                mat.base_color = color;
-                mat.emissive =
-                    palette::emissive(color, (if unlit { 1.0 } else { 0.4 }) * brightness);
-                mat.unlit = unlit;
-            }
+            let handle = material_for_paint(
+                &mut pool.material_cache,
+                &mut materials,
+                paint_key,
+                color,
+                brightness,
+            );
+            material_handle.0 = handle;
             if let Some(slot) = pool.applied_paint.get_mut(i) {
                 *slot = Some(paint_key);
             }

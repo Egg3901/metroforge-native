@@ -31,10 +31,10 @@ use std::collections::HashSet;
 
 use mf_net::{SimEvent, SimLink};
 use mf_protocol::{
-    Command, FromSimJson, FromSimMsg, QueryTrackCostPayload, ToSim, TrackGrade, TransitMode,
-    UiState, UiStation, UiTrack, Vec2 as WireVec2,
+    Command, FromSimJson, FromSimMsg, QueryTrackCostPayload, RoadDto, StaticCityJson, ToSim,
+    TrackGrade, TransitMode, UiState, UiStation, UiTrack, Vec2 as WireVec2,
 };
-use mf_state::{HeightAt, LatestUi};
+use mf_state::{CurrentCity, HeightAt, LatestFields, LatestUi};
 
 use crate::audio::{PlaySfx, Sfx};
 use crate::camera::{screen_to_ground, CLICK_DRAG_THRESHOLD_PX};
@@ -78,6 +78,26 @@ const DOUBLE_CLICK_WINDOW_SECS: f32 = 0.35;
 /// conceptually independent actions that could diverge later even though
 /// they start out numerically identical.
 const SELECT_STATION_RADIUS_M: f32 = 60.0;
+/// Place-station: how close (meters) the cursor's snapped cell must be to a
+/// road polyline before the ghost snaps to the road *frontage* (the nearest
+/// point ON the road) instead of the plain grid cell center. Buildings in a
+/// real city front a street; a station wants to sit on the road it serves.
+/// Comfortably larger than a cell so a click "near" a road still grabs it.
+const ROAD_SNAP_RADIUS_M: f32 = 45.0;
+/// Place-station: minimum spacing (meters) from an existing station for a
+/// placement to be considered valid. Below this the target cell reads as
+/// "occupied" and the ghost tints invalid. Matched to the station ghost
+/// footprint so two stations can't visually overlap.
+const STATION_MIN_SEPARATION_M: f32 = STATION_GHOST_RADIUS_M * 2.0;
+/// Valid-placement ghost tint (green): the cell is buildable.
+fn valid_green() -> Color {
+    hex_color(0x34, 0xc7, 0x59)
+}
+/// Subtle snap-guide gray: drawn from the raw grid cell to the road frontage
+/// point the ghost snapped to, so the player can see WHY the ghost jumped.
+fn snap_guide_gray() -> Color {
+    Color::srgba(0.85, 0.85, 0.9, 0.6)
+}
 
 /// Which build tool is active, if any. Read/written by the toolbar UI (a
 /// separate v0.2 agent's HUD panel) as well as this module's own keybind
@@ -142,6 +162,16 @@ pub struct ToolState {
     /// Wall-clock time + screen position of the last recognized clean
     /// click, for double-click detection (Route tool confirm gesture).
     last_click: Option<(f32, Vec2)>,
+    /// Place-station ghost facing, in 90-degree steps (0..4), cycled by `R`.
+    /// A station marker is radially symmetric so this is currently a purely
+    /// cosmetic facing tick on the ghost, but it establishes the rotate
+    /// gesture the moment directional footprints (depots, platforms) land.
+    pub ghost_quarter_turns: u8,
+    /// Screen-space cursor at the last RIGHT-button press, mirroring
+    /// `press_pos` for the left button: lets `tool_click_system` tell a
+    /// right-CLICK (cancel the active tool) from a right-DRAG (camera orbit,
+    /// handled untouched in `camera.rs`).
+    right_press_pos: Option<Vec2>,
 }
 
 impl Default for ToolState {
@@ -159,6 +189,8 @@ impl Default for ToolState {
             pending_track_cost_seq: None,
             next_track_cost_seq: 1,
             last_click: None,
+            ghost_quarter_turns: 0,
+            right_press_pos: None,
         }
     }
 }
@@ -197,6 +229,11 @@ fn keybind_system(keys: Res<ButtonInput<KeyCode>>, mut tool: ResMut<ToolState>) 
     } else if keys.just_pressed(KeyCode::Digit3) {
         tool.active = ActiveTool::Bulldoze;
     }
+    // R rotates the place-station ghost 90 degrees (wrapping 3 -> 0). Only
+    // meaningful while the place tool is active; harmless otherwise.
+    if keys.just_pressed(KeyCode::KeyR) {
+        tool.ghost_quarter_turns = (tool.ghost_quarter_turns + 1) % 4;
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -220,6 +257,8 @@ fn tool_click_system(
     height_at: Res<HeightAt>,
     mut tool: ResMut<ToolState>,
     ui_state: Res<LatestUi>,
+    city: Res<CurrentCity>,
+    fields: Res<LatestFields>,
     link: Option<Res<SimLink>>,
     mut bus: ResMut<CommandBus>,
     mut sfx: EventWriter<PlaySfx>,
@@ -235,6 +274,28 @@ fn tool_click_system(
 
     if mouse_buttons.just_pressed(MouseButton::Left) {
         tool.press_pos = window.cursor_position();
+    }
+
+    // Right-click (press+release under the drag threshold) cancels the active
+    // build tool, the standard city-builder "put the tool away" gesture. A
+    // right-DRAG is left untouched for `camera.rs`'s orbit — we only act when
+    // the pointer barely moved, exactly as the left click-vs-drag split does.
+    if mouse_buttons.just_pressed(MouseButton::Right) {
+        tool.right_press_pos = window.cursor_position();
+    }
+    if mouse_buttons.just_released(MouseButton::Right) {
+        if let (Some(press), Some(release)) = (tool.right_press_pos, window.cursor_position()) {
+            if press.distance(release) < CLICK_DRAG_THRESHOLD_PX
+                && !over_egui
+                && tool.active != ActiveTool::None
+            {
+                tool.active = ActiveTool::None;
+                tool.route_draft.clear();
+                tool.last_cost_quote = None;
+                sfx.write(PlaySfx(Sfx::Cancel));
+            }
+        }
+        tool.right_press_pos = None;
     }
 
     let mut clicked_ground: Option<Vec2> = None;
@@ -285,16 +346,36 @@ fn tool_click_system(
                 };
             }
             ActiveTool::PlaceStation(mode) => {
-                let pos = WireVec2 {
-                    x: ground.x as f64,
-                    y: ground.y as f64,
-                };
-                let seq = bus.submit(
-                    link,
-                    Command::BuildStation { mode, pos },
-                    CmdMeta::BuildStation { mode, pos },
+                // Snap the raw click to the city grid / road frontage, then
+                // gate on validity: a placement over water, off the map, or
+                // on top of an existing station is rejected with an error
+                // chime instead of firing a doomed BuildStation the sim would
+                // just bounce. The tool stays active so the player can retry.
+                let placement = city
+                    .static_city
+                    .as_ref()
+                    .map(|c| resolve_placement(ground, c));
+                let build_pos = placement.map(|p| p.pos).unwrap_or(ground);
+                let valid = placement_valid(
+                    build_pos,
+                    city.static_city.as_ref(),
+                    fields.0.as_ref().map(|f| f.water.as_slice()),
+                    &ui.stations,
                 );
-                tool.pending_seqs.insert(seq);
+                if !valid {
+                    sfx.write(PlaySfx(Sfx::Error));
+                } else {
+                    let pos = WireVec2 {
+                        x: build_pos.x as f64,
+                        y: build_pos.y as f64,
+                    };
+                    let seq = bus.submit(
+                        link,
+                        Command::BuildStation { mode, pos },
+                        CmdMeta::BuildStation { mode, pos },
+                    );
+                    tool.pending_seqs.insert(seq);
+                }
             }
             ActiveTool::Route => {
                 handle_route_click(&mut tool, ground, ui, link, &mut bus, double_click);
@@ -507,6 +588,7 @@ fn draw_ground_circle(gizmos: &mut Gizmos, center: Vec3, radius: f32, color: Col
 /// actually active" and "egui doesn't have the pointer" (a hovering egui
 /// panel means the cursor isn't over the world, so a ground ghost there
 /// would be misleading rather than helpful).
+#[allow(clippy::too_many_arguments)]
 fn tool_gizmo_system(
     mut gizmos: Gizmos,
     mut egui_contexts: EguiContexts,
@@ -515,6 +597,8 @@ fn tool_gizmo_system(
     height_at: Res<HeightAt>,
     tool: Res<ToolState>,
     ui_state: Res<LatestUi>,
+    city: Res<CurrentCity>,
+    fields: Res<LatestFields>,
 ) {
     if tool.active == ActiveTool::None {
         return;
@@ -548,17 +632,49 @@ fn tool_gizmo_system(
     match tool.active {
         ActiveTool::None => {}
         ActiveTool::PlaceStation(_) => {
-            draw_ground_circle(
-                &mut gizmos,
-                cursor_world,
-                STATION_GHOST_RADIUS_M,
-                accent_blue(),
+            // Snap to grid / road frontage, then colour the ghost by whether
+            // the snapped cell is actually buildable (green) or blocked by
+            // water / another station / the map edge (red).
+            let placement = city
+                .static_city
+                .as_ref()
+                .map(|c| resolve_placement(cursor_ground, c));
+            let snapped = placement.map(|p| p.pos).unwrap_or(cursor_ground);
+            let stations = ui_state
+                .0
+                .as_ref()
+                .map(|u| u.stations.as_slice())
+                .unwrap_or(&[]);
+            let valid = placement_valid(
+                snapped,
+                city.static_city.as_ref(),
+                fields.0.as_ref().map(|f| f.water.as_slice()),
+                stations,
             );
+            let tint = if valid { valid_green() } else { bulldoze_red() };
+            let snapped_world =
+                Vec3::new(snapped.x, height_at.sample(snapped.x, snapped.y), snapped.y);
+            draw_ground_circle(&mut gizmos, snapped_world, STATION_GHOST_RADIUS_M, tint);
             gizmos.line(
-                cursor_world,
-                cursor_world + Vec3::Y * STATION_GHOST_HEIGHT_M,
-                accent_blue(),
+                snapped_world,
+                snapped_world + Vec3::Y * STATION_GHOST_HEIGHT_M,
+                tint,
             );
+            // Facing tick: a short spoke pointing in the R-rotated direction,
+            // so the rotate gesture reads on screen even for a round marker.
+            let ang = tool.ghost_quarter_turns as f32 * std::f32::consts::FRAC_PI_2;
+            let facing = Vec3::new(ang.sin(), 0.0, ang.cos()) * (STATION_GHOST_RADIUS_M * 1.4);
+            gizmos.line(snapped_world, snapped_world + facing, tint);
+            // Snap guide: a subtle line from the plain grid cell to the road
+            // frontage the ghost jumped to, present only when road-snapped.
+            if let Some(guide_from) = placement.and_then(|p| p.guide_from) {
+                let from_world = Vec3::new(
+                    guide_from.x,
+                    height_at.sample(guide_from.x, guide_from.y),
+                    guide_from.y,
+                );
+                gizmos.line(from_world, snapped_world, snap_guide_gray());
+            }
         }
         ActiveTool::Route => {
             let Some(ui) = ui_state.0.as_ref() else {
@@ -680,6 +796,152 @@ fn missing_track_pairs(draft: &[i64], tracks: &[UiTrack]) -> Vec<(i64, i64)> {
         .map(|pair| (pair[0], pair[1]))
         .filter(|(a, b)| !track_exists(tracks, *a, *b))
         .collect()
+}
+
+// ---------------------------------------------------------------------
+// Placement snapping + validity (grid, road frontage, water/occupancy).
+// ---------------------------------------------------------------------
+
+/// The city's regular cell grid, lifted out of `StaticCityJson` so the snap
+/// math has a small, testable surface instead of threading four raw fields
+/// through every helper. Coordinates follow the usual convention: world X /
+/// world Y (= Bevy Z).
+#[derive(Clone, Copy, Debug)]
+struct CityGrid {
+    origin: Vec2,
+    cell_size: f32,
+    field_w: i32,
+    field_h: i32,
+}
+
+impl CityGrid {
+    fn from_city(c: &StaticCityJson) -> Self {
+        CityGrid {
+            origin: Vec2::new(c.origin_x as f32, c.origin_y as f32),
+            cell_size: c.cell_size as f32,
+            field_w: c.field_w as i32,
+            field_h: c.field_h as i32,
+        }
+    }
+
+    /// Integer cell containing `pos` (may be out of `[0, field)` if the point
+    /// is off the map — callers gate on [`Self::in_bounds`]).
+    fn cell_of(&self, pos: Vec2) -> (i32, i32) {
+        let g = (pos - self.origin) / self.cell_size.max(f32::MIN_POSITIVE);
+        (g.x.floor() as i32, g.y.floor() as i32)
+    }
+
+    /// World-space center of cell `(cx, cy)`.
+    fn cell_center(&self, cx: i32, cy: i32) -> Vec2 {
+        self.origin
+            + Vec2::new(
+                (cx as f32 + 0.5) * self.cell_size,
+                (cy as f32 + 0.5) * self.cell_size,
+            )
+    }
+
+    /// Snap a world point to the center of the cell it falls in.
+    fn snap(&self, pos: Vec2) -> Vec2 {
+        let (cx, cy) = self.cell_of(pos);
+        self.cell_center(cx, cy)
+    }
+
+    fn in_bounds(&self, cx: i32, cy: i32) -> bool {
+        cx >= 0 && cy >= 0 && cx < self.field_w && cy < self.field_h
+    }
+}
+
+/// A resolved place-station target: where the ghost sits, and (when it
+/// snapped to road frontage rather than a bare grid cell) the plain grid
+/// point it jumped FROM, so the gizmo can draw a snap guide between the two.
+#[derive(Clone, Copy, Debug)]
+struct Placement {
+    pos: Vec2,
+    guide_from: Option<Vec2>,
+}
+
+/// Resolve a raw cursor-ground point into a snapped station placement: prefer
+/// the nearest road frontage within [`ROAD_SNAP_RADIUS_M`] of the grid-snapped
+/// cell (buildings front a street), else the plain grid cell center.
+fn resolve_placement(cursor: Vec2, city: &StaticCityJson) -> Placement {
+    let grid = CityGrid::from_city(city);
+    let grid_pos = grid.snap(cursor);
+    if let Some(front) = nearest_point_on_roads(grid_pos, &city.roads, ROAD_SNAP_RADIUS_M) {
+        Placement {
+            pos: front,
+            guide_from: Some(grid_pos),
+        }
+    } else {
+        Placement {
+            pos: grid_pos,
+            guide_from: None,
+        }
+    }
+}
+
+/// Whether a station may be built at `pos`: on the map, not over water, and
+/// not on top of an existing station. A `None` city (not loaded yet) is
+/// permissive — there is nothing to validate against — matching the old
+/// unconditional build behavior for that pre-load window.
+fn placement_valid(
+    pos: Vec2,
+    city: Option<&StaticCityJson>,
+    water: Option<&[u8]>,
+    stations: &[UiStation],
+) -> bool {
+    if let Some(city) = city {
+        let grid = CityGrid::from_city(city);
+        let (cx, cy) = grid.cell_of(pos);
+        if !grid.in_bounds(cx, cy) {
+            return false;
+        }
+        if let Some(water) = water {
+            let idx = (cy * grid.field_w + cx) as usize;
+            if water.get(idx).copied().unwrap_or(0) >= 1 {
+                return false;
+            }
+        }
+    }
+    nearest_station_id(stations, pos, STATION_MIN_SEPARATION_M).is_none()
+}
+
+/// Closest point ON segment `a..b` to `p` (clamped to the endpoints).
+/// Companion to [`point_segment_distance`], which is just the length of
+/// `p - closest_point_on_segment(p, a, b)`.
+fn closest_point_on_segment(p: Vec2, a: Vec2, b: Vec2) -> Vec2 {
+    let ab = b - a;
+    let len_sq = ab.length_squared();
+    if len_sq < 1e-6 {
+        return a;
+    }
+    let t = ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0);
+    a + ab * t
+}
+
+/// Nearest point lying on ANY road polyline within `max_dist` of `pos`, or
+/// `None` if every road is farther than that. Roads store flat x,y pairs
+/// (`RoadDto::points`), same layout as tracks.
+fn nearest_point_on_roads(pos: Vec2, roads: &[RoadDto], max_dist: f32) -> Option<Vec2> {
+    let max_sq = max_dist * max_dist;
+    let mut best: Option<(f32, Vec2)> = None;
+    for road in roads {
+        if road.points.len() < 4 {
+            continue;
+        }
+        let verts: Vec<Vec2> = road
+            .points
+            .chunks_exact(2)
+            .map(|c| Vec2::new(c[0] as f32, c[1] as f32))
+            .collect();
+        for w in verts.windows(2) {
+            let cp = closest_point_on_segment(pos, w[0], w[1]);
+            let d_sq = (pos - cp).length_squared();
+            if d_sq <= max_sq && best.is_none_or(|(bd, _)| d_sq < bd) {
+                best = Some((d_sq, cp));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
 }
 
 #[cfg(test)]
@@ -872,5 +1134,170 @@ mod tests {
         // (same as finished routes), not modulo wrap.
         assert_ne!(route_ghost_color(8), route_ghost_color(0));
         assert_ne!(route_ghost_color(8), route_ghost_color(7));
+    }
+
+    // --- placement snapping / validity ------------------------------------
+
+    fn grid_city(roads: Vec<RoadDto>) -> StaticCityJson {
+        // 10x10 cells of 10m, origin at 0,0 -> world spans [0, 100).
+        StaticCityJson {
+            field_w: 10,
+            field_h: 10,
+            cell_size: 10.0,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            world_size: 100.0,
+            road_scale: 1.0,
+            mask_res: None,
+            has_water_mask: false,
+            has_park_mask: false,
+            has_building_mask: false,
+            labels: None,
+            roads,
+        }
+    }
+
+    fn road(points: Vec<f64>) -> RoadDto {
+        RoadDto {
+            cls: "local".to_string(),
+            points,
+        }
+    }
+
+    #[test]
+    fn grid_snaps_to_cell_center() {
+        let grid = CityGrid::from_city(&grid_city(vec![]));
+        // A point anywhere inside cell (2,3) snaps to its center (25, 35).
+        assert_eq!(grid.snap(Vec2::new(23.0, 31.0)), Vec2::new(25.0, 35.0));
+        assert_eq!(grid.snap(Vec2::new(29.9, 39.9)), Vec2::new(25.0, 35.0));
+    }
+
+    #[test]
+    fn grid_cell_of_and_bounds() {
+        let grid = CityGrid::from_city(&grid_city(vec![]));
+        assert_eq!(grid.cell_of(Vec2::new(0.0, 0.0)), (0, 0));
+        assert!(grid.in_bounds(9, 9));
+        assert!(!grid.in_bounds(10, 0));
+        assert!(!grid.in_bounds(-1, 5));
+    }
+
+    #[test]
+    fn placement_without_road_falls_back_to_grid() {
+        let city = grid_city(vec![]);
+        let p = resolve_placement(Vec2::new(23.0, 31.0), &city);
+        assert_eq!(p.pos, Vec2::new(25.0, 35.0));
+        assert!(p.guide_from.is_none());
+    }
+
+    #[test]
+    fn placement_snaps_to_nearby_road_frontage() {
+        // A horizontal road along y=50 across the map. A click near cell
+        // (2,4) (center 25,45) is within ROAD_SNAP_RADIUS_M (45) of the road,
+        // so it snaps onto the road at x=25, y=50 and records a guide.
+        let city = grid_city(vec![road(vec![0.0, 50.0, 100.0, 50.0])]);
+        let p = resolve_placement(Vec2::new(23.0, 44.0), &city);
+        assert_eq!(p.pos, Vec2::new(25.0, 50.0));
+        assert_eq!(p.guide_from, Some(Vec2::new(25.0, 45.0)));
+    }
+
+    #[test]
+    fn placement_ignores_a_road_too_far_away() {
+        // Road along y=0; a click way up at cell center (25,95) is far past
+        // the snap radius, so no frontage snap happens.
+        let city = grid_city(vec![road(vec![0.0, 0.0, 100.0, 0.0])]);
+        let p = resolve_placement(Vec2::new(25.0, 95.0), &city);
+        assert_eq!(p.pos, Vec2::new(25.0, 95.0));
+        assert!(p.guide_from.is_none());
+    }
+
+    #[test]
+    fn placement_over_water_is_invalid() {
+        let city = grid_city(vec![]);
+        // 10x10 water grid, all dry except cell (2,3) = index 3*10+2 = 32.
+        let mut water = vec![0u8; 100];
+        water[32] = 1;
+        // Point inside cell (2,3): invalid.
+        assert!(!placement_valid(
+            Vec2::new(25.0, 35.0),
+            Some(&city),
+            Some(&water),
+            &[]
+        ));
+        // A dry neighbouring cell: valid.
+        assert!(placement_valid(
+            Vec2::new(35.0, 35.0),
+            Some(&city),
+            Some(&water),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn placement_off_map_is_invalid() {
+        let city = grid_city(vec![]);
+        assert!(!placement_valid(
+            Vec2::new(500.0, 500.0),
+            Some(&city),
+            None,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn placement_on_existing_station_is_invalid() {
+        let city = grid_city(vec![]);
+        let stations = vec![station(1, 25.0, 35.0)];
+        // Right on top: within STATION_MIN_SEPARATION_M -> occupied.
+        assert!(!placement_valid(
+            Vec2::new(26.0, 36.0),
+            Some(&city),
+            None,
+            &stations
+        ));
+        // Far enough away in a different cell -> free.
+        assert!(placement_valid(
+            Vec2::new(85.0, 85.0),
+            Some(&city),
+            None,
+            &stations
+        ));
+    }
+
+    #[test]
+    fn placement_with_no_city_is_permissive() {
+        // Pre-load window: nothing to validate against, so any empty-ground
+        // placement is allowed (mirrors the old unconditional build).
+        assert!(placement_valid(Vec2::new(9999.0, 9999.0), None, None, &[]));
+    }
+
+    #[test]
+    fn closest_point_on_segment_projects_and_clamps() {
+        let a = Vec2::new(0.0, 0.0);
+        let b = Vec2::new(10.0, 0.0);
+        assert_eq!(
+            closest_point_on_segment(Vec2::new(5.0, 5.0), a, b),
+            Vec2::new(5.0, 0.0)
+        );
+        // Past the far end clamps to the endpoint.
+        assert_eq!(closest_point_on_segment(Vec2::new(20.0, 5.0), a, b), b);
+    }
+
+    #[test]
+    fn nearest_point_on_roads_picks_the_closer_road() {
+        let roads = vec![
+            road(vec![0.0, 0.0, 100.0, 0.0]),
+            road(vec![0.0, 100.0, 100.0, 100.0]),
+        ];
+        let p = nearest_point_on_roads(Vec2::new(40.0, 10.0), &roads, 45.0).unwrap();
+        assert_eq!(p, Vec2::new(40.0, 0.0));
+    }
+
+    #[test]
+    fn nearest_point_on_roads_out_of_range_is_none() {
+        let roads = vec![road(vec![0.0, 0.0, 100.0, 0.0])];
+        assert_eq!(
+            nearest_point_on_roads(Vec2::new(50.0, 500.0), &roads, 45.0),
+            None
+        );
     }
 }

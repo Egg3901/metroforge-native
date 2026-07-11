@@ -22,12 +22,11 @@ use crate::campaign::{objectives_for, CampaignProgress, ScenarioOutcome};
 use crate::design_system as ds;
 use crate::state::{AppState, PendingInit};
 
-/// Dim scrim color — same value and constructor `hud.rs`'s pause overlay
-/// paints (`#17181c` at alpha 140/255, unmultiplied), reused here by
-/// literal rather than import so this file has zero dependency on
-/// `hud.rs`'s internals.
+/// Dim scrim color — theme-aware via [`crate::design_system::scrim`] so
+/// Dark/Purple overlays match the active chrome (was a hardcoded Light
+/// rich-black wash).
 fn scrim_color() -> egui::Color32 {
-    egui::Color32::from_rgba_unmultiplied(0x17, 0x18, 0x1c, 140)
+    crate::design_system::scrim()
 }
 
 /// Dash-free verdict heading for the four ways a scenario can end. `Finished`

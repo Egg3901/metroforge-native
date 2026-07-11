@@ -12,7 +12,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use bevy::prelude::*;
 
-use mf_protocol::{TransitMode, UiState, UiStation};
+use mf_protocol::{TransitMode, UiState};
 use mf_state::{HeightAt, LatestUi, QualityTier, Theme};
 
 use crate::mesh_utils::{
@@ -86,6 +86,13 @@ pub struct MetroBoldTube {
     pub color: Color,
 }
 
+/// Track infrastructure ribbon — mode accent at material level; dimmed with
+/// the rest of the network when an overlay owns the stage.
+#[derive(Component)]
+pub struct TrackRibbon {
+    pub color: Color,
+}
+
 #[derive(Resource, Default)]
 struct TransitState {
     signature: Option<u64>,
@@ -134,7 +141,8 @@ fn transit_update_system(
         return;
     };
 
-    let mut sig = signature_of(u);
+    let densify_step = quality.knobs().ribbon_densify_step_m;
+    let mut sig = signature_of(u) ^ (u64::from(densify_step.to_bits()) << 1);
     // Fold theme + unlit into the gate so Settings switches repaint transit.
     sig ^= (*theme as u64) << 48;
     if quality.knobs().unlit_material {
@@ -146,6 +154,7 @@ fn transit_update_system(
             &mut commands,
             u,
             &height_at,
+            &quality,
             &mut state,
             &mut meshes,
             &mut materials,
@@ -155,6 +164,7 @@ fn transit_update_system(
             u,
             &height_at,
             &quality,
+            densify_step,
             &mut state,
             &mut meshes,
             &mut materials,
@@ -163,6 +173,7 @@ fn transit_update_system(
             &mut commands,
             u,
             &height_at,
+            densify_step,
             &mut state,
             &mut meshes,
             &mut materials,
@@ -176,6 +187,7 @@ fn rebuild_stations(
     commands: &mut Commands,
     ui: &UiState,
     height_at: &HeightAt,
+    quality: &QualityTier,
     state: &mut TransitState,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
@@ -183,6 +195,7 @@ fn rebuild_stations(
     for e in state.station_entities.drain(..) {
         commands.entity(e).despawn();
     }
+    let unlit = quality.knobs().unlit_material;
     let body_mesh = meshes.add(
         Cylinder::new(STATION_RADIUS, STATION_HEIGHT)
             .mesh()
@@ -191,9 +204,12 @@ fn rebuild_stations(
     let ring_mesh = meshes.add(Annulus::new(STATION_RING_INNER, STATION_RING_OUTER));
     // Solid cylinder, always opaque, built by Bevy's own `Cylinder` primitive
     // (correctly wound by construction) — single-sided/back-face-culled is
-    // correct.
+    // correct. `unlit` matches the city shell on Potato/Low.
     let body_material = materials.add(StandardMaterial {
         base_color: palette::building_top(),
+        unlit,
+        perceptual_roughness: 1.0,
+        reflectance: 0.0,
         ..default()
     });
 
@@ -219,9 +235,13 @@ fn rebuild_stations(
         // winding (no reflection), so front-face-CCW-from-+Z stays
         // front-face-CCW-from-+Y: single-sided is correct here, not just a
         // "leave it double-sided to be safe" case.
+        let accent = palette::mode_accent(st.mode);
         let ring_material = materials.add(StandardMaterial {
-            base_color: palette::mode_accent(st.mode),
-            emissive: palette::emissive(palette::mode_accent(st.mode), 0.15),
+            base_color: accent,
+            emissive: palette::emissive(accent, 0.15),
+            unlit,
+            perceptual_roughness: 1.0,
+            reflectance: 0.0,
             ..default()
         });
         let ring = commands
@@ -261,12 +281,10 @@ fn update_station_crowding(
         .iter()
         .map(|s| s.ridership)
         .fold(1.0_f64, f64::max);
-    // Join rings to stations by id, not by query iteration order (ECS query
-    // order isn't guaranteed to track spawn order). Rings for stations no
-    // longer present keep their current color rather than guessing.
-    let station_by_id: HashMap<i64, &UiStation> = ui.stations.iter().map(|s| (s.id, s)).collect();
+    // Linear join by id — station counts are typically <200, so this beats
+    // allocating a fresh HashMap on every 2 Hz tick (perf audit).
     for (mut ring, mat_handle) in ring_query.iter_mut() {
-        let Some(st) = station_by_id.get(&ring.station_id) else {
+        let Some(st) = ui.stations.iter().find(|s| s.id == ring.station_id) else {
             continue;
         };
         let t = (st.ridership / max_ridership).clamp(0.0, 1.0) as f32;
@@ -285,11 +303,13 @@ fn update_station_crowding(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rebuild_tracks(
     commands: &mut Commands,
     ui: &UiState,
     height_at: &HeightAt,
     quality: &QualityTier,
+    densify_step: f32,
     state: &mut TransitState,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
@@ -313,7 +333,7 @@ fn rebuild_tracks(
         let width = if t.mode == TransitMode::Bus { 5.0 } else { 8.0 };
         let buf = groups.entry((t.mode, t.grade.clone())).or_default();
         let pts = crate::mesh_utils::smooth_polyline(&pts, 2);
-        let pts = crate::mesh_utils::densify_polyline(&pts, 24.0);
+        let pts = crate::mesh_utils::densify_polyline(&pts, densify_step);
         append_ribbon(
             buf,
             &pts,
@@ -341,9 +361,13 @@ fn rebuild_tracks(
         let material = materials.add(StandardMaterial {
             double_sided: true,
             cull_mode: None,
+            // Material-level mode accent (same Blend vertex-color bug that
+            // washed roads/stripes white when color lived only in vertices).
             base_color: palette::mode_accent(mode).with_alpha(alpha),
             alpha_mode: AlphaMode::Blend,
             unlit,
+            perceptual_roughness: 1.0,
+            reflectance: 0.0,
             ..default()
         });
         let e = commands
@@ -352,6 +376,9 @@ fn rebuild_tracks(
                 MeshMaterial3d(material),
                 Transform::IDENTITY,
                 Visibility::default(),
+                TrackRibbon {
+                    color: palette::mode_accent(mode),
+                },
                 Name::new(format!("track-{mode:?}-{grade}")),
             ))
             .id();
@@ -393,6 +420,7 @@ fn rebuild_routes(
     commands: &mut Commands,
     ui: &UiState,
     height_at: &HeightAt,
+    densify_step: f32,
     state: &mut TransitState,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
@@ -497,7 +525,7 @@ fn rebuild_routes(
         for (pi, seg) in &pair_segs {
             let width = widths.get(*pi).copied().unwrap_or(STRIPE_WIDTH);
             let seg = crate::mesh_utils::smooth_polyline(seg, 2);
-            let seg = crate::mesh_utils::densify_polyline(&seg, 24.0);
+            let seg = crate::mesh_utils::densify_polyline(&seg, densify_step);
             append_ribbon(
                 &mut normal_buf,
                 &seg,
@@ -592,7 +620,7 @@ fn rebuild_routes(
         if r.mode == TransitMode::Metro {
             let mut bold_buf = MeshBuffers::new();
             let dense_path = crate::mesh_utils::smooth_polyline(&path, 2);
-            let dense_path = crate::mesh_utils::densify_polyline(&dense_path, 24.0);
+            let dense_path = crate::mesh_utils::densify_polyline(&dense_path, densify_step);
             append_ribbon(
                 &mut bold_buf,
                 &dense_path,
@@ -648,7 +676,17 @@ fn apply_overlay_dim_system(
     mut materials: ResMut<Assets<StandardMaterial>>,
     stripes: Query<(&RouteStripe, &MeshMaterial3d<StandardMaterial>)>,
     tubes: Query<(&MetroBoldTube, &MeshMaterial3d<StandardMaterial>)>,
-    fresh: Query<Entity, Or<(Added<RouteStripe>, Added<MetroBoldTube>)>>,
+    tracks: Query<(&TrackRibbon, &MeshMaterial3d<StandardMaterial>)>,
+    rings: Query<(&StationRing, &MeshMaterial3d<StandardMaterial>)>,
+    fresh: Query<
+        Entity,
+        Or<(
+            Added<RouteStripe>,
+            Added<MetroBoldTube>,
+            Added<TrackRibbon>,
+            Added<StationRing>,
+        )>,
+    >,
 ) {
     if !overlay.is_changed() && fresh.is_empty() {
         return;
@@ -663,6 +701,17 @@ fn apply_overlay_dim_system(
             mat.emissive = palette::emissive(color, emissive_strength);
         }
     };
+    // Preserve existing alpha on Blend track ribbons when dimming.
+    let paint_alpha = |mat: &mut StandardMaterial, color: Color, emissive_strength: f32| {
+        let a = mat.base_color.to_srgba().alpha;
+        if dimmed {
+            mat.base_color = color.mix(&Color::WHITE, 0.6).with_alpha(a);
+            mat.emissive = palette::emissive(color, emissive_strength * 0.15);
+        } else {
+            mat.base_color = color.with_alpha(a);
+            mat.emissive = palette::emissive(color, emissive_strength);
+        }
+    };
     for (stripe, handle) in &stripes {
         if let Some(mat) = materials.get_mut(&handle.0) {
             paint(mat, stripe.color, 0.45);
@@ -671,6 +720,16 @@ fn apply_overlay_dim_system(
     for (tube, handle) in &tubes {
         if let Some(mat) = materials.get_mut(&handle.0) {
             paint(mat, tube.color, 0.8);
+        }
+    }
+    for (track, handle) in &tracks {
+        if let Some(mat) = materials.get_mut(&handle.0) {
+            paint_alpha(mat, track.color, 0.2);
+        }
+    }
+    for (ring, handle) in &rings {
+        if let Some(mat) = materials.get_mut(&handle.0) {
+            paint(mat, palette::mode_accent(ring.mode), 0.15);
         }
     }
 }

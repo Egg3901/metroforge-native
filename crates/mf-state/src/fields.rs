@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bevy_ecs::prelude::*;
 use mf_protocol::Fields;
 
@@ -8,5 +10,9 @@ use mf_protocol::Fields;
 ///
 /// `mf-render`'s `terrain.rs` rebuilds ground geometry when
 /// `LatestFields.0.as_ref().map(|f| f.version)` changes.
+///
+/// Held behind [`Arc`] so the infrequent but large fields bump (5× cell
+/// arrays on big cities) can be retained without a deep clone from the
+/// event stream.
 #[derive(Resource, Default)]
-pub struct LatestFields(pub Option<Fields>);
+pub struct LatestFields(pub Option<Arc<Fields>>);
