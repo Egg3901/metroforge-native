@@ -1,6 +1,5 @@
-//! egui HUD (spec §3.4 `hud.rs`), styled per art-direction.md §8: off-white
-//! panels, near-black text, vivid accents reserved for interactive/transit
-//! elements, no gradients or rounded-corner excess, one embedded OFL font.
+//! egui HUD (spec §3.4 `hud.rs`). Visual chrome lives in
+//! [`crate::design_system`]; this file owns layout and interaction only.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,54 +15,36 @@ use mf_state::{LatestUi, QualityTier, SubwayView, Theme, WeatherEffects};
 use crate::audio::{PlaySfx, Sfx};
 use crate::campaign::{self, CampaignProgress};
 use crate::config::MfConfig;
+use crate::design_system as ds;
 use crate::goals::GoalsPanelOpen;
 use crate::saves::{self, SaveManager, SaveSlot};
 use crate::state::{toggle_pause, AppState, MenuScreen, PauseState, PendingInit, SimHello};
 
-// Art-direction §1/§8 palette. `GOOD`/`WARN`/`BAD` are fixed semantic
-// status colors (they read fine on all three themes' panels); every other
-// chrome color is theme-indexed (issue #32) and lives behind the accessor
-// functions below, which delegate to `design_system::current_colors()` —
-// the single theme-aware source both this file and the design-system
-// consumers share.
-const GOOD: egui::Color32 = egui::Color32::from_rgb(0x34, 0xc7, 0x59);
-const WARN: egui::Color32 = egui::Color32::from_rgb(0xff, 0x95, 0x00);
-const BAD: egui::Color32 = egui::Color32::from_rgb(0xff, 0x3b, 0x30);
+const BAD: egui::Color32 = ds::BAD;
 
-/// Off-white (Light) / near-black (Dark) / deep-violet (Purple) panel fill.
 fn panel_bg() -> egui::Color32 {
-    crate::design_system::current_colors().panel_bg
+    ds::panel_bg()
 }
-/// Primary text: rich black on Light, near-white on Dark/Purple.
 fn text_color() -> egui::Color32 {
-    crate::design_system::current_colors().text
+    ds::text()
 }
-/// The one accent color (interactive/transit elements only).
 fn accent() -> egui::Color32 {
-    crate::design_system::current_colors().accent
+    ds::accent()
 }
-/// Muted secondary text (subtitle/labels/version) — art-direction reserves
-/// full-strength text for primary copy.
 fn muted_text() -> egui::Color32 {
-    crate::design_system::current_colors().muted
+    ds::muted()
 }
-/// City-select / continue card fill + hover fill (same values as the
-/// top-bar speed/subway toggle buttons' resting/hover state — see
-/// `design_system::current_colors`' `inactive_bg`/`hover_bg`).
 fn card_bg() -> egui::Color32 {
-    crate::design_system::current_colors().inactive_bg
+    ds::inactive_bg()
 }
 fn card_hover_bg() -> egui::Color32 {
-    crate::design_system::current_colors().hover_bg
+    ds::hover_bg()
 }
 fn card_border() -> egui::Color32 {
-    crate::design_system::current_colors().border
+    ds::border()
 }
 
-const INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
-/// City-select / continue rows use the global 2px radius (art-direction:
-/// no rounded-corner excess). Was 4px — drifted from `design_system`.
-const CARD_CORNER: egui::CornerRadius = crate::design_system::CORNER_RADIUS;
+const CARD_CORNER: egui::CornerRadius = ds::CORNER_RADIUS;
 /// `saves::SLOT_COUNT` as a `usize`, for fixed-size array types below (array
 /// lengths need a `usize`; `saves::SLOT_COUNT` is a `u8` so callers stay
 /// consistent with the rest of that module's slot-numbering type).
@@ -88,15 +69,26 @@ impl Plugin for MfHudPlugin {
                 EguiPrimaryContextPass,
                 (
                     setup_egui_style_system,
-                    connecting_hud_system.run_if(in_state(AppState::ConnectingSim)),
-                    main_menu_hud_system.run_if(in_state(AppState::MainMenu)),
-                    loading_hud_system.run_if(in_state(AppState::Loading)),
-                    in_game_hud_system.run_if(in_state(AppState::InGame)),
-                    pause_overlay_system.run_if(in_state(AppState::InGame)),
-                    fatal_banner_system,
+                    ui_gallery_system.run_if(ds::ui_gallery_enabled),
+                    connecting_hud_system
+                        .run_if(in_state(AppState::ConnectingSim))
+                        .run_if(|| !ds::ui_gallery_enabled()),
+                    main_menu_hud_system
+                        .run_if(in_state(AppState::MainMenu))
+                        .run_if(|| !ds::ui_gallery_enabled()),
+                    loading_hud_system
+                        .run_if(in_state(AppState::Loading))
+                        .run_if(|| !ds::ui_gallery_enabled()),
+                    in_game_hud_system
+                        .run_if(in_state(AppState::InGame))
+                        .run_if(|| !ds::ui_gallery_enabled()),
+                    pause_overlay_system
+                        .run_if(in_state(AppState::InGame))
+                        .run_if(|| !ds::ui_gallery_enabled()),
+                    fatal_banner_system.run_if(|| !ds::ui_gallery_enabled()),
                 )
                     .chain()
-                    .run_if(|| !crate::design_system::hud_hidden()),
+                    .run_if(|| !ds::hud_hidden()),
             );
     }
 }
@@ -124,56 +116,17 @@ fn setup_egui_style_system(
     if applied.0 == Some(*theme) {
         return;
     }
-    // Keep the design-system's process-global in step BEFORE any widget
-    // paints with this frame's colors.
-    crate::design_system::set_current_theme(*theme);
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-
-    let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        "inter".to_owned(),
-        std::sync::Arc::new(egui::FontData::from_static(INTER_REGULAR)),
-    );
-    fonts
-        .families
-        .entry(egui::FontFamily::Proportional)
-        .or_default()
-        .insert(0, "inter".to_owned());
-    ctx.set_fonts(fonts);
-
-    let hv = crate::design_system::theme_colors(*theme);
-    let mut visuals = if *theme == Theme::Light {
-        egui::Visuals::light()
-    } else {
-        egui::Visuals::dark()
-    };
-    visuals.panel_fill = hv.panel_bg;
-    visuals.window_fill = hv.panel_bg;
-    visuals.extreme_bg_color = hv.extreme_bg;
-    visuals.faint_bg_color = hv.extreme_bg;
-    visuals.override_text_color = Some(hv.text);
-    visuals.widgets.noninteractive.bg_fill = hv.panel_bg;
-    visuals.widgets.noninteractive.weak_bg_fill = hv.panel_bg;
-    visuals.widgets.inactive.bg_fill = hv.inactive_bg;
-    visuals.widgets.inactive.weak_bg_fill = hv.inactive_bg;
-    visuals.widgets.hovered.bg_fill = hv.hover_bg;
-    visuals.widgets.active.bg_fill = hv.accent;
-    visuals.selection.bg_fill = hv.accent;
-    // Art-direction: "no rounded-corner excess" — keep corners near-square.
-    visuals.window_corner_radius = egui::CornerRadius::same(2);
-    visuals.menu_corner_radius = egui::CornerRadius::same(2);
-    for widget in [
-        &mut visuals.widgets.inactive,
-        &mut visuals.widgets.hovered,
-        &mut visuals.widgets.active,
-        &mut visuals.widgets.noninteractive,
-    ] {
-        widget.corner_radius = egui::CornerRadius::same(2);
-    }
-    ctx.set_visuals(visuals);
+    ds::install_fonts_and_visuals(ctx, *theme);
     applied.0 = Some(*theme);
+}
+
+fn ui_gallery_system(mut contexts: EguiContexts) -> Result {
+    let ctx = contexts.ctx_mut()?;
+    ds::show_gallery(ctx);
+    Ok(())
 }
 
 fn collect_toasts_system(mut events: EventReader<SimEvent>, mut log: ResMut<ToastLog>) {
@@ -188,10 +141,8 @@ fn collect_toasts_system(mut events: EventReader<SimEvent>, mut log: ResMut<Toas
     }
 }
 
-/// A muted, near-invisible group divider — art-direction §8 wants clean flat
-/// separation, not egui's default heavy separator line.
 fn thin_separator(ui: &mut egui::Ui) {
-    ui.add(egui::Separator::default().shrink(6.0));
+    ds::thin_separator(ui);
 }
 
 /// One hover tick the first frame the pointer lands on a widget; re-arms
@@ -309,14 +260,14 @@ struct SettingsControls<'w> {
 fn connecting_hud_system(mut contexts: EguiContexts, reconnect: Res<ReconnectState>) -> Result {
     let ctx = contexts.ctx_mut()?;
     egui::CentralPanel::default()
-        .frame(egui::Frame::default().fill(crate::design_system::menu_wash()))
+        .frame(egui::Frame::NONE.fill(ds::menu_wash()))
         .show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space((ui.available_height() * 0.28).max(24.0));
                 draw_logo(ui, 56.0);
-                ui.add_space(crate::design_system::SPACE_MD);
-                ui.label(crate::design_system::heading("MetroForge").color(text_color()));
-                ui.add_space(crate::design_system::SPACE_SM);
+                ui.add_space(ds::SPACE_MD);
+                ui.label(ds::heading("MetroForge"));
+                ui.add_space(ds::SPACE_SM);
                 match &reconnect.status {
                     NetStatus::Fatal(msg) => {
                         ui.colored_label(BAD, format!("Could not start the simulation: {msg}"));
@@ -609,7 +560,7 @@ fn continue_slot_row(
                 .city_label
                 .clone()
                 .unwrap_or_else(|| "Unknown city".to_string());
-            format!("{city} - Day {} - {}", meta.day, format_cash(meta.cash))
+            format!("{}  Day {}  {}", city, meta.day, format_cash(meta.cash))
         }
         None => "Empty".to_string(),
     };
@@ -715,10 +666,9 @@ fn draw_logo(ui: &mut egui::Ui, size: f32) {
     );
 }
 
-/// Title screen (owner feedback: menu must not "take me right to city
-/// select" — this is what the player sees first, every time `MainMenu` is
-/// entered). Logo + tagline + Play/Settings/Quit, nothing else: city
-/// picking and options both live one click away on their own screens.
+/// Title screen: full-bleed diorama, large wordmark, left-anchored menu
+/// column of borderless text buttons with accent-bar hover, version in the
+/// bottom corner.
 fn title_screen_ui(
     mut contexts: EguiContexts,
     mut screen: ResMut<MenuScreen>,
@@ -727,85 +677,64 @@ fn title_screen_ui(
     mut hovered: Local<Option<egui::Id>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
-    let fade = ctx.animate_value_with_time(egui::Id::new("title_fade"), 1.0, 0.2);
+    let fade = ds::animate(ctx, egui::Id::new("title_fade"), 1.0);
 
-    egui::TopBottomPanel::bottom("title_version")
-        .frame(
-            egui::Frame::default()
-                .fill(panel_bg())
-                .inner_margin(egui::Margin::symmetric(12, 10)),
-        )
-        .show_separator_line(false)
-        .show(ctx, |ui| {
-            ui.set_opacity(fade);
-            ui.vertical_centered(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                        .size(crate::design_system::TEXT_XS)
-                        .color(muted_text()),
-                );
-            });
-        });
-
-    // Transparent central panel: the attract-mode diorama is the brand
-    // surface. Opaque fill hid the white-city entirely (design audit).
     egui::CentralPanel::default()
-        .frame(egui::Frame::default().fill(crate::design_system::menu_wash()))
+        .frame(egui::Frame::NONE.fill(ds::menu_wash()))
         .show(ctx, |ui| {
             ui.set_opacity(fade);
-            ui.vertical_centered(|ui| {
-                ui.add_space((ui.available_height() * 0.24).max(crate::design_system::SPACE_LG));
-                draw_logo(ui, 88.0);
-                ui.add_space(crate::design_system::SPACE_MD);
-                ui.label(crate::design_system::hero("MetroForge").color(text_color()));
-                ui.add_space(crate::design_system::SPACE_XXS + 2.0);
-                ui.label(
-                    egui::RichText::new("Build the network. Move the city.")
-                        .size(crate::design_system::TEXT_MD)
-                        .color(muted_text()),
-                );
-                ui.add_space(crate::design_system::SPACE_XL + 4.0);
+            let screen_rect = ui.max_rect();
 
-                let play = ui.add_sized(
-                    [240.0, 46.0],
-                    egui::Button::new(
-                        egui::RichText::new("Play")
-                            .color(egui::Color32::WHITE)
-                            .size(17.0)
-                            .strong(),
-                    )
-                    .fill(accent())
-                    .corner_radius(crate::design_system::CORNER_RADIUS),
-                );
-                hover_tick(&play, &mut hovered, &mut sfx);
-                if play.clicked() {
-                    sfx.write(PlaySfx(Sfx::Confirm));
-                    *screen = MenuScreen::CitySelect;
-                }
+            // Version, bottom-right corner.
+            ui.painter().text(
+                egui::pos2(
+                    screen_rect.right() - ds::SPACE_MD,
+                    screen_rect.bottom() - ds::SPACE_MD,
+                ),
+                egui::Align2::RIGHT_BOTTOM,
+                format!("v{}", env!("CARGO_PKG_VERSION")),
+                ds::body_font(ds::TEXT_XS),
+                muted_text(),
+            );
 
-                ui.add_space(crate::design_system::SPACE_XS + 2.0);
-                let settings = ui.add_sized(
-                    [240.0, 40.0],
-                    egui::Button::new(egui::RichText::new("Settings").size(14.0))
-                        .corner_radius(crate::design_system::CORNER_RADIUS),
-                );
-                hover_tick(&settings, &mut hovered, &mut sfx);
-                if settings.clicked() {
-                    sfx.write(PlaySfx(Sfx::Confirm));
-                    *screen = MenuScreen::Settings;
-                }
+            // Left-anchored column: wordmark + menu.
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                ui.add_space(ds::SPACE_XXL);
+                ui.vertical(|ui| {
+                    ui.set_width(320.0);
+                    ui.add_space(ui.available_height() * 0.18);
+                    ui.horizontal(|ui| {
+                        draw_logo(ui, 56.0);
+                    });
+                    ui.add_space(ds::SPACE_MD);
+                    ui.label(ds::wordmark("MetroForge"));
+                    ui.add_space(ds::SPACE_XS);
+                    ui.label(
+                        egui::RichText::new("Build the network. Move the city.")
+                            .size(ds::TEXT_MD)
+                            .color(muted_text()),
+                    );
+                    ui.add_space(ds::SPACE_XL);
 
-                ui.add_space(crate::design_system::SPACE_XS + 2.0);
-                let quit = ui.add_sized(
-                    [240.0, 40.0],
-                    egui::Button::new(egui::RichText::new("Quit").size(14.0))
-                        .corner_radius(crate::design_system::CORNER_RADIUS),
-                );
-                hover_tick(&quit, &mut hovered, &mut sfx);
-                if quit.clicked() {
-                    sfx.write(PlaySfx(Sfx::Cancel));
-                    exit.write(AppExit::Success);
-                }
+                    let play = ds::menu_text_button(ui, "Play");
+                    hover_tick(&play, &mut hovered, &mut sfx);
+                    if play.clicked() {
+                        sfx.write(PlaySfx(Sfx::Confirm));
+                        *screen = MenuScreen::CitySelect;
+                    }
+                    let settings = ds::menu_text_button(ui, "Settings");
+                    hover_tick(&settings, &mut hovered, &mut sfx);
+                    if settings.clicked() {
+                        sfx.write(PlaySfx(Sfx::Confirm));
+                        *screen = MenuScreen::Settings;
+                    }
+                    let quit = ds::menu_text_button(ui, "Quit");
+                    hover_tick(&quit, &mut hovered, &mut sfx);
+                    if quit.clicked() {
+                        sfx.write(PlaySfx(Sfx::Cancel));
+                        exit.write(AppExit::Success);
+                    }
+                });
             });
         });
     Ok(())
@@ -852,32 +781,33 @@ fn city_select_screen_ui(
     let slots = slots_cache.as_ref().expect("populated just above");
 
     let ctx = contexts.ctx_mut()?;
-    let fade = ctx.animate_value_with_time(egui::Id::new("city_select_fade"), 1.0, 0.2);
+    let fade = ds::animate(ctx, egui::Id::new("city_select_fade"), 1.0);
 
     let mut go_back = false;
     let mut start_pressed = false;
 
     egui::TopBottomPanel::top("city_select_top")
         .frame(
-            egui::Frame::default()
+            egui::Frame::NONE
                 .fill(panel_bg())
-                .inner_margin(egui::Margin::symmetric(14, 10)),
+                .inner_margin(egui::Margin::symmetric(14, 10))
+                .stroke(egui::Stroke::new(ds::ACCENT_EDGE_PX, accent())),
         )
+        .show_separator_line(false)
         .show(ctx, |ui| {
             ui.set_opacity(fade);
             ui.horizontal(|ui| {
-                let back = ui.add(egui::Button::new(egui::RichText::new("< Back").size(13.0)));
+                let back = ds::button(ui, "Back", ds::ButtonKind::Ghost);
                 hover_tick(&back, &mut hovered, &mut sfx);
                 if back.clicked() {
                     go_back = true;
                 }
-                ui.add_space(crate::design_system::SPACE_SM);
+                ui.add_space(ds::SPACE_SM);
                 draw_logo(ui, 28.0);
-                ui.add_space(crate::design_system::SPACE_XS);
+                ui.add_space(ds::SPACE_XS);
                 ui.label(
                     egui::RichText::new("MetroForge")
-                        .size(crate::design_system::TEXT_SM)
-                        .strong()
+                        .font(ds::display_font(ds::TEXT_SM))
                         .color(text_color()),
                 );
             });
@@ -899,31 +829,24 @@ fn city_select_screen_ui(
             .map(|c| c.label.clone())
             .unwrap_or_else(|| capitalize(&pending.preset_key))
     };
-    let start_caption = format!(
-        "Start — {} ({})",
-        selected_label,
-        pending.difficulty.label()
-    );
+    let start_caption = format!("Start {} ({})", selected_label, pending.difficulty.label());
 
     egui::TopBottomPanel::bottom("city_select_bottom")
         .frame(
-            egui::Frame::default()
+            egui::Frame::NONE
                 .fill(panel_bg())
-                .inner_margin(egui::Margin::symmetric(14, 12)),
+                .inner_margin(egui::Margin::symmetric(14, 12))
+                .stroke(egui::Stroke::new(ds::ACCENT_EDGE_PX, accent())),
         )
+        .show_separator_line(false)
         .show(ctx, |ui| {
             ui.set_opacity(fade);
             ui.vertical_centered(|ui| {
-                let start = ui.add_sized(
-                    [280.0, 44.0],
-                    egui::Button::new(
-                        egui::RichText::new(start_caption)
-                            .color(egui::Color32::WHITE)
-                            .size(15.0)
-                            .strong(),
-                    )
-                    .fill(accent())
-                    .corner_radius(crate::design_system::CORNER_RADIUS),
+                let start = ds::button_sized(
+                    ui,
+                    start_caption,
+                    ds::ButtonKind::Primary,
+                    Some(egui::vec2(280.0, 44.0)),
                 );
                 hover_tick(&start, &mut hovered, &mut sfx);
                 if start.clicked() {
@@ -932,7 +855,7 @@ fn city_select_screen_ui(
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                        .size(crate::design_system::TEXT_XS)
+                        .size(ds::TEXT_XS)
                         .color(muted_text()),
                 );
             });
@@ -941,7 +864,7 @@ fn city_select_screen_ui(
     // Soft wash only — city cards carry their own fills so the diorama
     // still reads behind the grid (brand-first menu composition).
     egui::CentralPanel::default()
-        .frame(egui::Frame::default().fill(crate::design_system::menu_wash()))
+        .frame(egui::Frame::NONE.fill(ds::menu_wash()))
         .show(ctx, |ui| {
             ui.set_opacity(fade);
             egui::ScrollArea::vertical()
@@ -1096,115 +1019,80 @@ fn settings_screen_ui(
 ) -> Result<bool> {
     let mut back_clicked = false;
     let ctx = contexts.ctx_mut()?;
-    let fade = ctx.animate_value_with_time(egui::Id::new("settings_fade"), 1.0, 0.2);
+    let fade = ds::animate(ctx, egui::Id::new("settings_fade"), 1.0);
 
-    // Soft scrim + floating card so the attract diorama remains the
-    // atmosphere behind Settings (same layering language as pause).
-    egui::Area::new(egui::Id::new("settings_scrim"))
-        .order(egui::Order::Middle)
-        .fixed_pos(egui::Pos2::ZERO)
-        .show(ctx, |ui| {
-            let screen = ui.ctx().screen_rect();
-            ui.allocate_response(screen.size(), egui::Sense::hover());
-            ui.painter().rect_filled(
-                screen,
-                egui::CornerRadius::ZERO,
-                crate::design_system::scrim(),
-            );
-        });
+    ds::modal(ctx, egui::Id::new("settings_modal"), fade, |ui| {
+        ui.set_width(320.0);
+        ui.vertical_centered(|ui| {
+            draw_logo(ui, 36.0);
+            ui.add_space(6.0);
+            ui.label(ds::heading("Settings"));
+            ui.add_space(24.0);
 
-    egui::Area::new(egui::Id::new("settings_panel"))
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .show(ctx, |ui| {
-            ui.set_opacity(fade);
-            egui::Frame::default()
-                .fill(panel_bg())
-                .corner_radius(crate::design_system::CORNER_RADIUS)
-                .inner_margin(egui::Margin::symmetric(28, 24))
-                .show(ui, |ui| {
-                    ui.set_width(320.0);
-                    ui.vertical_centered(|ui| {
-                        draw_logo(ui, 36.0);
-                        ui.add_space(6.0);
-                        ui.label(crate::design_system::heading("Settings").color(text_color()));
-                        ui.add_space(24.0);
-
-                        field_label(ui, "Quality");
-                        egui::ComboBox::from_id_salt("settings_quality")
-                            .selected_text(settings.quality.label())
-                            .width(300.0)
-                            .show_ui(ui, |ui| {
-                                quality_options(
-                                    ui,
-                                    &mut settings.quality,
-                                    &mut settings.config,
-                                    &mut sfx,
-                                )
-                            });
-
-                        ui.add_space(14.0);
-                        field_label(ui, "Theme");
-                        egui::ComboBox::from_id_salt("settings_theme")
-                            .selected_text(settings.theme.label())
-                            .width(300.0)
-                            .show_ui(ui, |ui| {
-                                theme_options(
-                                    ui,
-                                    &mut settings.theme,
-                                    &mut settings.config,
-                                    &mut sfx,
-                                )
-                            });
-
-                        ui.add_space(14.0);
-                        field_label(ui, "Weather");
-                        let tier_allows = settings.quality.knobs().atmosphere_enabled;
-                        ui.add_enabled_ui(tier_allows, |ui| {
-                            let mut enabled = settings.weather.enabled;
-                            let label = if tier_allows {
-                                "Fog & clouds"
-                            } else {
-                                "Fog & clouds (Medium+)"
-                            };
-                            if ui.checkbox(&mut enabled, label).changed() {
-                                settings.weather.enabled = enabled;
-                                settings.config.set_weather_effects(enabled);
-                                sfx.write(PlaySfx(Sfx::Confirm));
-                            }
-                        });
-
-                        ui.add_space(28.0);
-                        let replay = ui.add_sized(
-                            [220.0, 36.0],
-                            egui::Button::new(egui::RichText::new("Replay tutorial").size(13.0)),
-                        );
-                        hover_tick(&replay, &mut hovered, &mut sfx);
-                        if replay.clicked() {
-                            sfx.write(PlaySfx(Sfx::Confirm));
-                            // Re-arm the flow and clear the persisted "done"
-                            // flag, so it shows on the next city load (or
-                            // immediately, if this was opened mid-game).
-                            settings.config.set_tutorial_completed(false);
-                            if let Some(tutorial) = tutorial.as_mut() {
-                                tutorial.request_replay();
-                            }
-                        }
-
-                        ui.add_space(10.0);
-                        let back = ui.add_sized(
-                            [220.0, 40.0],
-                            egui::Button::new(egui::RichText::new("Back").size(14.0))
-                                .corner_radius(crate::design_system::CORNER_RADIUS),
-                        );
-                        hover_tick(&back, &mut hovered, &mut sfx);
-                        if back.clicked() {
-                            sfx.write(PlaySfx(Sfx::Cancel));
-                            back_clicked = true;
-                        }
-                    });
+            field_label(ui, "Quality");
+            egui::ComboBox::from_id_salt("settings_quality")
+                .selected_text(settings.quality.label())
+                .width(300.0)
+                .show_ui(ui, |ui| {
+                    quality_options(ui, &mut settings.quality, &mut settings.config, &mut sfx)
                 });
+
+            ui.add_space(14.0);
+            field_label(ui, "Theme");
+            egui::ComboBox::from_id_salt("settings_theme")
+                .selected_text(settings.theme.label())
+                .width(300.0)
+                .show_ui(ui, |ui| {
+                    theme_options(ui, &mut settings.theme, &mut settings.config, &mut sfx)
+                });
+
+            ui.add_space(14.0);
+            field_label(ui, "Weather");
+            let tier_allows = settings.quality.knobs().atmosphere_enabled;
+            ui.add_enabled_ui(tier_allows, |ui| {
+                let mut enabled = settings.weather.enabled;
+                let label = if tier_allows {
+                    "Fog & clouds"
+                } else {
+                    "Fog & clouds (Medium+)"
+                };
+                if ui.checkbox(&mut enabled, label).changed() {
+                    settings.weather.enabled = enabled;
+                    settings.config.set_weather_effects(enabled);
+                    sfx.write(PlaySfx(Sfx::Confirm));
+                }
+            });
+
+            ui.add_space(28.0);
+            let replay = ds::button_sized(
+                ui,
+                "Replay tutorial",
+                ds::ButtonKind::Ghost,
+                Some(egui::vec2(220.0, 36.0)),
+            );
+            hover_tick(&replay, &mut hovered, &mut sfx);
+            if replay.clicked() {
+                sfx.write(PlaySfx(Sfx::Confirm));
+                settings.config.set_tutorial_completed(false);
+                if let Some(tutorial) = tutorial.as_mut() {
+                    tutorial.request_replay();
+                }
+            }
+
+            ui.add_space(10.0);
+            let back = ds::button_sized(
+                ui,
+                "Back",
+                ds::ButtonKind::Ghost,
+                Some(egui::vec2(220.0, 40.0)),
+            );
+            hover_tick(&back, &mut hovered, &mut sfx);
+            if back.clicked() {
+                sfx.write(PlaySfx(Sfx::Cancel));
+                back_clicked = true;
+            }
         });
+    });
     Ok(back_clicked)
 }
 
@@ -1216,19 +1104,19 @@ fn loading_hud_system(
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     egui::CentralPanel::default()
-        .frame(egui::Frame::default().fill(crate::design_system::menu_wash()))
+        .frame(egui::Frame::NONE.fill(ds::menu_wash()))
         .show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space((ui.available_height() * 0.28).max(24.0));
                 draw_logo(ui, 48.0);
-                ui.add_space(crate::design_system::SPACE_MD);
-                ui.label(crate::design_system::heading("Loading city").color(text_color()));
-                ui.add_space(crate::design_system::SPACE_MD);
+                ui.add_space(ds::SPACE_MD);
+                ui.label(ds::heading("Loading city"));
+                ui.add_space(ds::SPACE_MD);
 
                 let readiness = |label: &str, ready: bool| {
                     let status = if ready { "ready" } else { "waiting" };
                     egui::RichText::new(format!("{label}: {status}"))
-                        .size(crate::design_system::TEXT_SM)
+                        .size(ds::TEXT_SM)
                         .color(muted_text())
                 };
                 ui.label(readiness("Static city", city.static_city.is_some()));
@@ -1253,16 +1141,14 @@ fn in_game_hud_system(
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
 
-    // Art-direction §8: off-white panel, near-black text, consistent
-    // spacing/padding, vivid accents reserved for interactive/transit
-    // elements only. Budget | day+clock | approval | pop | speed | subway.
-    // Quality/theme live in Settings (pause → Settings), not the play HUD.
     egui::TopBottomPanel::top("hud_top")
         .frame(
-            egui::Frame::default()
+            egui::Frame::NONE
                 .fill(panel_bg())
-                .inner_margin(egui::Margin::symmetric(14, 10)),
+                .inner_margin(egui::Margin::symmetric(14, 10))
+                .stroke(egui::Stroke::new(ds::ACCENT_EDGE_PX, accent())),
         )
+        .show_separator_line(false)
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(16.0, 0.0);
             ui.horizontal_centered(|ui| {
@@ -1336,10 +1222,7 @@ fn in_game_hud_system(
                         .as_ref()
                         .map(|s| (s.speed - speed).abs() < 0.01)
                         .unwrap_or(false);
-                    let button = egui::Button::new(label)
-                        .fill(if is_current { accent() } else { card_bg() })
-                        .corner_radius(crate::design_system::CORNER_RADIUS);
-                    let resp = ui.add(button);
+                    let resp = ds::button(ui, label, ds::ButtonKind::Toggle(is_current));
                     hover_tick(&resp, &mut hovered, &mut sfx);
                     if resp.clicked() {
                         if let Some(link) = &link {
@@ -1352,14 +1235,15 @@ fn in_game_hud_system(
                 }
 
                 thin_separator(ui);
-                let subway_button = egui::Button::new(if subway.active {
-                    "Surface view"
-                } else {
-                    "Subway view"
-                })
-                .fill(if subway.active { accent() } else { card_bg() })
-                .corner_radius(crate::design_system::CORNER_RADIUS);
-                let subway_resp = ui.add(subway_button);
+                let subway_resp = ds::button(
+                    ui,
+                    if subway.active {
+                        "Surface view"
+                    } else {
+                        "Subway view"
+                    },
+                    ds::ButtonKind::Toggle(subway.active),
+                );
                 hover_tick(&subway_resp, &mut hovered, &mut sfx);
                 if subway_resp.clicked() {
                     subway.toggle();
@@ -1371,10 +1255,7 @@ fn in_game_hud_system(
                 }
 
                 thin_separator(ui);
-                let goals_button = egui::Button::new("Goals")
-                    .fill(if goals_panel.0 { accent() } else { card_bg() })
-                    .corner_radius(crate::design_system::CORNER_RADIUS);
-                let goals_resp = ui.add(goals_button);
+                let goals_resp = ds::button(ui, "Goals", ds::ButtonKind::Toggle(goals_panel.0));
                 hover_tick(&goals_resp, &mut hovered, &mut sfx);
                 if goals_resp.clicked() {
                     goals_panel.0 = !goals_panel.0;
@@ -1389,22 +1270,18 @@ fn in_game_hud_system(
 
     egui::TopBottomPanel::bottom("hud_toasts")
         .frame(
-            egui::Frame::default()
+            egui::Frame::NONE
                 .fill(panel_bg())
                 .inner_margin(egui::Margin::symmetric(14, 6)),
         )
+        .show_separator_line(false)
         .min_height(0.0)
         .show(ctx, |ui| {
             if !toasts.0.is_empty() {
                 ui.horizontal(|ui| {
                     for (msg, tone) in toasts.0.iter().rev().take(3) {
-                        let color = match tone {
-                            ToastTone::Info => text_color(),
-                            ToastTone::Warn => WARN,
-                            ToastTone::Good => GOOD,
-                        };
-                        ui.colored_label(color, msg);
-                        thin_separator(ui);
+                        ds::toast(ui, msg, *tone);
+                        ui.add_space(ds::SPACE_XS);
                     }
                 });
             }
@@ -1474,107 +1351,90 @@ fn pause_overlay_system(
 
     let mut settings_open_pressed = false;
     let ctx = contexts.ctx_mut()?;
+    let fade = ds::animate_bool(ctx, egui::Id::new("pause_fade"), true);
 
-    egui::Area::new(egui::Id::new("pause_scrim"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(egui::Pos2::ZERO)
-        .show(ctx, |ui| {
-            let screen = ui.ctx().screen_rect();
-            ui.allocate_response(screen.size(), egui::Sense::hover());
-            ui.painter().rect_filled(
-                screen,
-                egui::CornerRadius::ZERO,
-                crate::design_system::scrim(),
+    ds::modal(ctx, egui::Id::new("pause_modal"), fade, |ui| {
+        ui.set_width(260.0);
+        ui.vertical_centered(|ui| {
+            draw_logo(ui, 36.0);
+            ui.add_space(6.0);
+            ui.label(ds::heading("Paused"));
+            ui.add_space(18.0);
+
+            let resume = ds::button_sized(
+                ui,
+                "Resume",
+                ds::ButtonKind::Primary,
+                Some(egui::vec2(220.0, 40.0)),
             );
+            hover_tick(&resume, &mut hovered, &mut sfx);
+            if resume.clicked() && toggle_pause(&mut pause, &ui_state, link.as_deref()) {
+                sfx.write(PlaySfx(Sfx::Unpause));
+            }
+
+            ui.add_space(10.0);
+            let settings = ds::button_sized(
+                ui,
+                "Settings",
+                ds::ButtonKind::Ghost,
+                Some(egui::vec2(220.0, 36.0)),
+            );
+            hover_tick(&settings, &mut hovered, &mut sfx);
+            if settings.clicked() {
+                sfx.write(PlaySfx(Sfx::Confirm));
+                settings_open_pressed = true;
+            }
+
+            ui.add_space(14.0);
+            field_label(ui, "Save game");
+            ui.horizontal(|ui| {
+                for n in 1..=saves::SLOT_COUNT {
+                    let occupied = slot_occupied
+                        .get((n - 1) as usize)
+                        .copied()
+                        .unwrap_or(false);
+                    let label = if occupied {
+                        format!("Slot {n}")
+                    } else {
+                        format!("Slot {n} empty")
+                    };
+                    let btn = ds::button_sized(
+                        ui,
+                        label,
+                        ds::ButtonKind::Ghost,
+                        Some(egui::vec2(68.0, 32.0)),
+                    );
+                    hover_tick(&btn, &mut hovered, &mut sfx);
+                    if btn.clicked() {
+                        if let (Some(link), Some(state)) = (&link, &ui_state.0) {
+                            save_manager.request_save(
+                                SaveSlot::Slot(n),
+                                Some(pending.preset_key.clone()),
+                                state.day,
+                                state.cash,
+                                link,
+                                &mut toasts,
+                                &mut sfx,
+                            );
+                        }
+                    }
+                }
+            });
+
+            ui.add_space(14.0);
+            let quit = ds::button_sized(
+                ui,
+                "Quit to desktop",
+                ds::ButtonKind::Danger,
+                Some(egui::vec2(220.0, 40.0)),
+            );
+            hover_tick(&quit, &mut hovered, &mut sfx);
+            if quit.clicked() {
+                sfx.write(PlaySfx(Sfx::Cancel));
+                exit.write(AppExit::Success);
+            }
         });
-
-    egui::Area::new(egui::Id::new("pause_panel"))
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .show(ctx, |ui| {
-            egui::Frame::default()
-                .fill(panel_bg())
-                .corner_radius(egui::CornerRadius::same(2))
-                .inner_margin(egui::Margin::symmetric(28, 24))
-                .show(ui, |ui| {
-                    ui.set_width(260.0);
-                    ui.vertical_centered(|ui| {
-                        draw_logo(ui, 36.0);
-                        ui.add_space(6.0);
-                        ui.label(egui::RichText::new("Paused").size(24.0).strong());
-                        ui.add_space(18.0);
-
-                        let resume = ui.add_sized(
-                            [220.0, 40.0],
-                            egui::Button::new(
-                                egui::RichText::new("Resume")
-                                    .color(egui::Color32::WHITE)
-                                    .strong(),
-                            )
-                            .fill(accent()),
-                        );
-                        hover_tick(&resume, &mut hovered, &mut sfx);
-                        if resume.clicked() && toggle_pause(&mut pause, &ui_state, link.as_deref())
-                        {
-                            sfx.write(PlaySfx(Sfx::Unpause));
-                        }
-
-                        ui.add_space(10.0);
-                        let settings = ui.add_sized(
-                            [220.0, 36.0],
-                            egui::Button::new(egui::RichText::new("Settings").size(13.0)),
-                        );
-                        hover_tick(&settings, &mut hovered, &mut sfx);
-                        if settings.clicked() {
-                            sfx.write(PlaySfx(Sfx::Confirm));
-                            settings_open_pressed = true;
-                        }
-
-                        ui.add_space(14.0);
-                        field_label(ui, "Save game");
-                        ui.horizontal(|ui| {
-                            for n in 1..=saves::SLOT_COUNT {
-                                let occupied = slot_occupied
-                                    .get((n - 1) as usize)
-                                    .copied()
-                                    .unwrap_or(false);
-                                let label = if occupied {
-                                    format!("Slot {n}")
-                                } else {
-                                    format!("Slot {n} (empty)")
-                                };
-                                let btn = ui.add_sized(
-                                    [68.0, 32.0],
-                                    egui::Button::new(egui::RichText::new(label).size(11.0)),
-                                );
-                                hover_tick(&btn, &mut hovered, &mut sfx);
-                                if btn.clicked() {
-                                    if let (Some(link), Some(state)) = (&link, &ui_state.0) {
-                                        save_manager.request_save(
-                                            SaveSlot::Slot(n),
-                                            Some(pending.preset_key.clone()),
-                                            state.day,
-                                            state.cash,
-                                            link,
-                                            &mut toasts,
-                                            &mut sfx,
-                                        );
-                                    }
-                                }
-                            }
-                        });
-
-                        ui.add_space(14.0);
-                        let quit =
-                            ui.add_sized([220.0, 40.0], egui::Button::new("Quit to desktop"));
-                        hover_tick(&quit, &mut hovered, &mut sfx);
-                        if quit.clicked() {
-                            sfx.write(PlaySfx(Sfx::Cancel));
-                            exit.write(AppExit::Success);
-                        }
-                    });
-                });
-        });
+    });
 
     if settings_open_pressed {
         *pause_settings_open = true;

@@ -1,34 +1,24 @@
-//! Shared design-system constants for `mf-game`'s egui UI (ship-plan #25,
-//! v0.2 build toolbar/route panel). Every future UI file should pull its
-//! spacing/type/color/corner-radius values from here rather than
-//! hand-rolling them per-file, the way `hud.rs` currently does (`hud.rs`
-//! keeps its own copies for now and migrates onto this module at
-//! integration - see the note on [`PANEL_BG`] etc. below).
+//! MetroForge UI design system: Mirror's Edge-adjacent chrome.
 //!
-//! Values are lifted byte-for-byte from `hud.rs`'s existing constants so the
-//! two files agree visually even before that migration happens; see
-//! `art-direction.md` (BINDING) for the source values: off-white #f4f5f2
-//! panels, rich-black #17181c text, accent #007aff, vivid color reserved for
-//! interactive/transit elements, corner radius 2.
+//! Near-black `#0b0d10`, white type, and the four spoke accents
+//! (green / blue / orange / red). Every visible surface in `mf-game`
+//! should go through the helpers here (`panel`, `button`, `modal`,
+//! `window`, `stat_tile`, `progress_bar`, `toast`, …) so nothing paints
+//! stock egui bevels or window chrome. Call sites must not construct
+//! raw `egui::Button` / `egui::Window` themselves.
 //!
-//! Deliberately broader than what `build_ui.rs` (the only current
-//! consumer) exercises - `hud.rs`'s eventual migration and future panels
-//! are expected to reach for `GOOD`/`hero`/`SPACE_LG`/etc. that nothing
-//! uses yet, so this module is exempted from the dead-code lint rather
-//! than trimmed down to today's exact call sites.
+//! Motion: 120–180 ms ease-out via [`animate`] / [`animate_bool`] wrapping
+//! `ctx.animate_value_with_time` / `animate_bool_with_time`.
 #![allow(dead_code)]
 
 use bevy_egui::egui;
+use mf_protocol::ToastTone;
 use mf_state::Theme;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------
 // Spacing scale
 // ---------------------------------------------------------------------
-// A small fixed scale (rather than free-hand `ui.add_space(11.3)` calls
-// scattered per-file) so paddings/gaps stay visually consistent as more
-// panels are added. Named for the common "t-shirt size" convention;
-// `SPACING` is the same six values as a slice for callers that want to
-// index/iterate rather than name one.
 
 pub const SPACE_XXS: f32 = 4.0;
 pub const SPACE_XS: f32 = 8.0;
@@ -36,116 +26,128 @@ pub const SPACE_SM: f32 = 12.0;
 pub const SPACE_MD: f32 = 16.0;
 pub const SPACE_LG: f32 = 24.0;
 pub const SPACE_XL: f32 = 32.0;
+pub const SPACE_XXL: f32 = 48.0;
 
-pub const SPACING: [f32; 6] = [SPACE_XXS, SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG, SPACE_XL];
+pub const SPACING: [f32; 7] = [
+    SPACE_XXS, SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG, SPACE_XL, SPACE_XXL,
+];
 
 // ---------------------------------------------------------------------
-// Type scale
+// Type scale + font families
 // ---------------------------------------------------------------------
-// Five sizes cover everything the HUD/build UI needs: tooltip/hint copy,
-// secondary/muted labels, primary body/numeric text, section headings and
-// one hero size for the main menu title. Helper functions below are the
-// preferred call site (`ds::label_muted("...")` rather than
-// `egui::RichText::new("...").size(ds::TEXT_SM).color(ds::MUTED)`
-// repeated at every use) - add a new helper here rather than inlining the
-// size/color combo at a call site.
+// Body: Inter (proportional). Headings / wordmark: Oswald display face
+// registered as FontFamily::Name("mf_display") by `install_fonts`.
 
 pub const TEXT_XS: f32 = 11.0;
 pub const TEXT_SM: f32 = 13.0;
 pub const TEXT_MD: f32 = 15.0;
-pub const TEXT_LG: f32 = 24.0;
-pub const TEXT_XL: f32 = 34.0;
+pub const TEXT_LG: f32 = 28.0;
+pub const TEXT_XL: f32 = 56.0;
+pub const TEXT_WORDMARK: f32 = 72.0;
 
-/// Smallest/muted copy: tooltip hints, field captions.
+/// Display face family name installed by [`install_fonts`].
+pub fn display_family() -> egui::FontFamily {
+    egui::FontFamily::Name(Arc::from("mf_display"))
+}
+
+pub fn display_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, display_family())
+}
+
+pub fn body_font(size: f32) -> egui::FontId {
+    egui::FontId::proportional(size)
+}
+
 pub fn label_small(text: impl Into<String>) -> egui::RichText {
     egui::RichText::new(text.into())
         .size(TEXT_XS)
         .color(muted())
 }
 
-/// Secondary/de-emphasized body text (art-direction reserves full
-/// rich-black for primary copy).
 pub fn label_muted(text: impl Into<String>) -> egui::RichText {
     egui::RichText::new(text.into())
         .size(TEXT_SM)
         .color(muted())
 }
 
-/// Primary body text at the HUD's standard size.
 pub fn label_body(text: impl Into<String>) -> egui::RichText {
     egui::RichText::new(text.into())
         .size(TEXT_SM)
         .color(current_colors().text)
 }
 
-/// A value that should draw the eye slightly more than plain body text
-/// (numeric readouts, selected-state labels) without going all the way to
-/// a heading size.
 pub fn value_strong(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text.into()).size(TEXT_MD).strong()
+    egui::RichText::new(text.into())
+        .size(TEXT_MD)
+        .strong()
+        .color(current_colors().text)
 }
 
-/// Section heading (panel titles, dialog titles).
 pub fn heading(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text.into()).size(TEXT_LG).strong()
+    egui::RichText::new(text.into())
+        .font(display_font(TEXT_LG))
+        .color(current_colors().text)
 }
 
-/// Hero-sized text - currently only the main menu title uses this size.
 pub fn hero(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text.into()).size(TEXT_XL).strong()
+    egui::RichText::new(text.into())
+        .font(display_font(TEXT_XL))
+        .color(current_colors().text)
+}
+
+pub fn wordmark(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text.into())
+        .font(display_font(TEXT_WORDMARK))
+        .color(egui::Color32::WHITE)
 }
 
 // ---------------------------------------------------------------------
-// Palette
+// Palette (Mirror's Edge / spoke identity)
 // ---------------------------------------------------------------------
-// Values copied from `hud.rs`'s `PANEL_BG`/`TEXT_COLOR`/`ACCENT`/`GOOD`/
-// `WARN`/`BAD`/`MUTED_TEXT` consts (art-direction.md §1/§8). `hud.rs` keeps
-// its own private copies for now (it predates this module) and is expected
-// to import from here instead at integration, per ship-plan #25's scope
-// split - this file does not edit `hud.rs`.
 
-/// #f4f5f2 - off-white panel fill.
-pub const PANEL_BG: egui::Color32 = egui::Color32::from_rgb(0xf4, 0xf5, 0xf2);
-/// #17181c - rich-black primary text.
-pub const TEXT: egui::Color32 = egui::Color32::from_rgb(0x17, 0x18, 0x1c);
-/// #007aff - the one accent color, reserved for interactive/transit
-/// elements (art-direction: "vivid color ONLY on interactive/transit
-/// elements").
-pub const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x00, 0x7a, 0xff);
-pub const GOOD: egui::Color32 = egui::Color32::from_rgb(0x34, 0xc7, 0x59);
-pub const WARN: egui::Color32 = egui::Color32::from_rgb(0xff, 0x95, 0x00);
-pub const BAD: egui::Color32 = egui::Color32::from_rgb(0xff, 0x3b, 0x30);
-/// De-emphasized secondary text (same role as `hud.rs`'s `MUTED_TEXT`).
-pub const MUTED: egui::Color32 = egui::Color32::from_rgb(0x5c, 0x5e, 0x63);
+/// Near-black surface fill — logo badge / UI chrome base.
+pub const SURFACE: egui::Color32 = egui::Color32::from_rgb(0x0b, 0x0d, 0x10);
+/// Slightly lifted surface for nested panels / idle controls.
+pub const SURFACE_RAISED: egui::Color32 = egui::Color32::from_rgb(0x14, 0x17, 0x1c);
+/// Hover fill over raised surfaces.
+pub const SURFACE_HOVER: egui::Color32 = egui::Color32::from_rgb(0x1c, 0x21, 0x28);
 
-/// Fill for an inactive/idle toggle-style control (`hud.rs` uses this same
-/// value for its speed/subway toggle buttons' resting state).
-pub const INACTIVE_BG: egui::Color32 = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
-/// Fill for a hovered idle control, one notch darker than [`INACTIVE_BG`].
-pub const HOVER_BG: egui::Color32 = egui::Color32::from_rgb(0xdc, 0xde, 0xd8);
+pub const WHITE: egui::Color32 = egui::Color32::from_rgb(0xf4, 0xf4, 0xf5);
+pub const MUTED_FIXED: egui::Color32 = egui::Color32::from_rgb(0x8a, 0x8e, 0x96);
+
+/// Four spoke accents from the wordmark / app icon.
+pub const SPOKE_GREEN: egui::Color32 = egui::Color32::from_rgb(0x7e, 0xf2, 0x9a);
+pub const SPOKE_BLUE: egui::Color32 = egui::Color32::from_rgb(0x54, 0xd0, 0xff);
+pub const SPOKE_ORANGE: egui::Color32 = egui::Color32::from_rgb(0xff, 0xb6, 0x3d);
+pub const SPOKE_RED: egui::Color32 = egui::Color32::from_rgb(0xff, 0x5d, 0x6c);
+
+/// Semantic aliases (same spoke hues).
+pub const GOOD: egui::Color32 = SPOKE_GREEN;
+pub const WARN: egui::Color32 = SPOKE_ORANGE;
+pub const BAD: egui::Color32 = SPOKE_RED;
+pub const ACCENT: egui::Color32 = SPOKE_BLUE;
+
+// Legacy const names kept so older call sites / tests still compile.
+pub const PANEL_BG: egui::Color32 = SURFACE;
+pub const TEXT: egui::Color32 = WHITE;
+pub const MUTED: egui::Color32 = MUTED_FIXED;
+pub const INACTIVE_BG: egui::Color32 = SURFACE_RAISED;
+pub const HOVER_BG: egui::Color32 = SURFACE_HOVER;
+
+/// Hard 2px accent edge (no rounded-gray-blob panels).
+pub const ACCENT_EDGE_PX: f32 = 2.0;
+pub const CORNER_RADIUS_PX: u8 = 0;
+pub const CORNER_RADIUS: egui::CornerRadius = egui::CornerRadius::ZERO;
+
+/// Open / close / hover motion window (seconds).
+pub const ANIM_SECS: f32 = 0.15;
 
 // ---------------------------------------------------------------------
-// Theme-indexed chrome colors (issue #32)
+// Theme-indexed chrome
 // ---------------------------------------------------------------------
-// The egui-chrome roles that actually vary by theme: panel/window fill,
-// primary/muted text, the one accent, the idle-widget background shades,
-// and the card hairline border. The `PANEL_BG`/`TEXT`/`ACCENT`/`MUTED`/
-// `INACTIVE_BG`/`HOVER_BG` consts above stay fixed as the `Theme::Light`
-// values (they feed `theme_colors`' Light arm); every UI call site should
-// go through the theme-aware accessor functions below (`panel_bg()`,
-// `text()`, ...) instead. `GOOD`/`WARN`/`BAD` are deliberately NOT
-// theme-indexed: they carry semantic meaning (positive/warning/negative)
-// and the same vivid values read fine on all three themes' panels.
-//
-// The active theme is mirrored into a process-global atomic
-// (`set_current_theme`), same pattern as `mf-render`'s `palette.rs`:
-// painting helpers deep inside widget code have no ECS access, and a theme
-// change is a rare menu click. `hud.rs`'s `setup_egui_style_system` (which
-// already watches `Res<Theme>` every egui pass) keeps it in sync. The
-// atomic's initial value 0 == `Theme::Light` == `Theme::default()`, so
-// pre-sync reads are already correct.
+// UI chrome commits to the near-black ME surface on every theme; only the
+// interactive accent shifts so Theme::Purple still reads as a pick.
 
-/// Theme-indexed mirror of the chrome consts above — see [`theme_colors`].
 pub struct ThemeColors {
     pub panel_bg: egui::Color32,
     pub text: egui::Color32,
@@ -154,57 +156,29 @@ pub struct ThemeColors {
     pub extreme_bg: egui::Color32,
     pub inactive_bg: egui::Color32,
     pub hover_bg: egui::Color32,
-    /// Hairline border for card-style hoverable rows (`hud.rs`'s
-    /// `CARD_BORDER` role).
     pub border: egui::Color32,
 }
 
-/// The egui chrome palette for `theme`. `Theme::Light` reproduces the
-/// original consts exactly (zero visual change when Light is selected, per
-/// issue #32's requirement); `Dark`/`Purple` mirror `mf-render::palette`'s
-/// Dark/Purple render tables so the 3D scene and the UI chrome read as one
-/// coherent theme rather than two independently-tuned palettes.
 pub fn theme_colors(theme: Theme) -> ThemeColors {
-    match theme {
-        Theme::Light => ThemeColors {
-            panel_bg: PANEL_BG,
-            text: TEXT,
-            accent: ACCENT,
-            muted: MUTED,
-            extreme_bg: INACTIVE_BG,
-            inactive_bg: INACTIVE_BG,
-            hover_bg: HOVER_BG,
-            border: egui::Color32::from_rgb(0xd8, 0xd9, 0xd4),
-        },
-        Theme::Dark => ThemeColors {
-            panel_bg: egui::Color32::from_rgb(0x1c, 0x1e, 0x22),
-            text: egui::Color32::from_rgb(0xf0, 0xf1, 0xf3),
-            accent: egui::Color32::from_rgb(0x6b, 0xbb, 0xff),
-            muted: egui::Color32::from_rgb(0xa8, 0xab, 0xb2),
-            extreme_bg: egui::Color32::from_rgb(0x0e, 0x0f, 0x12),
-            inactive_bg: egui::Color32::from_rgb(0x27, 0x29, 0x2e),
-            hover_bg: egui::Color32::from_rgb(0x34, 0x37, 0x3d),
-            border: egui::Color32::from_rgb(0x3a, 0x3d, 0x42),
-        },
-        Theme::Purple => ThemeColors {
-            panel_bg: egui::Color32::from_rgb(0x2b, 0x1b, 0x4e),
-            text: egui::Color32::from_rgb(0xf1, 0xe9, 0xff),
-            accent: egui::Color32::from_rgb(0xff, 0x2e, 0xc4),
-            muted: egui::Color32::from_rgb(0xb9, 0xa8, 0xd6),
-            extreme_bg: egui::Color32::from_rgb(0x1a, 0x10, 0x30),
-            inactive_bg: egui::Color32::from_rgb(0x38, 0x25, 0x63),
-            hover_bg: egui::Color32::from_rgb(0x47, 0x30, 0x78),
-            border: egui::Color32::from_rgb(0x47, 0x30, 0x78),
-        },
+    let accent = match theme {
+        Theme::Light => SPOKE_BLUE,
+        Theme::Dark => SPOKE_BLUE,
+        Theme::Purple => egui::Color32::from_rgb(0xd3, 0x9a, 0xf0),
+    };
+    ThemeColors {
+        panel_bg: SURFACE,
+        text: WHITE,
+        accent,
+        muted: MUTED_FIXED,
+        extreme_bg: egui::Color32::from_rgb(0x05, 0x06, 0x08),
+        inactive_bg: SURFACE_RAISED,
+        hover_bg: SURFACE_HOVER,
+        border: egui::Color32::from_rgb(0x2a, 0x2e, 0x36),
     }
 }
 
-/// Process-global active theme, `0 == Theme::Light` (see the section
-/// comment above for why this isn't a `Res<Theme>` parameter everywhere).
 static CURRENT_THEME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
-/// Publishes the active theme for every accessor below. Called by
-/// `hud.rs`'s `setup_egui_style_system` whenever `Res<Theme>` changes.
 pub fn set_current_theme(theme: Theme) {
     CURRENT_THEME.store(theme as u8, std::sync::atomic::Ordering::Relaxed);
 }
@@ -217,8 +191,6 @@ fn current_theme() -> Theme {
     }
 }
 
-/// [`ThemeColors`] for the currently active theme — the preferred source
-/// for every UI color below.
 pub fn current_colors() -> ThemeColors {
     theme_colors(current_theme())
 }
@@ -245,39 +217,598 @@ pub fn border() -> egui::Color32 {
     current_colors().border
 }
 
-/// Full-screen pause/report/settings scrim — theme-aware so Dark/Purple
-/// don't get a Light-theme rich-black wash. Alpha ~0.55 keeps the diorama
-/// readable underneath while locking focus on the overlay card.
+/// Single-layer dim (legacy callers). Prefer [`paint_scrim`] for modals.
 pub fn scrim() -> egui::Color32 {
-    let c = current_colors().extreme_bg;
-    egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 140)
+    egui::Color32::from_rgba_unmultiplied(0x05, 0x06, 0x08, 160)
 }
 
-/// Soft menu wash over the attract diorama: enough contrast for body copy
-/// without painting an opaque slab over the white-city (art-direction:
-/// the world is the brand). Top/bottom chrome bars stay fully opaque.
+/// Soft wash over the attract diorama on title / city-select.
 pub fn menu_wash() -> egui::Color32 {
-    let c = current_colors().panel_bg;
-    egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 38)
+    egui::Color32::from_rgba_unmultiplied(0x0b, 0x0d, 0x10, 72)
 }
 
-// ---------------------------------------------------------------------
-// Corner radius
-// ---------------------------------------------------------------------
-// Art-direction: "no rounded-corner excess" - every panel/button/frame in
-// the game uses this same near-square 2px radius (matches `hud.rs`'s
-// `EguiStyleApplied` visuals setup and its own literal `CornerRadius::same(2)`
-// calls).
-
-/// MF_HIDE_HUD=1 suppresses every egui layer for clean marketing frames
-/// (promo harness); checked once, cheap everywhere.
 pub fn hud_hidden() -> bool {
     static ONCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ONCE.get_or_init(|| std::env::var_os("MF_HIDE_HUD").is_some())
 }
 
-pub const CORNER_RADIUS_PX: u8 = 2;
-pub const CORNER_RADIUS: egui::CornerRadius = egui::CornerRadius::same(CORNER_RADIUS_PX);
+pub fn ui_gallery_enabled() -> bool {
+    static ONCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ONCE.get_or_init(|| matches!(std::env::var("MF_UI_GALLERY").as_deref(), Ok("1")))
+}
+
+// ---------------------------------------------------------------------
+// Fonts + egui visuals (no stock bevels)
+// ---------------------------------------------------------------------
+
+const INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+const OSWALD_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Oswald-SemiBold.ttf");
+
+/// Install Inter (body) + Oswald (display) and strip stock egui chrome.
+pub fn install_fonts_and_visuals(ctx: &egui::Context, theme: Theme) {
+    set_current_theme(theme);
+
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "inter".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(INTER_REGULAR)),
+    );
+    fonts.font_data.insert(
+        "oswald".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(OSWALD_SEMIBOLD)),
+    );
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "inter".to_owned());
+    fonts
+        .families
+        .insert(display_family(), vec!["oswald".to_owned()]);
+    ctx.set_fonts(fonts);
+
+    let hv = theme_colors(theme);
+    let mut visuals = egui::Visuals::dark();
+    visuals.panel_fill = hv.panel_bg;
+    visuals.window_fill = hv.panel_bg;
+    visuals.extreme_bg_color = hv.extreme_bg;
+    visuals.faint_bg_color = hv.extreme_bg;
+    visuals.override_text_color = Some(hv.text);
+    visuals.window_stroke = egui::Stroke::NONE;
+    visuals.window_shadow = egui::epaint::Shadow::NONE;
+    visuals.popup_shadow = egui::epaint::Shadow::NONE;
+    visuals.window_corner_radius = CORNER_RADIUS;
+    visuals.menu_corner_radius = CORNER_RADIUS;
+    visuals.widgets.noninteractive.bg_fill = hv.panel_bg;
+    visuals.widgets.noninteractive.weak_bg_fill = hv.panel_bg;
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::NONE;
+    visuals.widgets.inactive.bg_fill = hv.inactive_bg;
+    visuals.widgets.inactive.weak_bg_fill = hv.inactive_bg;
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+    visuals.widgets.hovered.bg_fill = hv.hover_bg;
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+    visuals.widgets.active.bg_fill = hv.accent;
+    visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
+    visuals.selection.bg_fill = hv.accent;
+    for widget in [
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+        &mut visuals.widgets.noninteractive,
+        &mut visuals.widgets.open,
+    ] {
+        widget.corner_radius = CORNER_RADIUS;
+        widget.expansion = 0.0;
+    }
+    ctx.set_visuals(visuals.clone());
+
+    let mut style = (*ctx.style()).clone();
+    style.spacing.item_spacing = egui::vec2(SPACE_SM, SPACE_XS);
+    style.spacing.button_padding = egui::vec2(SPACE_MD, SPACE_SM);
+    style.spacing.window_margin = egui::Margin::same(0);
+    style.visuals = visuals;
+    ctx.set_style(style);
+}
+
+// ---------------------------------------------------------------------
+// Motion helpers (ease-out cubic over ANIM_SECS)
+// ---------------------------------------------------------------------
+
+fn ease_out_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// Animate a float toward `target` over [`ANIM_SECS`] with ease-out.
+pub fn animate(ctx: &egui::Context, id: egui::Id, target: f32) -> f32 {
+    let raw = ctx.animate_value_with_time(id, target, ANIM_SECS);
+    // animate_value_with_time already eases; we still expose a stable API.
+    raw
+}
+
+/// Animate a bool open/close; returns eased 0..1.
+pub fn animate_bool(ctx: &egui::Context, id: egui::Id, open: bool) -> f32 {
+    ease_out_cubic(ctx.animate_bool_with_time(id, open, ANIM_SECS))
+}
+
+/// Hover glow factor (0..1) for a response, eased.
+pub fn hover_t(ctx: &egui::Context, response: &egui::Response) -> f32 {
+    ease_out_cubic(ctx.animate_bool_with_time(
+        response.id.with("mf_hover"),
+        response.hovered(),
+        ANIM_SECS,
+    ))
+}
+
+// ---------------------------------------------------------------------
+// Paint primitives
+// ---------------------------------------------------------------------
+
+fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let lerp = |x: u8, y: u8| -> u8 { (x as f32 + (y as f32 - x as f32) * t).round() as u8 };
+    egui::Color32::from_rgba_unmultiplied(
+        lerp(a.r(), b.r()),
+        lerp(a.g(), b.g()),
+        lerp(a.b(), b.b()),
+        lerp(a.a(), b.a()),
+    )
+}
+
+fn with_alpha(c: egui::Color32, a: u8) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
+}
+
+/// Flat fill + 2px accent underline + optional hover glow. No bevels.
+pub fn paint_surface(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    fill: egui::Color32,
+    accent_color: egui::Color32,
+    hover: f32,
+) {
+    let glow = with_alpha(accent_color, (28.0 * hover) as u8);
+    if hover > 0.01 {
+        painter.rect_filled(rect.expand(2.0), CORNER_RADIUS, glow);
+    }
+    painter.rect_filled(rect, CORNER_RADIUS, fill);
+    let edge = egui::Rect::from_min_max(
+        egui::pos2(rect.left(), rect.bottom() - ACCENT_EDGE_PX),
+        rect.max,
+    );
+    painter.rect_filled(edge, CORNER_RADIUS, accent_color);
+}
+
+/// Two-layer scrim: deep wash + lighter inner veil (blurred-feel stand-in).
+pub fn paint_scrim(painter: &egui::Painter, screen: egui::Rect) {
+    painter.rect_filled(
+        screen,
+        CORNER_RADIUS,
+        egui::Color32::from_rgba_unmultiplied(0x05, 0x06, 0x08, 180),
+    );
+    painter.rect_filled(
+        screen.shrink(0.0),
+        CORNER_RADIUS,
+        egui::Color32::from_rgba_unmultiplied(0x0b, 0x0d, 0x10, 90),
+    );
+}
+
+/// Panel frame: flat near-black fill, 2px left accent edge, generous pad.
+pub fn panel_frame(accent_color: egui::Color32) -> egui::Frame {
+    egui::Frame::NONE
+        .fill(panel_bg())
+        .inner_margin(egui::Margin::symmetric(SPACE_LG as i8, SPACE_MD as i8))
+        .stroke(egui::Stroke::new(ACCENT_EDGE_PX, accent_color))
+}
+
+/// Content panel helper: allocates a framed region and runs `add_contents`.
+pub fn panel<R>(
+    ui: &mut egui::Ui,
+    accent_color: egui::Color32,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    let open_t = animate(ui.ctx(), ui.id().with("mf_panel_open"), 1.0);
+    panel_frame(accent_color).show(ui, |ui| {
+        ui.set_opacity(open_t.clamp(0.15, 1.0));
+        add_contents(ui)
+    })
+}
+
+// ---------------------------------------------------------------------
+// Buttons
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonKind {
+    Primary,
+    Ghost,
+    Danger,
+    /// Toggle / selected chrome (speed, subway, routes, …).
+    Toggle(bool),
+}
+
+/// Custom-painted button. Primary / ghost / danger / toggle.
+pub fn button(ui: &mut egui::Ui, label: impl Into<String>, kind: ButtonKind) -> egui::Response {
+    button_sized(ui, label, kind, None)
+}
+
+pub fn button_sized(
+    ui: &mut egui::Ui,
+    label: impl Into<String>,
+    kind: ButtonKind,
+    size: Option<egui::Vec2>,
+) -> egui::Response {
+    let label = label.into();
+    let padding = egui::vec2(SPACE_MD, SPACE_SM);
+    let font = body_font(TEXT_SM);
+    let galley = ui.fonts(|f| f.layout_no_wrap(label.clone(), font.clone(), text()));
+    let desired = size.unwrap_or_else(|| {
+        egui::vec2(
+            (galley.size().x + padding.x * 2.0).max(120.0),
+            (galley.size().y + padding.y * 2.0).max(36.0),
+        )
+    });
+    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
+    let h = hover_t(ui.ctx(), &response);
+    let (fill, text_color, edge) = match kind {
+        ButtonKind::Primary => {
+            let base = accent();
+            let fill = lerp_color(base, WHITE, 0.08 * h);
+            (fill, SURFACE, base)
+        }
+        ButtonKind::Ghost => {
+            let fill = lerp_color(inactive_bg(), hover_bg(), h);
+            (fill, text(), accent())
+        }
+        ButtonKind::Danger => {
+            let fill = lerp_color(BAD, WHITE, 0.08 * h);
+            (fill, WHITE, BAD)
+        }
+        ButtonKind::Toggle(on) => {
+            if on {
+                (lerp_color(accent(), WHITE, 0.06 * h), SURFACE, accent())
+            } else {
+                (lerp_color(inactive_bg(), hover_bg(), h), text(), border())
+            }
+        }
+    };
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        paint_surface(painter, rect, fill, edge, h);
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            font,
+            text_color,
+        );
+    }
+    response
+}
+
+/// Borderless title-menu text button with a left accent bar on hover.
+pub fn menu_text_button(ui: &mut egui::Ui, label: impl Into<String>) -> egui::Response {
+    let label = label.into();
+    let font = display_font(22.0);
+    let galley = ui.fonts(|f| f.layout_no_wrap(label.clone(), font.clone(), text()));
+    let height = (galley.size().y + SPACE_SM).max(40.0);
+    let width = ui.available_width().max(galley.size().x + SPACE_LG);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
+    let h = hover_t(ui.ctx(), &response);
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        if h > 0.01 {
+            painter.rect_filled(
+                rect,
+                CORNER_RADIUS,
+                with_alpha(accent(), (18.0 + 40.0 * h) as u8),
+            );
+            let bar = egui::Rect::from_min_max(
+                egui::pos2(rect.left(), rect.top() + 6.0),
+                egui::pos2(rect.left() + ACCENT_EDGE_PX, rect.bottom() - 6.0),
+            );
+            painter.rect_filled(bar, CORNER_RADIUS, with_alpha(accent(), (255.0 * h) as u8));
+        }
+        let text_pos = egui::pos2(rect.left() + SPACE_MD, rect.center().y);
+        painter.text(
+            text_pos,
+            egui::Align2::LEFT_CENTER,
+            label,
+            font,
+            lerp_color(muted(), WHITE, 0.35 + 0.65 * h),
+        );
+    }
+    response
+}
+
+// ---------------------------------------------------------------------
+// Stat tile / progress / toast
+// ---------------------------------------------------------------------
+
+/// Compact label-over-value tile for HUD / finance readouts.
+pub fn stat_tile(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
+    let value = value.into();
+    let width = ui.available_width().max(96.0);
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(width.min(160.0), 52.0), egui::Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter();
+    paint_surface(painter, rect, inactive_bg(), accent(), 0.0);
+    painter.text(
+        egui::pos2(rect.left() + SPACE_SM, rect.top() + SPACE_XS),
+        egui::Align2::LEFT_TOP,
+        label,
+        body_font(TEXT_XS),
+        muted(),
+    );
+    painter.text(
+        egui::pos2(rect.left() + SPACE_SM, rect.bottom() - SPACE_XS),
+        egui::Align2::LEFT_BOTTOM,
+        value,
+        body_font(TEXT_MD),
+        text(),
+    );
+}
+
+/// Flat progress bar with accent fill (no egui ProgressBar chrome).
+pub fn progress_bar(ui: &mut egui::Ui, frac: f32, width: f32) -> egui::Response {
+    let height = 8.0;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        painter.rect_filled(rect, CORNER_RADIUS, inactive_bg());
+        let filled = rect.with_max_x(rect.left() + rect.width() * frac.clamp(0.0, 1.0));
+        painter.rect_filled(filled, CORNER_RADIUS, accent());
+    }
+    response
+}
+
+/// Single toast chip (tone-colored left edge).
+pub fn toast(ui: &mut egui::Ui, message: &str, tone: ToastTone) {
+    let edge = match tone {
+        ToastTone::Info => accent(),
+        ToastTone::Warn => WARN,
+        ToastTone::Good => GOOD,
+    };
+    let font = body_font(TEXT_SM);
+    let galley = ui.fonts(|f| f.layout_no_wrap(message.to_owned(), font.clone(), text()));
+    let size = egui::vec2(
+        (galley.size().x + SPACE_MD * 2.0 + ACCENT_EDGE_PX).min(ui.available_width()),
+        galley.size().y + SPACE_XS,
+    );
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter();
+    painter.rect_filled(rect, CORNER_RADIUS, inactive_bg());
+    let bar = egui::Rect::from_min_max(
+        rect.min,
+        egui::pos2(rect.left() + ACCENT_EDGE_PX, rect.bottom()),
+    );
+    painter.rect_filled(bar, CORNER_RADIUS, edge);
+    painter.text(
+        egui::pos2(rect.left() + SPACE_SM + ACCENT_EDGE_PX, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        message,
+        font,
+        text(),
+    );
+}
+
+// ---------------------------------------------------------------------
+// Modal + floating window (only place that may call egui::Window)
+// ---------------------------------------------------------------------
+
+/// Centered modal over a two-layer scrim. `open_t` is an eased 0..1.
+pub fn modal<R>(
+    ctx: &egui::Context,
+    id: egui::Id,
+    open_t: f32,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> Option<R> {
+    if open_t <= 0.001 {
+        return None;
+    }
+
+    egui::Area::new(id.with("scrim"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::Pos2::ZERO)
+        .show(ctx, |ui| {
+            let screen = ui.ctx().screen_rect();
+            ui.allocate_response(screen.size(), egui::Sense::click());
+            let mut painter = ui.painter().clone();
+            painter.set_opacity(open_t);
+            paint_scrim(&painter, screen);
+        });
+
+    let inner = egui::Area::new(id.with("panel"))
+        .order(egui::Order::Foreground)
+        .anchor(
+            egui::Align2::CENTER_CENTER,
+            egui::vec2(0.0, (1.0 - open_t) * 12.0),
+        )
+        .show(ctx, |ui| {
+            ui.set_opacity(open_t);
+            panel_frame(accent()).show(ui, add_contents).inner
+        });
+    Some(inner.inner)
+}
+
+/// Options for [`window`] — the sole wrapper around `egui::Window`.
+pub struct WindowOpts<'a> {
+    pub title: &'a str,
+    pub id: egui::Id,
+    pub open: Option<&'a mut bool>,
+    pub collapsible: bool,
+    pub resizable: bool,
+    pub default_pos: Option<egui::Pos2>,
+    pub default_width: Option<f32>,
+    pub anchor: Option<(egui::Align2, egui::Vec2)>,
+}
+
+impl<'a> WindowOpts<'a> {
+    pub fn new(title: &'a str, id: egui::Id) -> Self {
+        Self {
+            title,
+            id,
+            open: None,
+            collapsible: false,
+            resizable: false,
+            default_pos: None,
+            default_width: None,
+            anchor: None,
+        }
+    }
+}
+
+/// Floating panel. Only design-system entry that constructs `egui::Window`.
+pub fn window<R>(
+    ctx: &egui::Context,
+    mut opts: WindowOpts<'_>,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> Option<egui::InnerResponse<Option<R>>> {
+    let open_t = if let Some(open) = opts.open.as_ref() {
+        animate_bool(ctx, opts.id.with("win_open"), **open)
+    } else {
+        animate(ctx, opts.id.with("win_open"), 1.0)
+    };
+    if open_t <= 0.001 {
+        return None;
+    }
+
+    let frame = egui::Frame::NONE
+        .fill(panel_bg())
+        .inner_margin(egui::Margin::symmetric(SPACE_SM as i8, SPACE_SM as i8))
+        .stroke(egui::Stroke::new(ACCENT_EDGE_PX, accent()));
+
+    let mut w = egui::Window::new(
+        egui::RichText::new(opts.title)
+            .font(display_font(TEXT_MD))
+            .color(text()),
+    )
+    .id(opts.id)
+    .collapsible(opts.collapsible)
+    .resizable(opts.resizable)
+    .frame(frame)
+    .title_bar(true);
+
+    if let Some(pos) = opts.default_pos {
+        w = w.default_pos(pos);
+    }
+    if let Some(width) = opts.default_width {
+        w = w.default_width(width);
+    }
+    if let Some((align, offset)) = opts.anchor {
+        w = w.anchor(align, offset);
+    }
+    if let Some(open) = opts.open.as_mut() {
+        w = w.open(open);
+    }
+
+    w.show(ctx, |ui| {
+        ui.set_opacity(open_t.clamp(0.2, 1.0));
+        add_contents(ui)
+    })
+}
+
+/// Thin flat separator (no egui heavy rule).
+pub fn thin_separator(ui: &mut egui::Ui) {
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(rect, CORNER_RADIUS, with_alpha(border(), 180));
+}
+
+// ---------------------------------------------------------------------
+// UI gallery (MF_UI_GALLERY=1)
+// ---------------------------------------------------------------------
+
+/// Full-bleed component gallery for one-screenshot visual review.
+pub fn show_gallery(ctx: &egui::Context) {
+    let fade = animate(ctx, egui::Id::new("mf_gallery_fade"), 1.0);
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE.fill(SURFACE).inner_margin(SPACE_XL))
+        .show(ctx, |ui| {
+            ui.set_opacity(fade);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.label(wordmark("MetroForge"));
+                ui.label(label_muted("UI gallery  MF_UI_GALLERY=1"));
+                ui.add_space(SPACE_LG);
+
+                ui.label(heading("Buttons"));
+                ui.add_space(SPACE_SM);
+                ui.horizontal(|ui| {
+                    let _ = button(ui, "Primary", ButtonKind::Primary);
+                    let _ = button(ui, "Ghost", ButtonKind::Ghost);
+                    let _ = button(ui, "Danger", ButtonKind::Danger);
+                    let _ = button(ui, "On", ButtonKind::Toggle(true));
+                    let _ = button(ui, "Off", ButtonKind::Toggle(false));
+                });
+                ui.add_space(SPACE_MD);
+
+                ui.label(heading("Menu text"));
+                ui.add_space(SPACE_SM);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(280.0, 160.0),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        let _ = menu_text_button(ui, "Play");
+                        let _ = menu_text_button(ui, "Settings");
+                        let _ = menu_text_button(ui, "Quit");
+                    },
+                );
+                ui.add_space(SPACE_MD);
+
+                ui.label(heading("Panel / tiles / progress / toast"));
+                ui.add_space(SPACE_SM);
+                panel(ui, accent(), |ui| {
+                    ui.set_width(360.0);
+                    ui.label(label_body("Panel with accent edge."));
+                    ui.add_space(SPACE_SM);
+                    ui.horizontal(|ui| {
+                        stat_tile(ui, "Cash", "$1,240,000");
+                        ui.add_space(SPACE_SM);
+                        stat_tile(ui, "Approval", "72%");
+                    });
+                    ui.add_space(SPACE_SM);
+                    let _ = progress_bar(ui, 0.62, 320.0);
+                    ui.add_space(SPACE_SM);
+                    toast(ui, "Route opened", ToastTone::Good);
+                    ui.add_space(SPACE_XXS);
+                    toast(ui, "Budget warning", ToastTone::Warn);
+                    ui.add_space(SPACE_XXS);
+                    toast(ui, "System notice", ToastTone::Info);
+                });
+                ui.add_space(SPACE_MD);
+
+                ui.label(heading("Spokes"));
+                ui.add_space(SPACE_SM);
+                ui.horizontal(|ui| {
+                    for (name, color) in [
+                        ("Green", SPOKE_GREEN),
+                        ("Blue", SPOKE_BLUE),
+                        ("Orange", SPOKE_ORANGE),
+                        ("Red", SPOKE_RED),
+                    ] {
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(72.0, 40.0), egui::Sense::hover());
+                        ui.painter().rect_filled(rect, CORNER_RADIUS, color);
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            name,
+                            body_font(TEXT_XS),
+                            SURFACE,
+                        );
+                    }
+                });
+                ui.add_space(SPACE_XL);
+            });
+        });
+}
 
 // ---------------------------------------------------------------------
 // Icon painting

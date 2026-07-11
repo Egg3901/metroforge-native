@@ -270,13 +270,15 @@ fn build_toolbar_system(
 
     egui::TopBottomPanel::bottom("build_ui_toolbar")
         .frame(
-            egui::Frame::default()
+            egui::Frame::NONE
                 .fill(ds::panel_bg())
                 .inner_margin(egui::Margin::symmetric(
                     ds::SPACE_SM as i8,
                     ds::SPACE_XS as i8,
-                )),
+                ))
+                .stroke(egui::Stroke::new(ds::ACCENT_EDGE_PX, ds::accent())),
         )
+        .show_separator_line(false)
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(ds::SPACE_XXS, 0.0);
@@ -378,19 +380,7 @@ fn build_toolbar_system(
                 ui.add(egui::Separator::default().vertical().shrink(6.0));
                 ui.add_space(ds::SPACE_SM);
 
-                let routes_button = ui.add(
-                    egui::Button::new(egui::RichText::new("Routes").color(if panel.open {
-                        egui::Color32::WHITE
-                    } else {
-                        ds::text()
-                    }))
-                    .fill(if panel.open {
-                        ds::accent()
-                    } else {
-                        ds::inactive_bg()
-                    })
-                    .corner_radius(ds::CORNER_RADIUS),
-                );
+                let routes_button = ds::button(ui, "Routes", ds::ButtonKind::Toggle(panel.open));
                 hover_tick(&routes_button, &mut hovered, &mut sfx);
                 if routes_button.clicked() {
                     panel.open = !panel.open;
@@ -405,9 +395,15 @@ fn build_toolbar_system(
 
     if let Some((text, color)) = contextual_strip_text(&tools, &ui_state) {
         egui::TopBottomPanel::bottom("build_ui_context_strip")
-            .frame(egui::Frame::default().fill(ds::panel_bg()).inner_margin(
-                egui::Margin::symmetric(ds::SPACE_MD as i8, ds::SPACE_XXS as i8),
-            ))
+            .frame(
+                egui::Frame::NONE
+                    .fill(ds::panel_bg())
+                    .inner_margin(egui::Margin::symmetric(
+                        ds::SPACE_MD as i8,
+                        ds::SPACE_XXS as i8,
+                    ))
+                    .stroke(egui::Stroke::new(ds::ACCENT_EDGE_PX, ds::accent())),
+            )
             .show_separator_line(false)
             .min_height(0.0)
             .show(ctx, |ui| {
@@ -483,16 +479,18 @@ fn route_panel_system(
 
     egui::SidePanel::right("build_ui_route_panel")
         .frame(
-            egui::Frame::default()
+            egui::Frame::NONE
                 .fill(ds::panel_bg())
                 .inner_margin(egui::Margin::symmetric(
                     ds::SPACE_SM as i8,
                     ds::SPACE_SM as i8,
-                )),
+                ))
+                .stroke(egui::Stroke::new(ds::ACCENT_EDGE_PX, ds::accent())),
         )
         .default_width(300.0)
         .min_width(240.0)
         .resizable(true)
+        .show_separator_line(false)
         .show(ctx, |ui| {
             ui.label(ds::heading("Routes"));
             ui.add_space(ds::SPACE_XS);
@@ -701,16 +699,14 @@ fn route_editor(
 
     ui.add_space(ds::SPACE_XXS);
     let armed = panel.delete_armed == Some(route.id);
-    let delete_resp = ui.add(
-        egui::Button::new(
-            egui::RichText::new(if armed { "Confirm delete" } else { "Delete" }).color(if armed {
-                egui::Color32::WHITE
-            } else {
-                ds::text()
-            }),
-        )
-        .fill(if armed { ds::BAD } else { ds::inactive_bg() })
-        .corner_radius(ds::CORNER_RADIUS),
+    let delete_resp = ds::button(
+        ui,
+        if armed { "Confirm delete" } else { "Delete" },
+        if armed {
+            ds::ButtonKind::Danger
+        } else {
+            ds::ButtonKind::Ghost
+        },
     );
     hover_tick(&delete_resp, hovered, sfx);
     if delete_resp.clicked() {
