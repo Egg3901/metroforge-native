@@ -166,10 +166,7 @@ impl MfConfig {
             .as_ref()
             .map(|f| f.tutorial_completed)
             .unwrap_or(false);
-        let weather_effects = parsed
-            .as_ref()
-            .map(|f| f.weather_effects)
-            .unwrap_or(true);
+        let weather_effects = parsed.as_ref().map(|f| f.weather_effects).unwrap_or(true);
         MfConfig {
             quality_override,
             theme_override,

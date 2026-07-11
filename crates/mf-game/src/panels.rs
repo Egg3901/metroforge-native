@@ -26,24 +26,13 @@ use mf_state::LatestUi;
 
 use crate::command_bus::{CmdMeta, CommandBus};
 use crate::design_system as ds;
-use crate::state::AppState;
+use crate::state::{AppState, PauseState};
 use crate::tools::SelectedTarget;
 
 // ---------------------------------------------------------------------
 // Tunable constants
 // ---------------------------------------------------------------------
 
-/// Vertical offset (px) both floating windows anchor below, so neither one
-/// visually starts on top of `hud.rs`'s `hud_top` bar. That bar's own
-/// height isn't exposed as a constant either file can read (it's an
-/// egui-computed auto-height), so this is a generous fixed guess - a
-/// floating `egui::Window` is user-draggable afterward regardless, this
-/// only sets where it first appears.
-const PANEL_TOP_OFFSET_PX: f32 = 56.0;
-/// Station panel default width; narrower than the route panel's 300px
-/// `SidePanel` default since this window carries less content per station.
-const STATION_PANEL_WIDTH: f32 = 260.0;
-const FINANCE_PANEL_WIDTH: f32 = 300.0;
 /// Station level cap, mirrored from `metroforge/src/core/commands.ts`'s
 /// `upgradeStation` handler (`if (station.level >= 5) return {..error..}`).
 /// Duplicated as a plain constant rather than added to the wire protocol:
@@ -67,25 +56,13 @@ pub struct FinancePanelState {
 // Pure helpers (no ECS/egui types beyond plain data), unit-tested below.
 // ---------------------------------------------------------------------
 
-/// Comma-grouped integer, e.g. `146015` -> `"146,015"`. `hud.rs` and
-/// `build_ui.rs` each already carry a private copy of this same helper
-/// (neither is `pub`, so neither can be imported here) - this is a third
-/// plain reimplementation, not a deliberate fork of behavior.
+/// Comma-grouped integer, e.g. `146015` -> `"146,015"`.
 fn format_thousands(value: f64) -> String {
-    let rounded = value.round().max(0.0) as u64;
-    let digits = rounded.to_string();
-    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(ch);
-    }
-    grouped
+    ds::format_thousands(value)
 }
 
 fn format_cash(value: f64) -> String {
-    format!("${}", format_thousands(value))
+    ds::format_cash(value)
 }
 
 fn mode_word(mode: TransitMode) -> &'static str {
@@ -157,7 +134,7 @@ fn routes_serving_station(routes: &[UiRoute], station_id: i64) -> Vec<usize> {
 /// already exists for the rolling series, but the panel wants today's own
 /// net as a labeled row too.
 fn day_ledger_net(ledger: &DayLedger) -> f64 {
-    ledger.fares + ledger.subsidy - ledger.operations - ledger.maintenance - ledger.interest
+    ds::day_ledger_net(ledger)
 }
 
 /// Plain-language banner text for a run that has ended, or `None` for a
@@ -307,11 +284,16 @@ fn station_panel_system(
     link: Option<Res<SimLink>>,
     mut bus: ResMut<CommandBus>,
     mut selected: ResMut<SelectedTarget>,
+    pause: Res<PauseState>,
 ) -> Result {
+    if pause.active {
+        return Ok(());
+    }
     let SelectedTarget::Station(station_id) = *selected else {
         return Ok(());
     };
     let ctx = contexts.ctx_mut()?;
+    let fade = ds::panel_fade(ctx, "station_panel_fade");
     let Some(state) = &ui_state.0 else {
         return Ok(());
     };
@@ -333,13 +315,14 @@ fn station_panel_system(
         // window loses its position/collapsed state every time the
         // selection changes.
         .id(egui::Id::new("mf_station_inspection_panel"))
+        .order(ds::ORDER_PANEL)
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
-        .default_width(STATION_PANEL_WIDTH)
+        .default_width(ds::STATION_PANEL_WIDTH)
         .anchor(
             egui::Align2::RIGHT_TOP,
-            egui::vec2(-ds::SPACE_MD, PANEL_TOP_OFFSET_PX),
+            egui::vec2(-ds::SPACE_MD, ds::PANEL_TOP_OFFSET_PX),
         )
         .frame(
             egui::Frame::default()
@@ -350,6 +333,7 @@ fn station_panel_system(
                 )),
         )
         .show(ctx, |ui| {
+            ui.set_opacity(fade);
             ui.horizontal(|ui| {
                 let (icon_rect, _) =
                     ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
@@ -444,27 +428,28 @@ fn finance_panel_system(
     mut contexts: EguiContexts,
     ui_state: Res<LatestUi>,
     panel: Res<FinancePanelState>,
+    pause: Res<PauseState>,
 ) -> Result {
-    if !panel.open {
+    if !panel.open || pause.active {
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;
+    let fade = ds::panel_fade(ctx, "finance_panel_fade");
     let Some(state) = &ui_state.0 else {
         return Ok(());
     };
 
     egui::Window::new("Finance")
         .id(egui::Id::new("mf_finance_panel"))
+        .order(ds::ORDER_PANEL)
         .collapsible(false)
         .resizable(false)
-        .default_width(FINANCE_PANEL_WIDTH)
-        // Left side, `hud_top`'s cash readout is already up there so a
-        // player's eye is already trained on this corner for money; the
-        // station panel anchors RIGHT, so the two never start stacked on
-        // top of each other even if both are open at once.
+        .default_width(ds::FINANCE_PANEL_WIDTH)
+        // Left side under the status strip. Cash lives in the top status
+        // tiles now; this panel is the detail view (loan, ledger, sparkline).
         .anchor(
             egui::Align2::LEFT_TOP,
-            egui::vec2(ds::SPACE_MD, PANEL_TOP_OFFSET_PX),
+            egui::vec2(ds::SPACE_MD, ds::PANEL_TOP_OFFSET_PX),
         )
         .frame(
             egui::Frame::default()
@@ -475,6 +460,7 @@ fn finance_panel_system(
                 )),
         )
         .show(ctx, |ui| {
+            ui.set_opacity(fade);
             if let Some(banner) = fail_banner_text(state) {
                 egui::Frame::default()
                     .fill(ds::BAD)
@@ -525,7 +511,7 @@ fn finance_panel_system(
             ds::sparkline(
                 ui,
                 &state.net_history,
-                egui::vec2(FINANCE_PANEL_WIDTH - 24.0, 42.0),
+                egui::vec2(ds::FINANCE_PANEL_WIDTH - 24.0, 42.0),
             );
 
             ui.add_space(ds::SPACE_SM);
@@ -574,7 +560,8 @@ impl Plugin for MfPanelsPlugin {
                 EguiPrimaryContextPass,
                 (station_panel_system, finance_panel_system)
                     .run_if(in_state(AppState::InGame))
-                    .run_if(|| !crate::design_system::hud_hidden()),
+                    .run_if(|| !crate::design_system::hud_hidden())
+                    .run_if(|| !crate::design_system::hud_scene_enabled()),
             );
     }
 }

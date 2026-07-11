@@ -1,24 +1,20 @@
-//! Shared design-system constants for `mf-game`'s egui UI (ship-plan #25,
-//! v0.2 build toolbar/route panel). Every future UI file should pull its
-//! spacing/type/color/corner-radius values from here rather than
-//! hand-rolling them per-file, the way `hud.rs` currently does (`hud.rs`
-//! keeps its own copies for now and migrates onto this module at
-//! integration - see the note on [`PANEL_BG`] etc. below).
+//! Shared design-system constants for `mf-game`'s egui UI.
 //!
-//! Values are lifted byte-for-byte from `hud.rs`'s existing constants so the
-//! two files agree visually even before that migration happens; see
-//! `art-direction.md` (BINDING) for the source values: off-white #f4f5f2
-//! panels, rich-black #17181c text, accent #007aff, vivid color reserved for
-//! interactive/transit elements, corner radius 2.
+//! Every HUD surface (`hud.rs`, `goals.rs`, `tutorial.rs`, `build_ui.rs`,
+//! `panels.rs`, `report_ui.rs`) pulls spacing, type, radii, panel fills,
+//! scrims, fade timing, and z-order from here rather than hand-rolling
+//! magic numbers per file.
 //!
-//! Deliberately broader than what `build_ui.rs` (the only current
-//! consumer) exercises - `hud.rs`'s eventual migration and future panels
-//! are expected to reach for `GOOD`/`hero`/`SPACE_LG`/etc. that nothing
-//! uses yet, so this module is exempted from the dead-code lint rather
-//! than trimmed down to today's exact call sites.
+//! See `art-direction.md` (BINDING) for the source values: off-white
+//! #f4f5f2 panels, rich-black #17181c text, accent #007aff, vivid color
+//! reserved for interactive/transit elements, corner radius 2.
+//!
+//! Z-order policy (low to high): world-anchored hints < panels < toasts
+//! < modal. Nothing may render above a pause/settings/report modal.
 #![allow(dead_code)]
 
 use bevy_egui::egui;
+use mf_protocol::DayLedger;
 use mf_state::Theme;
 
 // ---------------------------------------------------------------------
@@ -278,6 +274,324 @@ pub fn hud_hidden() -> bool {
 
 pub const CORNER_RADIUS_PX: u8 = 2;
 pub const CORNER_RADIUS: egui::CornerRadius = egui::CornerRadius::same(CORNER_RADIUS_PX);
+
+// ---------------------------------------------------------------------
+// Panel fade
+// ---------------------------------------------------------------------
+// Every panel/modal open uses the same 150ms opacity ramp the settings
+// screen established. Call [`panel_fade`] rather than inlining
+// `animate_value_with_time` with a local duration.
+
+/// Canonical panel open/close fade duration (seconds).
+pub const PANEL_FADE_SECS: f32 = 0.15;
+
+/// Opacity 0→1 over [`PANEL_FADE_SECS`] for the given egui animation id.
+pub fn panel_fade(ctx: &egui::Context, id: impl Into<egui::Id>) -> f32 {
+    ctx.animate_value_with_time(id.into(), 1.0, PANEL_FADE_SECS)
+}
+
+// ---------------------------------------------------------------------
+// Z-order / layering
+// ---------------------------------------------------------------------
+// egui `Order` is a coarse stack. Within a layer, later-drawn areas win.
+// Modal uses `Tooltip` so pause/settings/report always sit above toasts,
+// panels, and world-anchored tutorial hints.
+
+/// World-anchored tutorial hint cards (below floating panels and toasts).
+pub const ORDER_HINT: egui::Order = egui::Order::Middle;
+/// Floating panels (goals / finance / station windows). Windows default to
+/// Middle; keep the constant so call sites document the policy.
+pub const ORDER_PANEL: egui::Order = egui::Order::Middle;
+/// Toast strip (above panels, below modal).
+pub const ORDER_TOAST: egui::Order = egui::Order::Foreground;
+/// Pause / settings / report scrim + card. Nothing may render above this.
+pub const ORDER_MODAL: egui::Order = egui::Order::Tooltip;
+
+// ---------------------------------------------------------------------
+// Layout tokens (HUD chrome, modals, hints, status strip)
+// ---------------------------------------------------------------------
+
+/// Horizontal / vertical inner margin for the in-game top status bar.
+pub const HUD_BAR_MARGIN_H: i8 = 14;
+pub const HUD_BAR_MARGIN_V: i8 = 10;
+/// Toast strip margins (tighter vertically than the top bar).
+pub const TOAST_MARGIN_H: i8 = 14;
+pub const TOAST_MARGIN_V: i8 = 6;
+/// Floating windows anchor this far below the top of the screen so they
+/// clear the auto-height top status bar.
+pub const PANEL_TOP_OFFSET_PX: f32 = 56.0;
+/// Default Goals window position (left, under the status bar).
+pub const GOALS_DEFAULT_X: f32 = 14.0;
+pub const GOALS_DEFAULT_Y: f32 = 70.0;
+/// Modal card (pause / settings / report) inner margin.
+pub const MODAL_MARGIN_H: i8 = 28;
+pub const MODAL_MARGIN_V: i8 = 24;
+/// Settings / pause primary content width.
+pub const MODAL_CARD_WIDTH: f32 = 320.0;
+pub const PAUSE_CARD_WIDTH: f32 = 260.0;
+pub const REPORT_CARD_WIDTH: f32 = 360.0;
+/// Primary / secondary button sizes shared by pause, settings, report.
+pub const BUTTON_PRIMARY: [f32; 2] = [220.0, 40.0];
+pub const BUTTON_SECONDARY: [f32; 2] = [220.0, 36.0];
+/// Vertical separator inset used by HUD group dividers.
+pub const SEPARATOR_SHRINK: f32 = 6.0;
+/// Rolling toast log capacity (shared by every push site).
+pub const TOAST_LOG_CAP: usize = 20;
+/// Max toasts shown at once in the toast strip.
+pub const TOAST_VISIBLE: usize = 3;
+/// Gap between status-strip tiles (matches top-bar item spacing).
+pub const STATUS_TILE_GAP: f32 = 16.0;
+/// Goals progress bar width.
+pub const PROGRESS_BAR_WIDTH: f32 = 200.0;
+/// Tutorial hint card.
+pub const HINT_MAX_WIDTH: f32 = 360.0;
+pub const HINT_MARGIN_H: i8 = 18;
+pub const HINT_MARGIN_V: i8 = 14;
+pub const HINT_TOP_OFFSET: f32 = 88.0;
+pub const HINT_BOTTOM_OFFSET: f32 = -84.0;
+pub const HINT_STROKE_WIDTH: f32 = 1.5;
+/// Fixed-width cells for monospace day/approval/pop readouts.
+pub const STATUS_CELL_DAY_W: f32 = 140.0;
+pub const STATUS_CELL_APPROVAL_W: f32 = 130.0;
+pub const STATUS_CELL_POP_W: f32 = 130.0;
+/// Station / finance / route panel default widths.
+pub const STATION_PANEL_WIDTH: f32 = 260.0;
+pub const FINANCE_PANEL_WIDTH: f32 = 300.0;
+pub const ROUTE_PANEL_WIDTH: f32 = 300.0;
+pub const ROUTE_PANEL_MIN_WIDTH: f32 = 240.0;
+
+/// Soft group divider (art-direction: clean flat separation, not a heavy rule).
+pub fn thin_separator(ui: &mut egui::Ui) {
+    ui.add(egui::Separator::default().shrink(SEPARATOR_SHRINK));
+}
+
+/// One status-strip tile: muted caption over a strong value, matching the
+/// goals / finance panel tile language.
+pub fn status_tile(ui: &mut egui::Ui, caption: impl Into<String>, value: impl Into<String>) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ui.label(label_muted(caption));
+        ui.label(value_strong(value));
+    });
+}
+
+/// Comma-grouped integer, e.g. `146015` -> `"146,015"`.
+pub fn format_thousands(value: f64) -> String {
+    let rounded = value.round().max(0.0) as u64;
+    let digits = rounded.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    grouped
+}
+
+/// Whole-dollar cash readout, e.g. `"$1,234"`.
+pub fn format_cash(value: f64) -> String {
+    format!("${}", format_thousands(value))
+}
+
+/// Signed cash for ledger nets (keeps a leading minus on losses).
+pub fn format_signed_cash(value: f64) -> String {
+    if value < 0.0 {
+        format!("-${}", format_thousands(-value))
+    } else {
+        format_cash(value)
+    }
+}
+
+/// Sub-dollar fare prices always show two decimals, e.g. `"$1.25"`.
+pub fn format_fare(value: f64) -> String {
+    format!("${:.2}", value.max(0.0))
+}
+
+/// Yesterday's ledger net (fares + subsidy - ops - maintenance - interest).
+pub fn day_ledger_net(ledger: &DayLedger) -> f64 {
+    ledger.fares + ledger.subsidy - ledger.operations - ledger.maintenance - ledger.interest
+}
+
+/// `MF_HUD_SCENE=1` lays out every HUD component in one test scene for a
+/// single Xvfb capture of the design system.
+pub fn hud_scene_enabled() -> bool {
+    static ONCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ONCE.get_or_init(|| std::env::var_os("MF_HUD_SCENE").is_some())
+}
+
+/// Paints a design-system gallery: spacing/type samples, status tiles,
+/// toast chips, a hint card, a panel frame, and a modal card mock. Used by
+/// the `MF_HUD_SCENE` screenshot path so one frame shows the whole system.
+pub fn draw_hud_scene(ctx: &egui::Context) {
+    let fade = panel_fade(ctx, "hud_scene_fade");
+    egui::CentralPanel::default()
+        .frame(egui::Frame::default().fill(panel_bg()))
+        .show(ctx, |ui| {
+            ui.set_opacity(fade);
+            ui.add_space(SPACE_MD);
+            ui.vertical_centered(|ui| {
+                ui.label(heading("HUD design system").color(text()));
+                ui.label(label_muted(format!(
+                    "fade {PANEL_FADE_SECS:.2}s  ·  radius {CORNER_RADIUS_PX}px  ·  hints < panels < toasts < modal"
+                )));
+            });
+            ui.add_space(SPACE_MD);
+
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(STATUS_TILE_GAP, SPACE_SM);
+                status_tile(ui, "Cash", format_cash(1_250_000.0));
+                thin_separator(ui);
+                status_tile(ui, "Routes", "3");
+                thin_separator(ui);
+                status_tile(ui, "Vehicles", "12");
+                thin_separator(ui);
+                status_tile(ui, "Budget", format_signed_cash(4_200.0));
+                thin_separator(ui);
+                status_tile(ui, "Day", "42  14:30");
+                thin_separator(ui);
+                status_tile(ui, "Approval", "72%");
+                thin_separator(ui);
+                status_tile(ui, "Pop", format_thousands(846_000.0));
+            });
+
+            ui.add_space(SPACE_LG);
+            ui.columns(3, |cols| {
+                // Panel sample (goals-style tile list).
+                egui::Frame::default()
+                    .fill(inactive_bg())
+                    .corner_radius(CORNER_RADIUS)
+                    .inner_margin(egui::Margin::symmetric(SPACE_SM as i8, SPACE_SM as i8))
+                    .show(&mut cols[0], |ui| {
+                        ui.set_opacity(fade);
+                        ui.label(value_strong("Goals panel"));
+                        ui.label(label_muted("Tier 1"));
+                        ui.label(value_strong("First line"));
+                        ui.label(label_muted("Open any route."));
+                        ui.add(
+                            egui::ProgressBar::new(0.65)
+                                .desired_width(PROGRESS_BAR_WIDTH)
+                                .show_percentage(),
+                        );
+                    });
+
+                // Toast sample.
+                egui::Frame::default()
+                    .fill(inactive_bg())
+                    .corner_radius(CORNER_RADIUS)
+                    .inner_margin(egui::Margin::symmetric(TOAST_MARGIN_H, TOAST_MARGIN_V))
+                    .show(&mut cols[1], |ui| {
+                        ui.set_opacity(fade);
+                        ui.label(value_strong("Toasts"));
+                        ui.colored_label(text(), "Station placed");
+                        ui.colored_label(WARN, "Low approval");
+                        ui.colored_label(GOOD, "Goal complete: First line");
+                    });
+
+                // Hint card sample.
+                egui::Frame::default()
+                    .fill(panel_bg())
+                    .stroke(egui::Stroke::new(HINT_STROKE_WIDTH, accent()))
+                    .corner_radius(CORNER_RADIUS)
+                    .inner_margin(egui::Margin::symmetric(HINT_MARGIN_H, HINT_MARGIN_V))
+                    .show(&mut cols[2], |ui| {
+                        ui.set_opacity(fade);
+                        ui.set_max_width(HINT_MAX_WIDTH);
+                        ui.label(
+                            egui::RichText::new("Step 1 of 5")
+                                .size(TEXT_XS)
+                                .color(accent())
+                                .strong(),
+                        );
+                        ui.add_space(SPACE_XXS / 2.0);
+                        ui.label(value_strong("Move the camera"));
+                        ui.add_space(SPACE_XXS);
+                        ui.label(label_body(
+                            "Drag to pan. Scroll to zoom. Look around your city.",
+                        ));
+                    });
+            });
+
+            ui.add_space(SPACE_LG);
+
+            // Modal card sample (pause language) — sits at ORDER_MODAL in
+            // live play; here it is inlined so the gallery fits one frame.
+            ui.vertical_centered(|ui| {
+                egui::Frame::default()
+                    .fill(panel_bg())
+                    .stroke(egui::Stroke::new(1.0, border()))
+                    .corner_radius(CORNER_RADIUS)
+                    .inner_margin(egui::Margin::symmetric(MODAL_MARGIN_H, MODAL_MARGIN_V))
+                    .show(ui, |ui| {
+                        ui.set_opacity(fade);
+                        ui.set_width(PAUSE_CARD_WIDTH);
+                        ui.vertical_centered(|ui| {
+                            ui.label(heading("Paused").color(text()));
+                            ui.add_space(SPACE_SM);
+                            ui.label(label_muted("Modal layer (Tooltip order)"));
+                            ui.add_space(SPACE_MD);
+                            let _ = ui.add_sized(
+                                BUTTON_PRIMARY,
+                                egui::Button::new(
+                                    egui::RichText::new("Resume")
+                                        .color(egui::Color32::WHITE)
+                                        .strong(),
+                                )
+                                .fill(accent())
+                                .corner_radius(CORNER_RADIUS),
+                            );
+                            ui.add_space(SPACE_XS);
+                            let _ = ui.add_sized(
+                                BUTTON_SECONDARY,
+                                egui::Button::new(egui::RichText::new("Settings").size(TEXT_SM))
+                                    .corner_radius(CORNER_RADIUS),
+                            );
+                        });
+                    });
+            });
+
+            ui.add_space(SPACE_LG);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SPACE_XS, SPACE_XS);
+                for (label, size) in [
+                    ("XS", TEXT_XS),
+                    ("SM", TEXT_SM),
+                    ("MD", TEXT_MD),
+                    ("LG", TEXT_LG),
+                    ("XL", TEXT_XL),
+                ] {
+                    ui.label(
+                        egui::RichText::new(format!("{label} {size}"))
+                            .size(size)
+                            .color(text()),
+                    );
+                }
+            });
+            ui.add_space(SPACE_SM);
+            ui.horizontal(|ui| {
+                for (name, space) in [
+                    ("XXS", SPACE_XXS),
+                    ("XS", SPACE_XS),
+                    ("SM", SPACE_SM),
+                    ("MD", SPACE_MD),
+                    ("LG", SPACE_LG),
+                    ("XL", SPACE_XL),
+                ] {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(space.max(8.0), 16.0), egui::Sense::hover());
+                    let fill = egui::Color32::from_rgba_unmultiplied(
+                        accent().r(),
+                        accent().g(),
+                        accent().b(),
+                        90,
+                    );
+                    ui.painter().rect_filled(rect, CORNER_RADIUS, fill);
+                    ui.label(label_small(name.to_string()));
+                    ui.add_space(SPACE_XXS);
+                }
+            });
+        });
+}
 
 // ---------------------------------------------------------------------
 // Icon painting
@@ -747,6 +1061,48 @@ mod tests {
         for pair in SPACING.windows(2) {
             assert!(pair[0] < pair[1]);
         }
+    }
+
+    #[test]
+    fn panel_fade_secs_is_150ms() {
+        assert!((PANEL_FADE_SECS - 0.15).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn z_order_policy_is_strictly_increasing() {
+        // Middle < Foreground < Tooltip (egui Order discriminant order).
+        assert!(ORDER_HINT < ORDER_TOAST);
+        assert!(ORDER_TOAST < ORDER_MODAL);
+        assert_eq!(ORDER_HINT, ORDER_PANEL);
+    }
+
+    #[test]
+    fn format_thousands_groups_by_three() {
+        assert_eq!(format_thousands(0.0), "0");
+        assert_eq!(format_thousands(999.0), "999");
+        assert_eq!(format_thousands(1000.0), "1,000");
+        assert_eq!(format_thousands(146_015.0), "146,015");
+        assert_eq!(format_thousands(1_000_000.0), "1,000,000");
+    }
+
+    #[test]
+    fn format_cash_and_signed_cash() {
+        assert_eq!(format_cash(1234.0), "$1,234");
+        assert_eq!(format_signed_cash(-50.0), "-$50");
+        assert_eq!(format_signed_cash(50.0), "$50");
+        assert_eq!(format_fare(1.5), "$1.50");
+    }
+
+    #[test]
+    fn day_ledger_net_matches_formula() {
+        let ledger = DayLedger {
+            fares: 100.0,
+            subsidy: 20.0,
+            operations: 30.0,
+            maintenance: 10.0,
+            interest: 5.0,
+        };
+        assert!((day_ledger_net(&ledger) - 75.0).abs() < 1e-9);
     }
 
     // --- route_line_diagram: tick_offsets --------------------------------

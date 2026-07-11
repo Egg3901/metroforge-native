@@ -102,6 +102,20 @@ pub struct MfVerifyPlugin;
 
 impl Plugin for MfVerifyPlugin {
     fn build(&self, app: &mut App) {
+        // Dedicated HUD design-system gallery capture (MF_HUD_SCENE=1).
+        // Independent of the full InGame verify sequence so a single Xvfb
+        // run can screenshot every chrome component on one frame.
+        if crate::design_system::hud_scene_enabled() {
+            if let Some(dir) = std::env::var_os("MF_VERIFY_DIR") {
+                app.insert_resource(HudSceneCapture {
+                    dir: dir.to_string_lossy().into_owned(),
+                    frame: 0,
+                    done: false,
+                })
+                .add_systems(Update, hud_scene_screenshot_system);
+            }
+            return;
+        }
         if std::env::var_os("MF_VERIFY_DIR").is_none() && std::env::var_os("MF_PROMO_DIR").is_none()
         {
             return; // inert in every normal build/run
@@ -115,6 +129,34 @@ impl Plugin for MfVerifyPlugin {
                 Update,
                 menu_screenshot_system.run_if(in_state(AppState::MainMenu)),
             );
+    }
+}
+
+#[derive(Resource)]
+struct HudSceneCapture {
+    dir: String,
+    frame: u64,
+    done: bool,
+}
+
+/// Wait for the design-system gallery to paint, then capture `hud.png`.
+fn hud_scene_screenshot_system(
+    mut capture: ResMut<HudSceneCapture>,
+    mut commands: Commands,
+    mut exit: EventWriter<AppExit>,
+) {
+    if capture.done {
+        return;
+    }
+    capture.frame += 1;
+    // Settle long enough for the 150ms panel fade to finish and egui to
+    // lay out the gallery (software rasterizer is slow).
+    if capture.frame == 45 {
+        take_screenshot(&mut commands, format!("{}/hud.png", capture.dir));
+    }
+    if capture.frame == 75 {
+        capture.done = true;
+        exit.write(AppExit::Success);
     }
 }
 

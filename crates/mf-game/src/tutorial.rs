@@ -243,7 +243,8 @@ impl Plugin for MfTutorialPlugin {
                 EguiPrimaryContextPass,
                 tutorial_overlay_system
                     .run_if(in_state(AppState::InGame))
-                    .run_if(|| !crate::design_system::hud_hidden()),
+                    .run_if(|| !crate::design_system::hud_hidden())
+                    .run_if(|| !crate::design_system::hud_scene_enabled()),
             );
     }
 }
@@ -327,61 +328,80 @@ fn tutorial_overlay_system(
     mut contexts: EguiContexts,
     mut tutorial: ResMut<TutorialState>,
     mut config: ResMut<MfConfig>,
+    pause: Res<crate::state::PauseState>,
     mut sfx: EventWriter<PlaySfx>,
 ) -> Result {
     let Some(step) = tutorial.current_step() else {
         return Ok(());
     };
+    if pause.active {
+        return Ok(());
+    }
     let ctx = contexts.ctx_mut()?;
+    let fade =
+        crate::design_system::panel_fade(ctx, egui::Id::new(("tutorial_hint_fade", step.number())));
 
     // Anchor toolbar-related steps just above the bottom toolbar, and the
-    // camera/vehicle steps up near the top bar — so the hint sits beside the
+    // camera/vehicle steps up near the top bar, so the hint sits beside the
     // control it is talking about.
     let (anchor, offset) = match step {
-        TutorialStep::MoveCamera | TutorialStep::WatchVehicles => {
-            (egui::Align2::CENTER_TOP, egui::vec2(0.0, 88.0))
-        }
-        _ => (egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -84.0)),
+        TutorialStep::MoveCamera | TutorialStep::WatchVehicles => (
+            egui::Align2::CENTER_TOP,
+            egui::vec2(0.0, crate::design_system::HINT_TOP_OFFSET),
+        ),
+        _ => (
+            egui::Align2::CENTER_BOTTOM,
+            egui::vec2(0.0, crate::design_system::HINT_BOTTOM_OFFSET),
+        ),
     };
 
     let mut skip_clicked = false;
     egui::Area::new(egui::Id::new("tutorial_hint"))
-        .order(egui::Order::Foreground)
+        .order(crate::design_system::ORDER_HINT)
         .anchor(anchor, offset)
         .show(ctx, |ui| {
+            ui.set_opacity(fade);
             egui::Frame::default()
                 .fill(tutorial_panel_bg())
-                .stroke(egui::Stroke::new(1.5, tutorial_accent()))
-                .corner_radius(egui::CornerRadius::same(3))
-                .inner_margin(egui::Margin::symmetric(18, 14))
+                .stroke(egui::Stroke::new(
+                    crate::design_system::HINT_STROKE_WIDTH,
+                    tutorial_accent(),
+                ))
+                .corner_radius(crate::design_system::CORNER_RADIUS)
+                .inner_margin(egui::Margin::symmetric(
+                    crate::design_system::HINT_MARGIN_H,
+                    crate::design_system::HINT_MARGIN_V,
+                ))
                 .show(ui, |ui| {
-                    ui.set_max_width(360.0);
+                    ui.set_max_width(crate::design_system::HINT_MAX_WIDTH);
                     ui.label(
                         egui::RichText::new(format!(
                             "Step {} of {}",
                             step.number(),
                             TutorialStep::ALL.len()
                         ))
-                        .size(11.0)
+                        .size(crate::design_system::TEXT_XS)
                         .color(tutorial_accent())
                         .strong(),
                     );
-                    ui.add_space(2.0);
+                    ui.add_space(crate::design_system::SPACE_XXS / 2.0);
                     ui.label(
                         egui::RichText::new(step.title())
-                            .size(17.0)
+                            .size(crate::design_system::TEXT_MD + 2.0)
                             .strong()
                             .color(tutorial_text()),
                     );
-                    ui.add_space(4.0);
+                    ui.add_space(crate::design_system::SPACE_XXS);
                     ui.label(
                         egui::RichText::new(step.body())
-                            .size(13.0)
+                            .size(crate::design_system::TEXT_SM)
                             .color(tutorial_text()),
                     );
-                    ui.add_space(10.0);
+                    ui.add_space(crate::design_system::SPACE_XS + 2.0);
                     if ui
-                        .add(egui::Button::new(egui::RichText::new("Skip").size(12.0)))
+                        .add(egui::Button::new(
+                            egui::RichText::new("Skip").size(crate::design_system::TEXT_XS + 1.0),
+                        ))
                         .clicked()
                     {
                         skip_clicked = true;

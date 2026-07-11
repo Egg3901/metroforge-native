@@ -243,7 +243,8 @@ impl Plugin for MfGoalsPlugin {
                 bevy_egui::EguiPrimaryContextPass,
                 goals_panel_system
                     .run_if(in_state(AppState::InGame))
-                    .run_if(|| !crate::design_system::hud_hidden()),
+                    .run_if(|| !crate::design_system::hud_hidden())
+                    .run_if(|| !crate::design_system::hud_scene_enabled()),
             );
     }
 }
@@ -275,9 +276,8 @@ fn goals_eval_system(
         toasts
             .0
             .push((format!("Goal complete: {title}"), ToastTone::Good));
-        const TOAST_LOG_CAP: usize = 20;
-        if toasts.0.len() > TOAST_LOG_CAP {
-            let overflow = toasts.0.len() - TOAST_LOG_CAP;
+        if toasts.0.len() > crate::design_system::TOAST_LOG_CAP {
+            let overflow = toasts.0.len() - crate::design_system::TOAST_LOG_CAP;
             toasts.0.drain(0..overflow);
         }
     }
@@ -294,23 +294,33 @@ pub fn goals_panel_system(
     goals: Option<Res<GoalsState>>,
     ui_state: Res<LatestUi>,
     mut open: ResMut<GoalsPanelOpen>,
+    pause: Res<crate::state::PauseState>,
 ) -> Result {
     let Some(goals) = goals else { return Ok(()) };
     let Some(state) = &ui_state.0 else {
         return Ok(());
     };
+    if pause.active {
+        return Ok(());
+    }
     let ctx = contexts.ctx_mut()?;
+    let fade = crate::design_system::panel_fade(ctx, "goals_panel_fade");
 
     let unlocked = goals.unlocked_tier();
     let max_tier = GOAL_DEFS.iter().map(|g| g.tier).max().unwrap_or(1);
 
     egui::Window::new("Goals")
         .id(egui::Id::new("goals_panel"))
+        .order(crate::design_system::ORDER_PANEL)
         .collapsible(true)
         .resizable(false)
         .open(&mut open.0)
-        .default_pos(egui::pos2(14.0, 70.0))
+        .default_pos(egui::pos2(
+            crate::design_system::GOALS_DEFAULT_X,
+            crate::design_system::GOALS_DEFAULT_Y,
+        ))
         .show(ctx, |ui| {
+            ui.set_opacity(fade);
             for tier in 1..=unlocked {
                 ui.label(crate::design_system::label_muted(format!("Tier {tier}")));
                 for def in GOAL_DEFS.iter().filter(|g| g.tier == tier) {
@@ -318,7 +328,7 @@ pub fn goals_panel_system(
                     let (cur, target) = (def.progress)(state);
                     ui.horizontal(|ui| {
                         if done {
-                            ui.colored_label(egui::Color32::from_rgb(0x34, 0xc7, 0x59), "\u{2713}");
+                            ui.colored_label(crate::design_system::GOOD, "\u{2713}");
                         } else {
                             ui.label("  ");
                         }
@@ -332,7 +342,7 @@ pub fn goals_panel_system(
                             };
                             ui.add(
                                 egui::ProgressBar::new(frac)
-                                    .desired_width(200.0)
+                                    .desired_width(crate::design_system::PROGRESS_BAR_WIDTH)
                                     .show_percentage(),
                             );
                         });

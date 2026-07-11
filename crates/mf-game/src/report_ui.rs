@@ -1,15 +1,7 @@
 //! End-of-scenario report overlay (ship-plan #25, v0.4): a read-only,
 //! full-screen egui overlay shown once a [`crate::campaign::ScenarioOutcome`]
-//! transitions to `Failed`/`Finished`. Layering deliberately mirrors
-//! `hud.rs`'s pause overlay (`egui::Area`s at `Order::Foreground`, a dim
-//! scrim first, then a centered card) rather than reusing it directly:
-//! `hud.rs` is off-limits this wave (parallel agent), so the handful of
-//! lines that make that layering choice work are duplicated here rather
-//! than shared.
-//!
-//! Not yet wired into `main.rs`'s `add_plugins` this wave — see
-//! `campaign.rs`'s module doc for the same "lands unwired, `v04/integration`
-//! registers it" convention.
+//! transitions to `Failed`/`Finished`. Layering uses [`ds::ORDER_MODAL`]
+//! (same policy as pause/settings): nothing may render above this card.
 #![allow(dead_code)]
 
 use bevy::prelude::*;
@@ -22,11 +14,8 @@ use crate::campaign::{objectives_for, CampaignProgress, ScenarioOutcome};
 use crate::design_system as ds;
 use crate::state::{AppState, PendingInit};
 
-/// Dim scrim color — theme-aware via [`crate::design_system::scrim`] so
-/// Dark/Purple overlays match the active chrome (was a hardcoded Light
-/// rich-black wash).
 fn scrim_color() -> egui::Color32 {
-    crate::design_system::scrim()
+    ds::scrim()
 }
 
 /// Dash-free verdict heading for the four ways a scenario can end. `Finished`
@@ -52,40 +41,19 @@ fn verdict_heading(outcome: ScenarioOutcome) -> &'static str {
 /// `last_day`'s ledger fields if history is empty (e.g. day 1, before a
 /// full 7-day window exists) rather than showing a misleading zero.
 fn last_day_net(state: &UiState) -> f64 {
-    state.net_history.last().copied().unwrap_or(
-        state.last_day.fares + state.last_day.subsidy
-            - state.last_day.operations
-            - state.last_day.maintenance
-            - state.last_day.interest,
-    )
+    state
+        .net_history
+        .last()
+        .copied()
+        .unwrap_or_else(|| ds::day_ledger_net(&state.last_day))
 }
 
-/// Comma-grouped integer — same shorthand `campaign.rs` uses for goal
-/// descriptions (kept file-local rather than shared: neither file may
-/// touch `hud.rs`, which has its own private copy of the same one-liner).
 fn format_thousands(value: f64) -> String {
-    let rounded = value.round().max(0.0) as u64;
-    let digits = rounded.to_string();
-    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(ch);
-    }
-    grouped
+    ds::format_thousands(value)
 }
 
-/// Signed cash string (`"$1,234"` / `"-$500"`) — `format_thousands` alone
-/// clamps negatives to 0 (fine for population/trip counts, which are never
-/// negative), but a day's net income is routinely negative and losing that
-/// sign on the report would misreport an actual loss as "$0".
 fn format_signed_cash(value: f64) -> String {
-    if value < 0.0 {
-        format!("-${}", format_thousands(value.abs()))
-    } else {
-        format!("${}", format_thousands(value))
-    }
+    ds::format_signed_cash(value)
 }
 
 fn key_number_row(ui: &mut egui::Ui, label: &str, value: String) {
@@ -146,27 +114,32 @@ fn report_ui_system(
         return Ok(());
     };
     let ctx = contexts.ctx_mut()?;
+    let fade = ds::panel_fade(ctx, "report_fade");
 
     egui::Area::new(egui::Id::new("report_scrim"))
-        .order(egui::Order::Foreground)
+        .order(ds::ORDER_MODAL)
         .fixed_pos(egui::Pos2::ZERO)
         .show(ctx, |ui| {
             let screen = ui.ctx().screen_rect();
-            ui.allocate_response(screen.size(), egui::Sense::hover());
+            ui.allocate_response(screen.size(), egui::Sense::click());
             ui.painter()
                 .rect_filled(screen, egui::CornerRadius::ZERO, scrim_color());
         });
 
     egui::Area::new(egui::Id::new("report_panel"))
-        .order(egui::Order::Foreground)
+        .order(ds::ORDER_MODAL)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
+            ui.set_opacity(fade);
             egui::Frame::default()
                 .fill(ds::panel_bg())
                 .corner_radius(ds::CORNER_RADIUS)
-                .inner_margin(egui::Margin::symmetric(32, 28))
+                .inner_margin(egui::Margin::symmetric(
+                    ds::MODAL_MARGIN_H + 4,
+                    ds::MODAL_MARGIN_V + 4,
+                ))
                 .show(ui, |ui| {
-                    ui.set_width(360.0);
+                    ui.set_width(ds::REPORT_CARD_WIDTH);
                     ui.vertical_centered(|ui| {
                         ui.label(ds::heading(verdict_heading(*outcome)));
                         ui.add_space(ds::SPACE_MD);
@@ -208,13 +181,14 @@ fn report_ui_system(
 
                         if matches!(*outcome, ScenarioOutcome::Finished) {
                             let keep_playing = ui.add_sized(
-                                [220.0, 40.0],
+                                ds::BUTTON_PRIMARY,
                                 egui::Button::new(
                                     egui::RichText::new("Keep playing")
                                         .color(egui::Color32::WHITE)
                                         .strong(),
                                 )
-                                .fill(ds::accent()),
+                                .fill(ds::accent())
+                                .corner_radius(ds::CORNER_RADIUS),
                             );
                             hover_tick(&keep_playing, &mut hovered, &mut sfx);
                             if keep_playing.clicked() {
@@ -225,7 +199,7 @@ fn report_ui_system(
                         }
 
                         let back_to_menu =
-                            ui.add_sized([220.0, 40.0], egui::Button::new("Back to menu"));
+                            ui.add_sized(ds::BUTTON_PRIMARY, egui::Button::new("Back to menu"));
                         hover_tick(&back_to_menu, &mut hovered, &mut sfx);
                         if back_to_menu.clicked() {
                             sfx.write(PlaySfx(Sfx::Cancel));
@@ -239,11 +213,9 @@ fn report_ui_system(
     Ok(())
 }
 
-/// A muted, near-invisible group divider — same "clean flat separation"
-/// convention `hud.rs`'s own `thin_separator` uses (kept local per this
-/// file's "no `hud.rs` dependency" rule above).
+/// A muted, near-invisible group divider.
 fn thin_separator(ui: &mut egui::Ui) {
-    ui.add(egui::Separator::default().shrink(6.0));
+    ds::thin_separator(ui);
 }
 
 /// One hover tick the first frame the pointer lands on a widget — same
@@ -268,7 +240,8 @@ impl Plugin for MfReportUiPlugin {
             EguiPrimaryContextPass,
             report_ui_system
                 .run_if(in_state(AppState::InGame))
-                .run_if(|| !crate::design_system::hud_hidden()),
+                .run_if(|| !crate::design_system::hud_hidden())
+                .run_if(|| !crate::design_system::hud_scene_enabled()),
         );
     }
 }

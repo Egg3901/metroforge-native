@@ -21,6 +21,7 @@ use mf_state::LatestUi;
 use serde::{Deserialize, Serialize};
 
 use crate::audio::{PlaySfx, Sfx};
+use crate::design_system::TOAST_LOG_CAP;
 use crate::hud::ToastLog;
 use crate::state::{AppState, PendingInit};
 
@@ -66,20 +67,9 @@ pub fn describe_goal(goal: StarGoal) -> String {
     }
 }
 
-/// Comma-grouped integer, local to this file rather than reused from
-/// `hud.rs` (its `format_thousands` is a private fn and this file must not
-/// touch `hud.rs`).
+/// Comma-grouped integer (delegates to the shared design-system helper).
 fn format_thousands(value: f64) -> String {
-    let rounded = value.round().max(0.0) as u64;
-    let digits = rounded.to_string();
-    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(ch);
-    }
-    grouped
+    crate::design_system::format_thousands(value)
 }
 
 /// One city's three star goals. `stars` is read as a difficulty ladder:
@@ -416,11 +406,6 @@ fn compute_outcome(ui: &UiState, all_three_stars_earned: bool) -> ScenarioOutcom
         ScenarioOutcome::Playing
     }
 }
-
-/// Same cap `hud.rs`'s `ToastLog` trims to (kept in sync by convention, not
-/// by a shared constant — `TOAST_LOG_CAP` there is private and this file
-/// must not touch `hud.rs`).
-const TOAST_LOG_CAP: usize = 20;
 
 /// ~1Hz evaluation: checks the active city's stars against [`LatestUi`],
 /// toasts + persists any newly-earned ones, and updates [`ScenarioOutcome`].

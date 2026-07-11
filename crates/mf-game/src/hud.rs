@@ -16,54 +16,49 @@ use mf_state::{LatestUi, QualityTier, SubwayView, Theme, WeatherEffects};
 use crate::audio::{PlaySfx, Sfx};
 use crate::campaign::{self, CampaignProgress};
 use crate::config::MfConfig;
+use crate::design_system as ds;
 use crate::goals::GoalsPanelOpen;
 use crate::saves::{self, SaveManager, SaveSlot};
 use crate::state::{toggle_pause, AppState, MenuScreen, PauseState, PendingInit, SimHello};
 
-// Art-direction §1/§8 palette. `GOOD`/`WARN`/`BAD` are fixed semantic
-// status colors (they read fine on all three themes' panels); every other
-// chrome color is theme-indexed (issue #32) and lives behind the accessor
-// functions below, which delegate to `design_system::current_colors()` —
-// the single theme-aware source both this file and the design-system
-// consumers share.
-const GOOD: egui::Color32 = egui::Color32::from_rgb(0x34, 0xc7, 0x59);
-const WARN: egui::Color32 = egui::Color32::from_rgb(0xff, 0x95, 0x00);
-const BAD: egui::Color32 = egui::Color32::from_rgb(0xff, 0x3b, 0x30);
+// Semantic status colors (theme-independent); chrome colors go through `ds`.
+const GOOD: egui::Color32 = ds::GOOD;
+const WARN: egui::Color32 = ds::WARN;
+const BAD: egui::Color32 = ds::BAD;
 
 /// Off-white (Light) / near-black (Dark) / deep-violet (Purple) panel fill.
 fn panel_bg() -> egui::Color32 {
-    crate::design_system::current_colors().panel_bg
+    ds::panel_bg()
 }
 /// Primary text: rich black on Light, near-white on Dark/Purple.
 fn text_color() -> egui::Color32 {
-    crate::design_system::current_colors().text
+    ds::text()
 }
 /// The one accent color (interactive/transit elements only).
 fn accent() -> egui::Color32 {
-    crate::design_system::current_colors().accent
+    ds::accent()
 }
-/// Muted secondary text (subtitle/labels/version) — art-direction reserves
+/// Muted secondary text (subtitle/labels/version). Art-direction reserves
 /// full-strength text for primary copy.
 fn muted_text() -> egui::Color32 {
-    crate::design_system::current_colors().muted
+    ds::muted()
 }
 /// City-select / continue card fill + hover fill (same values as the
-/// top-bar speed/subway toggle buttons' resting/hover state — see
-/// `design_system::current_colors`' `inactive_bg`/`hover_bg`).
+/// top-bar speed/subway toggle buttons' resting/hover state).
 fn card_bg() -> egui::Color32 {
-    crate::design_system::current_colors().inactive_bg
+    ds::inactive_bg()
 }
 fn card_hover_bg() -> egui::Color32 {
-    crate::design_system::current_colors().hover_bg
+    ds::hover_bg()
 }
 fn card_border() -> egui::Color32 {
-    crate::design_system::current_colors().border
+    ds::border()
 }
 
 const INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
 /// City-select / continue rows use the global 2px radius (art-direction:
-/// no rounded-corner excess). Was 4px — drifted from `design_system`.
-const CARD_CORNER: egui::CornerRadius = crate::design_system::CORNER_RADIUS;
+/// no rounded-corner excess).
+const CARD_CORNER: egui::CornerRadius = ds::CORNER_RADIUS;
 /// `saves::SLOT_COUNT` as a `usize`, for fixed-size array types below (array
 /// lengths need a `usize`; `saves::SLOT_COUNT` is a `u8` so callers stay
 /// consistent with the rest of that module's slot-numbering type).
@@ -73,8 +68,6 @@ const SAVE_SLOT_COUNT: usize = saves::SLOT_COUNT as usize;
 /// grow unbounded over a long session.
 #[derive(Resource, Default)]
 pub struct ToastLog(pub Vec<(String, ToastTone)>);
-
-const TOAST_LOG_CAP: usize = 20;
 
 pub struct MfHudPlugin;
 
@@ -88,15 +81,26 @@ impl Plugin for MfHudPlugin {
                 EguiPrimaryContextPass,
                 (
                     setup_egui_style_system,
-                    connecting_hud_system.run_if(in_state(AppState::ConnectingSim)),
-                    main_menu_hud_system.run_if(in_state(AppState::MainMenu)),
-                    loading_hud_system.run_if(in_state(AppState::Loading)),
-                    in_game_hud_system.run_if(in_state(AppState::InGame)),
-                    pause_overlay_system.run_if(in_state(AppState::InGame)),
-                    fatal_banner_system,
+                    hud_scene_system.run_if(ds::hud_scene_enabled),
+                    connecting_hud_system
+                        .run_if(in_state(AppState::ConnectingSim))
+                        .run_if(|| !ds::hud_scene_enabled()),
+                    main_menu_hud_system
+                        .run_if(in_state(AppState::MainMenu))
+                        .run_if(|| !ds::hud_scene_enabled()),
+                    loading_hud_system
+                        .run_if(in_state(AppState::Loading))
+                        .run_if(|| !ds::hud_scene_enabled()),
+                    in_game_hud_system
+                        .run_if(in_state(AppState::InGame))
+                        .run_if(|| !ds::hud_scene_enabled()),
+                    pause_overlay_system
+                        .run_if(in_state(AppState::InGame))
+                        .run_if(|| !ds::hud_scene_enabled()),
+                    fatal_banner_system.run_if(|| !ds::hud_scene_enabled()),
                 )
                     .chain()
-                    .run_if(|| !crate::design_system::hud_hidden()),
+                    .run_if(|| !ds::hud_hidden()),
             );
     }
 }
@@ -180,18 +184,18 @@ fn collect_toasts_system(mut events: EventReader<SimEvent>, mut log: ResMut<Toas
     for SimEvent(msg) in events.read() {
         if let FromSimMsg::Json(FromSimJson::Toast(toast)) = msg {
             log.0.push((toast.message.clone(), toast.tone));
-            if log.0.len() > TOAST_LOG_CAP {
-                let excess = log.0.len() - TOAST_LOG_CAP;
+            if log.0.len() > ds::TOAST_LOG_CAP {
+                let excess = log.0.len() - ds::TOAST_LOG_CAP;
                 log.0.drain(0..excess);
             }
         }
     }
 }
 
-/// A muted, near-invisible group divider — art-direction §8 wants clean flat
+/// A muted, near-invisible group divider. Art-direction §8 wants clean flat
 /// separation, not egui's default heavy separator line.
 fn thin_separator(ui: &mut egui::Ui) {
-    ui.add(egui::Separator::default().shrink(6.0));
+    ds::thin_separator(ui);
 }
 
 /// One hover tick the first frame the pointer lands on a widget; re-arms
@@ -208,26 +212,20 @@ fn hover_tick(resp: &egui::Response, last: &mut Option<egui::Id>, sfx: &mut Even
     }
 }
 
-/// Comma-grouped integer (e.g. `146015` -> `"146,015"`). Plain
-/// `{:.0}`-formatted cash/population numbers change width every tick they
-/// cross a digit boundary, which visibly shifts every group to their right
-/// in the top bar; grouping doesn't fix that alone (see
-/// `fixed_width_label`) but keeps the number itself readable at a glance.
 fn format_thousands(value: f64) -> String {
-    let rounded = value.round().max(0.0) as u64;
-    let digits = rounded.to_string();
-    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(ch);
-    }
-    grouped
+    ds::format_thousands(value)
 }
 
 fn format_cash(value: f64) -> String {
-    format!("${}", format_thousands(value))
+    ds::format_cash(value)
+}
+
+/// Design-system gallery for `MF_HUD_SCENE=1` (single Xvfb capture).
+fn hud_scene_system(mut contexts: EguiContexts) -> Result {
+    let ctx = contexts.ctx_mut()?;
+    ds::set_current_theme(Theme::Light);
+    ds::draw_hud_scene(ctx);
+    Ok(())
 }
 
 /// Reserves a fixed-width, left-aligned cell for `text` so a value growing
@@ -727,7 +725,7 @@ fn title_screen_ui(
     mut hovered: Local<Option<egui::Id>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
-    let fade = ctx.animate_value_with_time(egui::Id::new("title_fade"), 1.0, 0.2);
+    let fade = ds::panel_fade(ctx, "title_fade");
 
     egui::TopBottomPanel::bottom("title_version")
         .frame(
@@ -852,7 +850,7 @@ fn city_select_screen_ui(
     let slots = slots_cache.as_ref().expect("populated just above");
 
     let ctx = contexts.ctx_mut()?;
-    let fade = ctx.animate_value_with_time(egui::Id::new("city_select_fade"), 1.0, 0.2);
+    let fade = ds::panel_fade(ctx, "city_select_fade");
 
     let mut go_back = false;
     let mut start_pressed = false;
@@ -900,7 +898,7 @@ fn city_select_screen_ui(
             .unwrap_or_else(|| capitalize(&pending.preset_key))
     };
     let start_caption = format!(
-        "Start — {} ({})",
+        "Start: {} ({})",
         selected_label,
         pending.difficulty.label()
     );
@@ -1096,39 +1094,40 @@ fn settings_screen_ui(
 ) -> Result<bool> {
     let mut back_clicked = false;
     let ctx = contexts.ctx_mut()?;
-    let fade = ctx.animate_value_with_time(egui::Id::new("settings_fade"), 1.0, 0.2);
+    let fade = ds::panel_fade(ctx, "settings_fade");
 
     // Soft scrim + floating card so the attract diorama remains the
     // atmosphere behind Settings (same layering language as pause).
+    // Modal layer: nothing may render above this (ORDER_MODAL = Tooltip).
     egui::Area::new(egui::Id::new("settings_scrim"))
-        .order(egui::Order::Middle)
+        .order(ds::ORDER_MODAL)
         .fixed_pos(egui::Pos2::ZERO)
         .show(ctx, |ui| {
             let screen = ui.ctx().screen_rect();
-            ui.allocate_response(screen.size(), egui::Sense::hover());
-            ui.painter().rect_filled(
-                screen,
-                egui::CornerRadius::ZERO,
-                crate::design_system::scrim(),
-            );
+            ui.allocate_response(screen.size(), egui::Sense::click());
+            ui.painter()
+                .rect_filled(screen, egui::CornerRadius::ZERO, ds::scrim());
         });
 
     egui::Area::new(egui::Id::new("settings_panel"))
-        .order(egui::Order::Foreground)
+        .order(ds::ORDER_MODAL)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
             ui.set_opacity(fade);
             egui::Frame::default()
                 .fill(panel_bg())
-                .corner_radius(crate::design_system::CORNER_RADIUS)
-                .inner_margin(egui::Margin::symmetric(28, 24))
+                .corner_radius(ds::CORNER_RADIUS)
+                .inner_margin(egui::Margin::symmetric(
+                    ds::MODAL_MARGIN_H,
+                    ds::MODAL_MARGIN_V,
+                ))
                 .show(ui, |ui| {
-                    ui.set_width(320.0);
+                    ui.set_width(ds::MODAL_CARD_WIDTH);
                     ui.vertical_centered(|ui| {
                         draw_logo(ui, 36.0);
-                        ui.add_space(6.0);
-                        ui.label(crate::design_system::heading("Settings").color(text_color()));
-                        ui.add_space(24.0);
+                        ui.add_space(ds::SPACE_XXS + 2.0);
+                        ui.label(ds::heading("Settings").color(text_color()));
+                        ui.add_space(ds::SPACE_LG);
 
                         field_label(ui, "Quality");
                         egui::ComboBox::from_id_salt("settings_quality")
@@ -1143,7 +1142,7 @@ fn settings_screen_ui(
                                 )
                             });
 
-                        ui.add_space(14.0);
+                        ui.add_space(ds::SPACE_SM + 2.0);
                         field_label(ui, "Theme");
                         egui::ComboBox::from_id_salt("settings_theme")
                             .selected_text(settings.theme.label())
@@ -1157,7 +1156,7 @@ fn settings_screen_ui(
                                 )
                             });
 
-                        ui.add_space(14.0);
+                        ui.add_space(ds::SPACE_SM + 2.0);
                         field_label(ui, "Weather");
                         let tier_allows = settings.quality.knobs().atmosphere_enabled;
                         ui.add_enabled_ui(tier_allows, |ui| {
@@ -1174,10 +1173,12 @@ fn settings_screen_ui(
                             }
                         });
 
-                        ui.add_space(28.0);
+                        ui.add_space(ds::SPACE_LG + 4.0);
                         let replay = ui.add_sized(
-                            [220.0, 36.0],
-                            egui::Button::new(egui::RichText::new("Replay tutorial").size(13.0)),
+                            ds::BUTTON_SECONDARY,
+                            egui::Button::new(
+                                egui::RichText::new("Replay tutorial").size(ds::TEXT_SM),
+                            ),
                         );
                         hover_tick(&replay, &mut hovered, &mut sfx);
                         if replay.clicked() {
@@ -1191,11 +1192,11 @@ fn settings_screen_ui(
                             }
                         }
 
-                        ui.add_space(10.0);
+                        ui.add_space(ds::SPACE_XS + 2.0);
                         let back = ui.add_sized(
-                            [220.0, 40.0],
+                            ds::BUTTON_PRIMARY,
                             egui::Button::new(egui::RichText::new("Back").size(14.0))
-                                .corner_radius(crate::design_system::CORNER_RADIUS),
+                                .corner_radius(ds::CORNER_RADIUS),
                         );
                         hover_tick(&back, &mut hovered, &mut sfx);
                         if back.clicked() {
@@ -1248,39 +1249,40 @@ fn in_game_hud_system(
     mut subway: ResMut<SubwayView>,
     toasts: Res<ToastLog>,
     mut goals_panel: ResMut<GoalsPanelOpen>,
+    pause: Res<PauseState>,
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
+    let fade = ds::panel_fade(ctx, "hud_top_fade");
 
-    // Art-direction §8: off-white panel, near-black text, consistent
-    // spacing/padding, vivid accents reserved for interactive/transit
-    // elements only. Budget | day+clock | approval | pop | speed | subway.
-    // Quality/theme live in Settings (pause → Settings), not the play HUD.
+    // Top status strip: cash / routes / vehicles / budget tiles (same tile
+    // language as the goals panel), then day / approval / pop, then controls.
     egui::TopBottomPanel::top("hud_top")
         .frame(
             egui::Frame::default()
                 .fill(panel_bg())
-                .inner_margin(egui::Margin::symmetric(14, 10)),
+                .inner_margin(egui::Margin::symmetric(
+                    ds::HUD_BAR_MARGIN_H,
+                    ds::HUD_BAR_MARGIN_V,
+                )),
         )
         .show(ctx, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(16.0, 0.0);
+            ui.set_opacity(fade);
+            ui.spacing_mut().item_spacing = egui::vec2(ds::STATUS_TILE_GAP, 0.0);
             ui.horizontal_centered(|ui| {
                 if let Some(state) = &ui_state.0 {
-                    // Monospace + a fixed-width cell per group: cash/pop/day
-                    // digits change width every tick they cross a boundary
-                    // (e.g. $999,999 -> $1,000,000), and with a proportional
-                    // font in an auto-sized label that visibly shoves every
-                    // group to its right. Widths below are sized for the
-                    // widest value each field would plausibly show.
-                    fixed_width_label(
-                        ui,
-                        egui::RichText::new(format_cash(state.cash))
-                            .monospace()
-                            .strong()
-                            .size(15.0),
-                        130.0,
-                    );
+                    let route_count = state.routes.len();
+                    let vehicle_count: u32 = state.routes.iter().map(|r| r.vehicle_count).sum();
+                    let budget_net = ds::day_ledger_net(&state.last_day);
+
+                    ds::status_tile(ui, "Cash", format_cash(state.cash));
+                    thin_separator(ui);
+                    ds::status_tile(ui, "Routes", format!("{route_count}"));
+                    thin_separator(ui);
+                    ds::status_tile(ui, "Vehicles", format!("{vehicle_count}"));
+                    thin_separator(ui);
+                    ds::status_tile(ui, "Budget", ds::format_signed_cash(budget_net));
                     thin_separator(ui);
 
                     const TICKS_PER_DAY: u64 = 1200;
@@ -1293,8 +1295,9 @@ fn in_game_hud_system(
                             hour as u32,
                             ((hour.fract()) * 60.0) as u32
                         ))
-                        .monospace(),
-                        140.0,
+                        .monospace()
+                        .size(ds::TEXT_SM),
+                        ds::STATUS_CELL_DAY_W,
                     );
                     thin_separator(ui);
 
@@ -1311,19 +1314,22 @@ fn in_game_hud_system(
                         egui::RichText::new(approval_text)
                             .monospace()
                             .strong()
+                            .size(ds::TEXT_SM)
                             .color(text_color())
                     } else {
                         egui::RichText::new(approval_text)
                             .monospace()
+                            .size(ds::TEXT_SM)
                             .color(text_color())
                     };
-                    fixed_width_label(ui, approval_style, 130.0);
+                    fixed_width_label(ui, approval_style, ds::STATUS_CELL_APPROVAL_W);
                     thin_separator(ui);
                     fixed_width_label(
                         ui,
                         egui::RichText::new(format!("Pop {}", format_thousands(state.population)))
-                            .monospace(),
-                        130.0,
+                            .monospace()
+                            .size(ds::TEXT_SM),
+                        ds::STATUS_CELL_POP_W,
                     );
                 } else {
                     ui.label("Connecting to city...");
@@ -1338,7 +1344,7 @@ fn in_game_hud_system(
                         .unwrap_or(false);
                     let button = egui::Button::new(label)
                         .fill(if is_current { accent() } else { card_bg() })
-                        .corner_radius(crate::design_system::CORNER_RADIUS);
+                        .corner_radius(ds::CORNER_RADIUS);
                     let resp = ui.add(button);
                     hover_tick(&resp, &mut hovered, &mut sfx);
                     if resp.clicked() {
@@ -1358,7 +1364,7 @@ fn in_game_hud_system(
                     "Subway view"
                 })
                 .fill(if subway.active { accent() } else { card_bg() })
-                .corner_radius(crate::design_system::CORNER_RADIUS);
+                .corner_radius(ds::CORNER_RADIUS);
                 let subway_resp = ui.add(subway_button);
                 hover_tick(&subway_resp, &mut hovered, &mut sfx);
                 if subway_resp.clicked() {
@@ -1373,7 +1379,7 @@ fn in_game_hud_system(
                 thin_separator(ui);
                 let goals_button = egui::Button::new("Goals")
                     .fill(if goals_panel.0 { accent() } else { card_bg() })
-                    .corner_radius(crate::design_system::CORNER_RADIUS);
+                    .corner_radius(ds::CORNER_RADIUS);
                 let goals_resp = ui.add(goals_button);
                 hover_tick(&goals_resp, &mut hovered, &mut sfx);
                 if goals_resp.clicked() {
@@ -1387,42 +1393,47 @@ fn in_game_hud_system(
             });
         });
 
-    egui::TopBottomPanel::bottom("hud_toasts")
-        .frame(
-            egui::Frame::default()
-                .fill(panel_bg())
-                .inner_margin(egui::Margin::symmetric(14, 6)),
-        )
-        .min_height(0.0)
-        .show(ctx, |ui| {
-            if !toasts.0.is_empty() {
-                ui.horizontal(|ui| {
-                    for (msg, tone) in toasts.0.iter().rev().take(3) {
-                        let color = match tone {
-                            ToastTone::Info => text_color(),
-                            ToastTone::Warn => WARN,
-                            ToastTone::Good => GOOD,
-                        };
-                        ui.colored_label(color, msg);
-                        thin_separator(ui);
-                    }
-                });
-            }
-        });
+    // Toasts sit on ORDER_TOAST (above panels, below modal). Drawn as an
+    // Area so the build toolbar's bottom panels cannot stack above them.
+    if !toasts.0.is_empty() && !pause.active {
+        let toast_fade = ds::panel_fade(ctx, "hud_toast_fade");
+        egui::Area::new(egui::Id::new("hud_toasts"))
+            .order(ds::ORDER_TOAST)
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -72.0))
+            .show(ctx, |ui| {
+                ui.set_opacity(toast_fade);
+                egui::Frame::default()
+                    .fill(panel_bg())
+                    .corner_radius(ds::CORNER_RADIUS)
+                    .inner_margin(egui::Margin::symmetric(
+                        ds::TOAST_MARGIN_H,
+                        ds::TOAST_MARGIN_V,
+                    ))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            for (msg, tone) in toasts.0.iter().rev().take(ds::TOAST_VISIBLE) {
+                                let color = match tone {
+                                    ToastTone::Info => text_color(),
+                                    ToastTone::Warn => WARN,
+                                    ToastTone::Good => GOOD,
+                                };
+                                ui.colored_label(color, msg);
+                                thin_separator(ui);
+                            }
+                        });
+                    });
+            });
+    }
     Ok(())
 }
 
 /// Pause overlay (`state::PauseState`, toggled by Esc in `input.rs`). Drawn
 /// as its own pass after `in_game_hud_system` so it dims and sits on top of
-/// the world *and* the top/bottom HUD bars, rather than only the space
-/// between them. Uses `egui::Area`s at `Order::Foreground` rather than a
-/// `CentralPanel`: panels paint at `Order::Background`, which the HUD bars
-/// also occupy and would poke through the dim; a full-screen foreground
-/// area also guarantees `wants_pointer_input()` is true everywhere on
-/// screen (`egui::Context::is_pointer_over_area` matches on the topmost
-/// layer at the cursor), so `camera.rs`'s existing egui-capture check keeps
-/// world drag/zoom from leaking through while paused, with no change to
-/// that file.
+/// the world *and* the HUD. Uses `egui::Area`s at [`ds::ORDER_MODAL`]
+/// (Tooltip): nothing may render above the pause modal. A full-screen
+/// modal area also guarantees `wants_pointer_input()` is true everywhere on
+/// screen, so `camera.rs`'s existing egui-capture check keeps world
+/// drag/zoom from leaking through while paused.
 #[allow(clippy::too_many_arguments)]
 fn pause_overlay_system(
     contexts: EguiContexts,
@@ -1474,44 +1485,47 @@ fn pause_overlay_system(
 
     let mut settings_open_pressed = false;
     let ctx = contexts.ctx_mut()?;
+    let fade = ds::panel_fade(ctx, "pause_fade");
 
     egui::Area::new(egui::Id::new("pause_scrim"))
-        .order(egui::Order::Foreground)
+        .order(ds::ORDER_MODAL)
         .fixed_pos(egui::Pos2::ZERO)
         .show(ctx, |ui| {
             let screen = ui.ctx().screen_rect();
-            ui.allocate_response(screen.size(), egui::Sense::hover());
-            ui.painter().rect_filled(
-                screen,
-                egui::CornerRadius::ZERO,
-                crate::design_system::scrim(),
-            );
+            ui.allocate_response(screen.size(), egui::Sense::click());
+            ui.painter()
+                .rect_filled(screen, egui::CornerRadius::ZERO, ds::scrim());
         });
 
     egui::Area::new(egui::Id::new("pause_panel"))
-        .order(egui::Order::Foreground)
+        .order(ds::ORDER_MODAL)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
+            ui.set_opacity(fade);
             egui::Frame::default()
                 .fill(panel_bg())
-                .corner_radius(egui::CornerRadius::same(2))
-                .inner_margin(egui::Margin::symmetric(28, 24))
+                .corner_radius(ds::CORNER_RADIUS)
+                .inner_margin(egui::Margin::symmetric(
+                    ds::MODAL_MARGIN_H,
+                    ds::MODAL_MARGIN_V,
+                ))
                 .show(ui, |ui| {
-                    ui.set_width(260.0);
+                    ui.set_width(ds::PAUSE_CARD_WIDTH);
                     ui.vertical_centered(|ui| {
                         draw_logo(ui, 36.0);
-                        ui.add_space(6.0);
-                        ui.label(egui::RichText::new("Paused").size(24.0).strong());
-                        ui.add_space(18.0);
+                        ui.add_space(ds::SPACE_XXS + 2.0);
+                        ui.label(ds::heading("Paused").color(text_color()));
+                        ui.add_space(ds::SPACE_SM + 6.0);
 
                         let resume = ui.add_sized(
-                            [220.0, 40.0],
+                            ds::BUTTON_PRIMARY,
                             egui::Button::new(
                                 egui::RichText::new("Resume")
                                     .color(egui::Color32::WHITE)
                                     .strong(),
                             )
-                            .fill(accent()),
+                            .fill(accent())
+                            .corner_radius(ds::CORNER_RADIUS),
                         );
                         hover_tick(&resume, &mut hovered, &mut sfx);
                         if resume.clicked() && toggle_pause(&mut pause, &ui_state, link.as_deref())
@@ -1519,10 +1533,10 @@ fn pause_overlay_system(
                             sfx.write(PlaySfx(Sfx::Unpause));
                         }
 
-                        ui.add_space(10.0);
+                        ui.add_space(ds::SPACE_XS + 2.0);
                         let settings = ui.add_sized(
-                            [220.0, 36.0],
-                            egui::Button::new(egui::RichText::new("Settings").size(13.0)),
+                            ds::BUTTON_SECONDARY,
+                            egui::Button::new(egui::RichText::new("Settings").size(ds::TEXT_SM)),
                         );
                         hover_tick(&settings, &mut hovered, &mut sfx);
                         if settings.clicked() {
@@ -1530,7 +1544,7 @@ fn pause_overlay_system(
                             settings_open_pressed = true;
                         }
 
-                        ui.add_space(14.0);
+                        ui.add_space(ds::SPACE_SM + 2.0);
                         field_label(ui, "Save game");
                         ui.horizontal(|ui| {
                             for n in 1..=saves::SLOT_COUNT {
@@ -1545,7 +1559,7 @@ fn pause_overlay_system(
                                 };
                                 let btn = ui.add_sized(
                                     [68.0, 32.0],
-                                    egui::Button::new(egui::RichText::new(label).size(11.0)),
+                                    egui::Button::new(egui::RichText::new(label).size(ds::TEXT_XS)),
                                 );
                                 hover_tick(&btn, &mut hovered, &mut sfx);
                                 if btn.clicked() {
@@ -1564,9 +1578,9 @@ fn pause_overlay_system(
                             }
                         });
 
-                        ui.add_space(14.0);
+                        ui.add_space(ds::SPACE_SM + 2.0);
                         let quit =
-                            ui.add_sized([220.0, 40.0], egui::Button::new("Quit to desktop"));
+                            ui.add_sized(ds::BUTTON_PRIMARY, egui::Button::new("Quit to desktop"));
                         hover_tick(&quit, &mut hovered, &mut sfx);
                         if quit.clicked() {
                             sfx.write(PlaySfx(Sfx::Cancel));

@@ -27,50 +27,29 @@ use crate::audio::{PlaySfx, Sfx};
 use crate::command_bus::{CmdMeta, CommandBus, CommandFeedback};
 use crate::design_system as ds;
 use crate::hud::ToastLog;
-use crate::state::AppState;
+use crate::state::{AppState, PauseState};
 use crate::tools::{ActiveTool, ToolState};
 
 // ---------------------------------------------------------------------
 // Pure formatting helpers (unit-tested below)
 // ---------------------------------------------------------------------
-// `hud.rs` has its own `format_thousands`/`format_cash` but both are
-// private, so they can't be imported - these are plain reimplementations,
-// not a deliberate fork of behavior. `hud.rs` migrates onto `design_system`
-// (and, likely, a shared formatting spot) at integration.
-
-/// Comma-grouped integer, e.g. `146015` -> `"146,015"`.
-fn format_thousands(value: f64) -> String {
-    let rounded = value.round().max(0.0) as u64;
-    let digits = rounded.to_string();
-    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(ch);
-    }
-    grouped
-}
 
 fn format_cash(value: f64) -> String {
-    format!("${}", format_thousands(value))
+    ds::format_cash(value)
 }
 
 /// Fares are sub-dollar-unit prices (e.g. `$1.25`), unlike whole-dollar
 /// cash/cost readouts, so this always shows two decimal places.
 fn format_fare(value: f64) -> String {
-    format!("${:.2}", value.max(0.0))
+    ds::format_fare(value)
 }
 
 // ---------------------------------------------------------------------
-// Local hover-tick (reimplemented per mission brief - `hud.rs`'s copy is
-// private and this file must not import from `hud.rs` anyway)
+// Local hover-tick
 // ---------------------------------------------------------------------
 
 /// One hover tick the first frame the pointer lands on a widget; re-arms
-/// when it leaves. Identical behavior to `hud.rs`'s private `hover_tick`,
-/// duplicated here rather than shared (see module docs: this file must not
-/// depend on `hud.rs` internals).
+/// when it leaves.
 fn hover_tick(resp: &egui::Response, last: &mut Option<egui::Id>, sfx: &mut EventWriter<PlaySfx>) {
     if resp.hovered() {
         if *last != Some(resp.id) {
@@ -258,10 +237,15 @@ fn build_toolbar_system(
     mut bus: ResMut<CommandBus>,
     link: Option<Res<SimLink>>,
     mut panel: ResMut<RoutePanelState>,
+    pause: Res<PauseState>,
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
 ) -> Result {
+    if pause.active {
+        return Ok(());
+    }
     let ctx = contexts.ctx_mut()?;
+    let fade = ds::panel_fade(ctx, "build_toolbar_fade");
     let tram_ok = tram_unlocked(&ui_state);
     // Copied out once so the click-branches below can freely write
     // `tools.active` without fighting a live borrow from the comparisons
@@ -278,6 +262,7 @@ fn build_toolbar_system(
                 )),
         )
         .show(ctx, |ui| {
+            ui.set_opacity(fade);
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(ds::SPACE_XXS, 0.0);
 
@@ -357,7 +342,11 @@ fn build_toolbar_system(
                 }
 
                 ui.add_space(ds::SPACE_SM);
-                ui.add(egui::Separator::default().vertical().shrink(6.0));
+                ui.add(
+                    egui::Separator::default()
+                        .vertical()
+                        .shrink(ds::SEPARATOR_SHRINK),
+                );
                 ui.add_space(ds::SPACE_SM);
 
                 if icon_button(
@@ -375,7 +364,11 @@ fn build_toolbar_system(
                 }
 
                 ui.add_space(ds::SPACE_SM);
-                ui.add(egui::Separator::default().vertical().shrink(6.0));
+                ui.add(
+                    egui::Separator::default()
+                        .vertical()
+                        .shrink(ds::SEPARATOR_SHRINK),
+                );
                 ui.add_space(ds::SPACE_SM);
 
                 let routes_button = ui.add(
@@ -411,6 +404,7 @@ fn build_toolbar_system(
             .show_separator_line(false)
             .min_height(0.0)
             .show(ctx, |ui| {
+                ui.set_opacity(fade);
                 ui.colored_label(color, egui::RichText::new(text).size(ds::TEXT_SM));
             });
     }
@@ -422,21 +416,14 @@ fn build_toolbar_system(
 /// tool, and its text color (warning-tinted for Bulldoze per the brief).
 fn contextual_strip_text(
     tools: &ToolState,
-    ui_state: &LatestUi,
+    _ui_state: &LatestUi,
 ) -> Option<(String, egui::Color32)> {
     match tools.active {
         ActiveTool::None => None,
-        ActiveTool::PlaceStation(mode) => {
-            let cash = ui_state.0.as_ref().map(|s| s.cash).unwrap_or(0.0);
-            Some((
-                format!(
-                    "Click to place a {} station. Cash on hand: {}",
-                    mode_word(mode),
-                    format_cash(cash)
-                ),
-                ds::text(),
-            ))
-        }
+        ActiveTool::PlaceStation(mode) => Some((
+            format!("Click to place a {} station.", mode_word(mode)),
+            ds::text(),
+        )),
         ActiveTool::Route => {
             let count = tools.route_draft.len();
             let quote = tools
@@ -470,13 +457,15 @@ fn route_panel_system(
     link: Option<Res<SimLink>>,
     mut bus: ResMut<CommandBus>,
     mut panel: ResMut<RoutePanelState>,
+    pause: Res<PauseState>,
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
 ) -> Result {
-    if !panel.open {
+    if !panel.open || pause.active {
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;
+    let fade = ds::panel_fade(ctx, "route_panel_fade");
     let Some(state) = &ui_state.0 else {
         return Ok(());
     };
@@ -490,10 +479,11 @@ fn route_panel_system(
                     ds::SPACE_SM as i8,
                 )),
         )
-        .default_width(300.0)
-        .min_width(240.0)
+        .default_width(ds::ROUTE_PANEL_WIDTH)
+        .min_width(ds::ROUTE_PANEL_MIN_WIDTH)
         .resizable(true)
         .show(ctx, |ui| {
+            ui.set_opacity(fade);
             ui.label(ds::heading("Routes"));
             ui.add_space(ds::SPACE_XS);
 
@@ -788,15 +778,10 @@ fn command_feedback_listener_system(
     }
 }
 
-/// Mirrors `hud.rs`'s private `TOAST_LOG_CAP` (20) so this file's pushes
-/// can't grow the log unbounded either; duplicated rather than imported
-/// since the const isn't `pub` there.
-const TOAST_LOG_CAP: usize = 20;
-
 fn push_toast(toasts: &mut ToastLog, message: String, tone: ToastTone) {
     toasts.0.push((message, tone));
-    if toasts.0.len() > TOAST_LOG_CAP {
-        let excess = toasts.0.len() - TOAST_LOG_CAP;
+    if toasts.0.len() > ds::TOAST_LOG_CAP {
+        let excess = toasts.0.len() - ds::TOAST_LOG_CAP;
         toasts.0.drain(0..excess);
     }
 }
@@ -816,7 +801,8 @@ impl Plugin for MfBuildUiPlugin {
                 (build_toolbar_system, route_panel_system)
                     .chain()
                     .run_if(in_state(AppState::InGame))
-                    .run_if(|| !crate::design_system::hud_hidden()),
+                    .run_if(|| !ds::hud_hidden())
+                    .run_if(|| !ds::hud_scene_enabled()),
             );
     }
 }
@@ -827,16 +813,16 @@ mod tests {
 
     #[test]
     fn format_thousands_groups_by_three() {
-        assert_eq!(format_thousands(0.0), "0");
-        assert_eq!(format_thousands(999.0), "999");
-        assert_eq!(format_thousands(1000.0), "1,000");
-        assert_eq!(format_thousands(146_015.0), "146,015");
-        assert_eq!(format_thousands(1_000_000.0), "1,000,000");
+        assert_eq!(ds::format_thousands(0.0), "0");
+        assert_eq!(ds::format_thousands(999.0), "999");
+        assert_eq!(ds::format_thousands(1000.0), "1,000");
+        assert_eq!(ds::format_thousands(146_015.0), "146,015");
+        assert_eq!(ds::format_thousands(1_000_000.0), "1,000,000");
     }
 
     #[test]
     fn format_thousands_clamps_negative_to_zero() {
-        assert_eq!(format_thousands(-50.0), "0");
+        assert_eq!(ds::format_thousands(-50.0), "0");
     }
 
     #[test]
