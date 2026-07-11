@@ -1,26 +1,17 @@
-//! Build toolbar + route panel (ship-plan #25, v0.2). Draws its own egui
-//! panels, distinct from `hud.rs`'s HUD bars/toasts (mission scope: this
-//! file must not edit `hud.rs`) - see `MfBuildUiPlugin` for how they're
-//! wired in alongside it.
+//! Build toolbar (ship-plan #25, v0.2). Draws its own egui panels, distinct
+//! from `hud.rs`'s HUD bars/toasts. The routes list/editor lives in
+//! [`crate::routes_panel`] so HUD restyles and route-panel work merge
+//! without fighting over `hud.rs` / a single mega-file.
 //!
-//! Scope boundary this file holds to: `tools.rs` (a parallel worktree, see
-//! the `// INTEGRATION STUB` copy in this crate) owns *world* interaction -
-//! raycasting/placement, drag-to-draw route building, cost quoting. This
-//! file only owns the toolbar/contextual-strip/route-panel widgets and the
-//! route-panel's own edit commands (rename/fare/vehicle-count/delete, all
-//! `Command::EditRoute`/`Command::DeleteRoute`). It deliberately does NOT
-//! read Enter/Esc to confirm/cancel an in-progress route or submit
-//! `Command::CreateRoute` itself - the contextual strip's "Enter confirms,
-//! Esc cancels" copy is describing the interaction `tools.rs` drives (it
-//! owns `route_draft`/`last_cost_quote` and is the natural owner of when to
-//! clear them); wiring the same keys here too would risk a double-submit
-//! race at integration between two independently-developed systems both
-//! watching the same keys.
+//! Scope boundary this file holds to: `tools.rs` owns *world* interaction —
+//! raycasting/placement, route drafting, cost quoting. This file only owns
+//! the toolbar / contextual-strip widgets. Route edit commands
+//! (rename/fare/vehicles/delete/color/stop order) live in `routes_panel.rs`.
 
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 use mf_net::SimLink;
-use mf_protocol::{Command, ToastTone, TransitMode, UiRoute, UiStation};
+use mf_protocol::{ToastTone, TransitMode};
 use mf_state::LatestUi;
 
 use crate::audio::{PlaySfx, Sfx};
@@ -29,6 +20,10 @@ use crate::design_system as ds;
 use crate::hud::ToastLog;
 use crate::state::AppState;
 use crate::tools::{ActiveTool, ToolState};
+
+// Re-export so `hud.rs` (overcrowded-routes chip) keeps a stable import
+// path across the panel extraction.
+pub use crate::routes_panel::RoutePanelState;
 
 // ---------------------------------------------------------------------
 // Pure formatting helpers (unit-tested below)
@@ -56,12 +51,6 @@ fn format_cash(value: f64) -> String {
     format!("${}", format_thousands(value))
 }
 
-/// Fares are sub-dollar-unit prices (e.g. `$1.25`), unlike whole-dollar
-/// cash/cost readouts, so this always shows two decimal places.
-fn format_fare(value: f64) -> String {
-    format!("${:.2}", value.max(0.0))
-}
-
 // ---------------------------------------------------------------------
 // Local hover-tick (reimplemented per mission brief - `hud.rs`'s copy is
 // private and this file must not import from `hud.rs` anyway)
@@ -80,35 +69,6 @@ fn hover_tick(resp: &egui::Response, last: &mut Option<egui::Id>, sfx: &mut Even
     } else if *last == Some(resp.id) {
         *last = None;
     }
-}
-
-// ---------------------------------------------------------------------
-// Local vivid route-color table
-// ---------------------------------------------------------------------
-// `mf-render`'s `palette::vivid_route_color` is the source of truth the 3D
-// scene's route stripes use (art-direction: "native client ignores the
-// wire colorTable and keeps its own vivid table indexed by
-// routeColorIdx"). `mf-game` doesn't (and per mission scope shouldn't)
-// depend on `mf-render`, so this is the same eight hex values duplicated
-// as `egui::Color32` for the route panel's swatches - same index, same
-// color as the world's route stripe, without a cross-crate dependency.
-// Unlike `mf-render`'s version this wraps by modulo past 8 rather than
-// extending via golden-angle hue rotation: a route panel swatch is a
-// small flat dot, not a rendered stripe, so exact hue fidelity past the
-// eighth route isn't worth the HSL math here.
-const ROUTE_COLORS: [egui::Color32; 8] = [
-    egui::Color32::from_rgb(0xff, 0x3b, 0x30),
-    egui::Color32::from_rgb(0x00, 0x7a, 0xff),
-    egui::Color32::from_rgb(0xff, 0xcc, 0x00),
-    egui::Color32::from_rgb(0x34, 0xc7, 0x59),
-    egui::Color32::from_rgb(0xff, 0x95, 0x00),
-    egui::Color32::from_rgb(0xaf, 0x52, 0xde),
-    egui::Color32::from_rgb(0x00, 0xc7, 0xbe),
-    egui::Color32::from_rgb(0xff, 0x2d, 0x95),
-];
-
-fn vivid_route_color(idx: usize) -> egui::Color32 {
-    ROUTE_COLORS[idx % ROUTE_COLORS.len()]
 }
 
 fn mode_word(mode: TransitMode) -> &'static str {
@@ -135,27 +95,6 @@ fn tram_unlocked(ui_state: &LatestUi) -> bool {
         .as_ref()
         .map(|s| s.unlocked_modes.contains(&TransitMode::Tram))
         .unwrap_or(false)
-}
-
-// ---------------------------------------------------------------------
-// Route panel state
-// ---------------------------------------------------------------------
-
-#[derive(Resource, Default)]
-pub struct RoutePanelState {
-    pub open: bool,
-    pub selected: Option<i64>,
-    /// Which route id `name_edit`/`fare_edit` currently mirror; re-seeded
-    /// from the live `UiRoute` whenever `selected` changes to a route id
-    /// this doesn't match yet.
-    edit_for: Option<i64>,
-    name_edit: String,
-    fare_edit: f64,
-    /// Route id armed for a second "Confirm delete" click. Cleared on
-    /// selection change; NOT time-limited (v0.2: a stray second click
-    /// minutes later still deletes) - acceptable for a first pass, a
-    /// timeout could be added later without changing the public shape.
-    delete_armed: Option<i64>,
 }
 
 // ---------------------------------------------------------------------
@@ -421,7 +360,19 @@ fn contextual_strip_text(
     ui_state: &LatestUi,
 ) -> Option<(String, egui::Color32)> {
     match tools.active {
-        ActiveTool::None => None,
+        ActiveTool::None => {
+            let count = tools.route_draft.len();
+            if count == 0 {
+                None
+            } else {
+                Some((
+                    format!(
+                        "Shift click toggles stations. {count} selected. Enter connects as a route, or press R for the Route tool."
+                    ),
+                    ds::text(),
+                ))
+            }
+        }
         ActiveTool::PlaceStation(mode) => {
             let cash = ui_state.0.as_ref().map(|s| s.cash).unwrap_or(0.0);
             Some((
@@ -441,7 +392,7 @@ fn contextual_strip_text(
                 .unwrap_or_else(|| "not quoted yet".to_string());
             Some((
                 format!(
-                    "Click stations to add. Enter confirms, Esc cancels. {count} station(s) selected. Estimated cost: {quote}."
+                    "Click stations to add (Shift click toggles). Enter confirms, Esc cancels. {count} station(s) selected. Estimated cost: {quote}."
                 ),
                 ds::text(),
             ))
@@ -451,375 +402,6 @@ fn contextual_strip_text(
             ds::WARN,
         )),
     }
-}
-
-// ---------------------------------------------------------------------
-// Route panel
-// ---------------------------------------------------------------------
-
-/// Right-side route list/editor (`build_ui_route_panel`), toggled by the
-/// toolbar's "Routes" button.
-#[allow(clippy::too_many_arguments)]
-fn route_panel_system(
-    mut contexts: EguiContexts,
-    ui_state: Res<LatestUi>,
-    link: Option<Res<SimLink>>,
-    mut bus: ResMut<CommandBus>,
-    mut panel: ResMut<RoutePanelState>,
-    mut sfx: EventWriter<PlaySfx>,
-    mut hovered: Local<Option<egui::Id>>,
-) -> Result {
-    if !panel.open {
-        return Ok(());
-    }
-    let ctx = contexts.ctx_mut()?;
-    let Some(state) = &ui_state.0 else {
-        return Ok(());
-    };
-
-    egui::SidePanel::right("build_ui_route_panel")
-        .frame(
-            egui::Frame::NONE
-                .fill(ds::panel_bg())
-                .inner_margin(egui::Margin::symmetric(
-                    ds::SPACE_SM as i8,
-                    ds::SPACE_SM as i8,
-                ))
-                .stroke(egui::Stroke::new(ds::ACCENT_EDGE_PX, ds::accent())),
-        )
-        .default_width(300.0)
-        .min_width(240.0)
-        .resizable(true)
-        .show_separator_line(false)
-        .show(ctx, |ui| {
-            ui.label(ds::heading("Routes"));
-            ui.add_space(ds::SPACE_XS);
-
-            if state.routes.is_empty() {
-                ui.label(ds::label_muted(
-                    "No routes yet. Use the Route tool to string stations together.",
-                ));
-                return;
-            }
-
-            // Selected route may have been deleted server-side (by this
-            // panel's own Delete button, or another client in a future
-            // multiplayer mode) - drop a stale selection rather than
-            // showing an editor for a route that no longer exists.
-            if let Some(selected) = panel.selected {
-                if !state.routes.iter().any(|r| r.id == selected) {
-                    panel.selected = None;
-                    panel.edit_for = None;
-                }
-            }
-
-            for (idx, route) in state.routes.iter().enumerate() {
-                let is_selected = panel.selected == Some(route.id);
-                ui.horizontal(|ui| {
-                    let (swatch_rect, _) =
-                        ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                    ui.painter().rect_filled(
-                        swatch_rect,
-                        egui::CornerRadius::same(2),
-                        vivid_route_color(idx),
-                    );
-
-                    let display_name = if route.name.trim().is_empty() {
-                        format!("Line {}", idx + 1)
-                    } else {
-                        route.name.clone()
-                    };
-                    let resp = ui.selectable_label(is_selected, display_name);
-                    hover_tick(&resp, &mut hovered, &mut sfx);
-                    if resp.clicked() {
-                        panel.selected = if is_selected { None } else { Some(route.id) };
-                        sfx.write(PlaySfx(Sfx::Confirm));
-                    }
-
-                    // Sim-depth (PR #31): a live-crowding chip on the right of
-                    // the row, colored green -> amber -> red. Only shown when
-                    // the sidecar sends `liveCrowding` (old ones omit it).
-                    if let Some(crowding) = route.live_crowding {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let (dot, dot_resp) = ui
-                                .allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                            ui.painter().rect_filled(
-                                dot,
-                                egui::CornerRadius::same(5),
-                                ds::crowding_color(crowding),
-                            );
-                            dot_resp.on_hover_text(format!(
-                                "Live crowding {:.0}%",
-                                crowding.clamp(0.0, 1.0) * 100.0
-                            ));
-                        });
-                    }
-                });
-                ui.label(ds::label_small(format!(
-                    "{} station(s), {} vehicle(s), mode {}",
-                    route.station_ids.len(),
-                    route.vehicle_count,
-                    mode_word(route.mode),
-                )));
-
-                if is_selected {
-                    route_editor(
-                        ui,
-                        route,
-                        &state.stations,
-                        vivid_route_color(idx),
-                        &mut panel,
-                        &mut bus,
-                        link.as_deref(),
-                        &mut hovered,
-                        &mut sfx,
-                    );
-                }
-
-                ui.add_space(ds::SPACE_XXS);
-                ui.separator();
-                ui.add_space(ds::SPACE_XXS);
-            }
-        });
-
-    Ok(())
-}
-
-/// Station labels for [`ds::route_line_diagram`], in the route's own
-/// station order: each station's own `name` when it has one (the normal
-/// case - `UiStation` does carry a `name` field, see `mf-protocol`'s
-/// `types.rs`), else a positional "S<n>" fallback (1-based, matching the
-/// existing "Line {n}" 1-based convention a few lines up) for the data-gap
-/// case of a blank name. Looking a station up by id rather than assuming
-/// `stations` iterates in route order - `state.stations` and a route's
-/// `station_ids` are two independently-ordered lists over the wire.
-fn route_station_labels(route: &UiRoute, stations: &[UiStation]) -> Vec<String> {
-    let by_id: std::collections::HashMap<i64, &UiStation> =
-        stations.iter().map(|s| (s.id, s)).collect();
-    route
-        .station_ids
-        .iter()
-        .enumerate()
-        .map(|(i, id)| match by_id.get(id) {
-            Some(st) if !st.name.trim().is_empty() => st.name.clone(),
-            _ => format!("S{}", i + 1),
-        })
-        .collect()
-}
-
-/// The expanded per-route editor drawn under a selected route's row:
-/// vehicle count stepper, fare drag, name field, delete (2-click confirm).
-/// Every mutating control here submits through `CommandBus` with
-/// `CmdMeta::EditRoute { route_id }` - including the Delete button, since
-/// the given `CmdMeta` enum has no dedicated delete variant and
-/// `EditRoute { route_id }` is the closest tag that still carries which
-/// route the feedback is about.
-#[allow(clippy::too_many_arguments)]
-fn route_editor(
-    ui: &mut egui::Ui,
-    route: &UiRoute,
-    stations: &[UiStation],
-    color: egui::Color32,
-    panel: &mut RoutePanelState,
-    bus: &mut CommandBus,
-    link: Option<&SimLink>,
-    hovered: &mut Option<egui::Id>,
-    sfx: &mut EventWriter<PlaySfx>,
-) {
-    if panel.edit_for != Some(route.id) {
-        panel.name_edit = route.name.clone();
-        panel.fare_edit = route.fare;
-        panel.edit_for = Some(route.id);
-        panel.delete_armed = None;
-    }
-
-    ui.add_space(ds::SPACE_XXS);
-
-    // Line diagram (ship-plan #25, v0.3 map mode wave): the route's color,
-    // its stations in order, and its per-segment load, so a glance shows
-    // both the line's shape and where it's crowded without leaving this
-    // panel for the 3D scene.
-    let labels = route_station_labels(route, stations);
-    ds::route_line_diagram(ui, color, &labels, &route.segment_loads);
-    ui.add_space(ds::SPACE_XXS);
-
-    // Sim-depth (PR #31): this route's daily farebox vs operating cost, plus
-    // a live-crowding readout. Each row is drawn only when the sidecar sends
-    // the matching field, so an old sidecar (which omits all three) shows the
-    // editor exactly as before.
-    if let Some(crowding) = route.live_crowding {
-        ui.horizontal(|ui| {
-            ui.label(ds::label_muted("Live crowding"));
-            let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-            ui.painter().rect_filled(
-                dot,
-                egui::CornerRadius::same(5),
-                ds::crowding_color(crowding),
-            );
-            ui.label(
-                ds::value_strong(format!("{:.0}%", crowding.clamp(0.0, 1.0) * 100.0))
-                    .color(ds::crowding_color(crowding)),
-            );
-        });
-    }
-    if let Some(farebox) = route.farebox {
-        ui.horizontal(|ui| {
-            ui.label(ds::label_muted("Farebox / day"));
-            ui.label(ds::value_strong(format_cash(farebox)).color(ds::GOOD));
-        });
-    }
-    if let Some(cost) = route.operating_cost {
-        ui.horizontal(|ui| {
-            ui.label(ds::label_muted("Operating cost / day"));
-            ui.label(ds::value_strong(format_cash(cost)).color(ds::BAD));
-        });
-    }
-    // Net line only when BOTH numbers are present, so it isn't computed off a
-    // half-populated pair.
-    if let (Some(farebox), Some(cost)) = (route.farebox, route.operating_cost) {
-        let net = farebox - cost;
-        let good = net >= 0.0;
-        let prefix = if good { "+" } else { "-" };
-        ui.horizontal(|ui| {
-            ui.label(ds::label_muted("Net / day"));
-            ui.label(
-                ds::value_strong(format!("{prefix}{}", format_cash(net.abs()))).color(if good {
-                    ds::GOOD
-                } else {
-                    ds::BAD
-                }),
-            );
-        });
-    }
-    ui.add_space(ds::SPACE_XXS);
-
-    ui.horizontal(|ui| {
-        ui.label(ds::label_muted("Vehicles"));
-        let minus = ui.small_button("-");
-        hover_tick(&minus, hovered, sfx);
-        if minus.clicked() && route.vehicle_count > 0 {
-            submit_edit(
-                bus,
-                link,
-                route.id,
-                EditFields {
-                    vehicle_count: Some(route.vehicle_count - 1),
-                    ..Default::default()
-                },
-            );
-        }
-        ui.label(ds::value_strong(route.vehicle_count.to_string()));
-        let plus = ui.small_button("+");
-        hover_tick(&plus, hovered, sfx);
-        if plus.clicked() {
-            submit_edit(
-                bus,
-                link,
-                route.id,
-                EditFields {
-                    vehicle_count: Some(route.vehicle_count + 1),
-                    ..Default::default()
-                },
-            );
-        }
-    });
-
-    ui.horizontal(|ui| {
-        ui.label(ds::label_muted("Fare"));
-        let resp = ui.add(
-            egui::DragValue::new(&mut panel.fare_edit)
-                .range(0.0..=50.0)
-                .speed(0.02)
-                .prefix("$")
-                .fixed_decimals(2),
-        );
-        if resp.drag_stopped() || (resp.lost_focus() && !resp.dragged()) {
-            submit_edit(
-                bus,
-                link,
-                route.id,
-                EditFields {
-                    fare: Some(panel.fare_edit),
-                    ..Default::default()
-                },
-            );
-        }
-        ui.label(ds::label_small(format!("now {}", format_fare(route.fare))));
-    });
-
-    ui.horizontal(|ui| {
-        ui.label(ds::label_muted("Name"));
-        let resp = ui.add(egui::TextEdit::singleline(&mut panel.name_edit).desired_width(140.0));
-        if resp.lost_focus() {
-            let trimmed = panel.name_edit.trim();
-            if !trimmed.is_empty() && trimmed != route.name {
-                submit_edit(
-                    bus,
-                    link,
-                    route.id,
-                    EditFields {
-                        name: Some(trimmed.to_string()),
-                        ..Default::default()
-                    },
-                );
-            }
-        }
-    });
-
-    ui.add_space(ds::SPACE_XXS);
-    let armed = panel.delete_armed == Some(route.id);
-    let delete_resp = ds::button(
-        ui,
-        if armed { "Confirm delete" } else { "Delete" },
-        if armed {
-            ds::ButtonKind::Danger
-        } else {
-            ds::ButtonKind::Ghost
-        },
-    );
-    hover_tick(&delete_resp, hovered, sfx);
-    if delete_resp.clicked() {
-        if armed {
-            if let Some(link) = link {
-                bus.submit(
-                    link,
-                    Command::DeleteRoute { route_id: route.id },
-                    CmdMeta::EditRoute { route_id: route.id },
-                );
-            }
-            panel.delete_armed = None;
-            panel.selected = None;
-            panel.edit_for = None;
-        } else {
-            panel.delete_armed = Some(route.id);
-        }
-    }
-}
-
-/// The subset of `Command::EditRoute`'s optional fields the route panel
-/// can touch, defaulting every field to "leave unchanged" so each control
-/// only sets the one field it owns.
-#[derive(Default)]
-struct EditFields {
-    fare: Option<f64>,
-    vehicle_count: Option<u32>,
-    name: Option<String>,
-}
-
-fn submit_edit(bus: &mut CommandBus, link: Option<&SimLink>, route_id: i64, fields: EditFields) {
-    let Some(link) = link else { return };
-    bus.submit(
-        link,
-        Command::EditRoute {
-            route_id,
-            headway_seconds: None,
-            fare: fields.fare,
-            vehicle_count: fields.vehicle_count,
-            name: fields.name,
-            color: None,
-        },
-        CmdMeta::EditRoute { route_id },
-    );
 }
 
 // ---------------------------------------------------------------------
@@ -867,12 +449,10 @@ pub struct MfBuildUiPlugin;
 
 impl Plugin for MfBuildUiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<RoutePanelState>()
-            .add_systems(Update, command_feedback_listener_system)
+        app.add_systems(Update, command_feedback_listener_system)
             .add_systems(
                 EguiPrimaryContextPass,
-                (build_toolbar_system, route_panel_system)
-                    .chain()
+                build_toolbar_system
                     .run_if(in_state(AppState::InGame))
                     .run_if(crate::egui_idle::egui_content_active)
                     .run_if(|| !crate::design_system::hud_hidden()),
@@ -904,19 +484,6 @@ mod tests {
     }
 
     #[test]
-    fn format_fare_shows_two_decimals() {
-        assert_eq!(format_fare(1.5), "$1.50");
-        assert_eq!(format_fare(0.0), "$0.00");
-        assert_eq!(format_fare(-3.0), "$0.00");
-    }
-
-    #[test]
-    fn vivid_route_color_wraps_past_eight() {
-        assert_eq!(vivid_route_color(0), vivid_route_color(8));
-        assert_eq!(vivid_route_color(1), vivid_route_color(9));
-    }
-
-    #[test]
     fn mode_word_has_no_dashes() {
         for mode in [
             TransitMode::Bus,
@@ -926,95 +493,5 @@ mod tests {
         ] {
             assert!(!mode_word(mode).contains(['-', '\u{2013}', '\u{2014}']));
         }
-    }
-
-    // --- route_station_labels ---------------------------------------------
-
-    fn test_station(id: i64, name: &str) -> UiStation {
-        UiStation {
-            id,
-            name: name.to_string(),
-            x: 0.0,
-            y: 0.0,
-            mode: TransitMode::Bus,
-            level: 0,
-            ridership: 0.0,
-            alightings: 0.0,
-        }
-    }
-
-    fn test_route(station_ids: Vec<i64>) -> UiRoute {
-        UiRoute {
-            id: 1,
-            name: "Test".to_string(),
-            color: "#000000".to_string(),
-            mode: TransitMode::Bus,
-            station_ids,
-            headway_seconds: 300.0,
-            fare: 2.0,
-            vehicle_count: 1,
-            daily_ridership: 0.0,
-            daily_revenue: 0.0,
-            length_meters: 0.0,
-            capacity: 0.0,
-            load: 0.0,
-            crowding: 0.0,
-            segment_loads: vec![],
-            live_crowding: None,
-            operating_cost: None,
-            farebox: None,
-        }
-    }
-
-    #[test]
-    fn route_station_labels_uses_station_name_when_present() {
-        let stations = vec![test_station(10, "Union Sq"), test_station(20, "Park St")];
-        let route = test_route(vec![10, 20]);
-        assert_eq!(
-            route_station_labels(&route, &stations),
-            vec!["Union Sq".to_string(), "Park St".to_string()]
-        );
-    }
-
-    #[test]
-    fn route_station_labels_falls_back_to_positional_when_name_blank() {
-        let stations = vec![test_station(10, ""), test_station(20, "  ")];
-        let route = test_route(vec![10, 20]);
-        assert_eq!(
-            route_station_labels(&route, &stations),
-            vec!["S1".to_string(), "S2".to_string()]
-        );
-    }
-
-    #[test]
-    fn route_station_labels_falls_back_when_station_id_is_unknown() {
-        // Route references a station id not present in `stations` (e.g. a
-        // stale/racing update) - must not panic or drop the slot, just fall
-        // back to the positional label for that one entry.
-        let stations = vec![test_station(10, "Union Sq")];
-        let route = test_route(vec![10, 999]);
-        assert_eq!(
-            route_station_labels(&route, &stations),
-            vec!["Union Sq".to_string(), "S2".to_string()]
-        );
-    }
-
-    #[test]
-    fn route_station_labels_looks_up_by_id_not_list_order() {
-        // `stations` given in the OPPOSITE order from the route's
-        // `station_ids` - labels must still follow the route's order, i.e.
-        // this is a real id lookup, not a zip-by-index shortcut.
-        let stations = vec![test_station(20, "Park St"), test_station(10, "Union Sq")];
-        let route = test_route(vec![10, 20]);
-        assert_eq!(
-            route_station_labels(&route, &stations),
-            vec!["Union Sq".to_string(), "Park St".to_string()]
-        );
-    }
-
-    #[test]
-    fn route_station_labels_empty_route_is_empty() {
-        let route = test_route(vec![]);
-        assert!(route_station_labels(&route, &[]).is_empty());
     }
 }
