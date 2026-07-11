@@ -24,10 +24,6 @@ use mf_state::{LatestUi, QualityTier, Theme};
 use crate::palette;
 use crate::photomode::PhotoModeRender;
 
-/// Mirrors `metroforge/src/core/constants.ts`'s `TICKS_PER_DAY` (spec: "each
-/// tick is a 50ms host step; `TICKS_PER_DAY = 1200`").
-const TICKS_PER_DAY: u64 = 1200;
-
 /// Exponential chase rate for displayed hour → sim target. Settles ~95% in
 /// ~0.35s, bridging the ~0.5s UiState gap without lagging dusk/dawn.
 const HOUR_SMOOTH_RATE: f32 = 8.5;
@@ -187,7 +183,11 @@ fn compute_day_night_system(
         state.target_night_factor = 0.0;
         return;
     };
-    let hour = ((u.tick % TICKS_PER_DAY) as f32 / TICKS_PER_DAY as f32) * 24.0;
+    // Prefer the sidecar's sim `hourOfDay` (sim-depth, PR #31) so the sky
+    // rig and the HUD clock (which reads the same field via
+    // `UiState::display_hour`) stay in lockstep; fall back to the
+    // tick-derived clock for old sidecars that omit it.
+    let hour = u.display_hour() as f32;
     let elevation = (((hour - 6.0) / 12.0) * PI).sin();
     state.target_hour = hour;
     state.target_night_factor = (-elevation * 1.2).clamp(0.0, 1.0);

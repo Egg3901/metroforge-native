@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "meta": {
+    "city_label": "cleveland",
+    "day": 25,
+    "cash": 750000.0,
+    "saved_at_epoch_secs": 1700100000,
+    "network_size": 8,
+    "playtime_secs": 1200
+  },
+  "sim": {
+    "version": 2,
+    "bankruptDays": 0,
+    "state": {
+      "tick": 100
+    }
+  }
+}

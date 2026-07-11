@@ -13,6 +13,13 @@ sibling `metroforge` repo and reach releases via the pinned sidecar SHA in
 - Photo / cinematic mode: P toggles free-fly camera (HUD hidden, local
   time-of-day scrubber, FOV, optional letterbox), F12 saves a PNG to the
   Pictures folder, and 2–4 keyframe Catmull-Rom paths for trailer shots
+- Windows desktop polish: DPI-aware windowing, F11/Alt+Enter borderless fullscreen
+  (persisted), remember size/position, pause rendering when minimized/alt-tabbed,
+  single-instance focus-existing-window guard, embedded exe icon + VERSIONINFO,
+  crash reports under the OS local data dir
+- Hardened save/load: versioned wrapper schema with migration registry,
+  atomic writes + backup recovery, autosave ring of 3 (interval in
+  Settings), and a title-screen Load Game browser with per-slot metadata
 - Main menu overhaul and app icon (#47)
 - Release installers: Windows NSIS setup.exe, macOS .dmg, Linux tarball with
   desktop integration (#52)
@@ -20,6 +27,8 @@ sibling `metroforge` repo and reach releases via the pinned sidecar SHA in
 ### Fixed
 - Sidecar: NYC terrain water-bleed and missing NJ/Brooklyn road coverage
   (metroforge#29)
+- README SmartScreen / Gatekeeper notes now match unsigned Windows and ad-hoc
+  signed macOS release reality
 
 ## [0.4.2-alpha] - 2026-07-10
 

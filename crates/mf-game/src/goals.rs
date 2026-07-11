@@ -156,8 +156,7 @@ struct GoalsFile {
 }
 
 fn goals_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("com", "ahousedivided", "MetroForge")
-        .map(|dirs| dirs.config_dir().join("goals.toml"))
+    crate::paths::goals_toml_path()
 }
 
 /// Per-city goal completion, persisted to `goals.toml` next to
@@ -387,6 +386,12 @@ mod tests {
             max_day: None,
             era_label: None,
             command_count: 0,
+            hour_of_day: None,
+            demand_factor: None,
+            farebox_recovery: None,
+            lifetime: None,
+            districts: Vec::new(),
+            overcrowded_routes: Vec::new(),
         }
     }
 

@@ -10,27 +10,32 @@ mod camera;
 mod campaign;
 mod command_bus;
 mod config;
+mod crash_report;
 mod design_system;
 mod goals;
 mod hud;
 mod input;
 mod map_mode;
+mod minimap;
 mod overlays;
 mod panels;
+mod paths;
 mod photomode;
 mod promo;
 mod quality_boot;
 mod report_ui;
 mod reveal_input;
 mod saves;
+mod single_instance;
 mod state;
 mod theme_boot;
 mod tools;
 mod tutorial;
 mod verify;
+mod window_mgmt;
 
 use bevy::prelude::*;
-use bevy::window::{PresentMode, Window, WindowPlugin};
+use bevy::window::WindowPlugin;
 use mf_net::MfNetPlugin;
 use mf_render::MfRenderPlugin;
 use mf_state::MfStatePlugin;
@@ -45,29 +50,28 @@ const SKY_DAY: Color = Color::srgb(
 );
 
 fn main() {
+    // Before anything that might spawn the sidecar: a second Windows launch
+    // focuses the existing window and exits instead of starting another sim.
+    if !single_instance::ensure_single_instance() {
+        return;
+    }
+    crash_report::install_panic_hook();
+
+    // Load config before the window is created so size/position/fullscreen
+    // apply on the first frame (boot_system used to load it too late).
+    let config = config::MfConfig::load();
+    let window = window_mgmt::window_from_config(&config);
+
     let mut app = App::new();
     app.insert_resource(ClearColor(SKY_DAY))
-        .add_plugins(
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "MetroForge".to_string(),
-                    // MF_RESOLUTION=WxH overrides for promo/screenshot runs.
-                    resolution: std::env::var("MF_RESOLUTION")
-                        .ok()
-                        .and_then(|v| {
-                            let (w, h) = v.split_once('x')?;
-                            Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))
-                        })
-                        .unwrap_or((1440.0, 900.0))
-                        .into(),
-                    present_mode: PresentMode::AutoVsync,
-                    ..default()
-                }),
-                ..default()
-            }),
-        )
+        .insert_resource(config)
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(window),
+            ..default()
+        }))
         .add_plugins((MfNetPlugin, MfStatePlugin, MfRenderPlugin))
         .add_plugins(app_icon::MfAppIconPlugin)
+        .add_plugins(window_mgmt::MfWindowPlugin)
         .add_plugins((
             state::MfGameStatePlugin,
             camera::MfCameraPlugin,
@@ -87,6 +91,7 @@ fn main() {
         .add_plugins((
             overlays::MfOverlaysPlugin,
             map_mode::MfMapModePlugin,
+            minimap::MfMinimapPlugin,
             panels::MfPanelsPlugin,
             campaign::MfCampaignPlugin,
             report_ui::MfReportUiPlugin,

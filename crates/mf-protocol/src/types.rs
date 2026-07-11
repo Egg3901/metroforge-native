@@ -195,6 +195,16 @@ pub struct UiRoute {
     pub load: f64,
     pub crowding: f64,
     pub segment_loads: Vec<f64>,
+    /// Sim-depth (PR #31): live 0..1 crowding for this route on the current
+    /// tick. `default` keeps old sidecars (which omit it) parseable.
+    #[serde(default)]
+    pub live_crowding: Option<f64>,
+    /// Sim-depth (PR #31): this route's share of daily operating cost.
+    #[serde(default)]
+    pub operating_cost: Option<f64>,
+    /// Sim-depth (PR #31): this route's daily farebox revenue.
+    #[serde(default)]
+    pub farebox: Option<f64>,
 }
 
 /// `DayLedger` — metroforge/src/core/types.ts:134-140
@@ -224,6 +234,19 @@ pub enum FailReason {
     Bankrupt,
     Approval,
     Time,
+}
+
+/// `UiDistrict` — sim-depth (PR #31). A catchment district with a centroid
+/// and population/jobs, used to label a station's catchment.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiDistrict {
+    pub id: i64,
+    pub name: String,
+    pub x: f64,
+    pub y: f64,
+    pub population: f64,
+    pub jobs: f64,
 }
 
 /// `UiState` — metroforge/src/host/protocol.ts:46-78. Sent at 2 Hz; the
@@ -260,6 +283,40 @@ pub struct UiState {
     #[serde(default)]
     pub era_label: Option<String>,
     pub command_count: u32,
+    /// Sim-depth (PR #31): hour of the simulated day in `0.0..24.0`. When
+    /// present, the client prefers it over its tick-driven day/night clock.
+    #[serde(default)]
+    pub hour_of_day: Option<f64>,
+    /// Sim-depth (PR #31): current demand multiplier (peak/off-peak).
+    #[serde(default)]
+    pub demand_factor: Option<f64>,
+    /// Sim-depth (PR #31): farebox recovery ratio (fares / operating cost).
+    #[serde(default)]
+    pub farebox_recovery: Option<f64>,
+    /// Sim-depth (PR #31): cumulative lifetime earnings across the game.
+    #[serde(default)]
+    pub lifetime: Option<f64>,
+    /// Sim-depth (PR #31): catchment districts.
+    #[serde(default)]
+    pub districts: Vec<UiDistrict>,
+    /// Sim-depth (PR #31): ids of routes flagged as overcrowded.
+    #[serde(default)]
+    pub overcrowded_routes: Vec<i64>,
+}
+
+impl UiState {
+    /// Hour of the simulated day in `0.0..24.0`. Prefers the sidecar's
+    /// sim-depth `hour_of_day` (PR #31) when present and finite; otherwise
+    /// falls back to the tick-derived clock (`TICKS_PER_DAY = 1200`, mirroring
+    /// `metroforge/src/core/constants.ts`), so old sidecars keep a sensible
+    /// clock and the day/night rig stays consistent with the HUD.
+    pub fn display_hour(&self) -> f64 {
+        const TICKS_PER_DAY: u64 = 1200;
+        match self.hour_of_day {
+            Some(h) if h.is_finite() => h.rem_euclid(24.0),
+            _ => (self.tick % TICKS_PER_DAY) as f64 / TICKS_PER_DAY as f64 * 24.0,
+        }
+    }
 }
 
 /// `DemandPayload.lines[]` — metroforge/src/host/protocol.ts:142-145
