@@ -11,6 +11,7 @@ mod campaign;
 mod command_bus;
 mod config;
 mod design_system;
+mod egui_idle;
 mod goals;
 mod hud;
 mod input;
@@ -95,13 +96,14 @@ fn main() {
             tutorial::MfTutorialPlugin,
             goals::MfGoalsPlugin,
             perf::MfPerfPlugin,
+            egui_idle::MfEguiIdlePlugin,
         ));
     // MF_PERF / MF_PERF_LOG: Bevy diagnostic plugins + spans. MF_PERF also
     // drives the 60s sample-then-exit harness in `perf.rs`.
     if std::env::var_os("MF_PERF").is_some() || std::env::var_os("MF_PERF_LOG").is_some() {
         app.add_plugins((
             bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
-            bevy::diagnostic::EntityCountDiagnosticsPlugin::default(),
+            bevy::diagnostic::EntityCountDiagnosticsPlugin,
             bevy::diagnostic::LogDiagnosticsPlugin::default(),
         ));
         // Keep a longer frame-time history so MF_PERF percentiles are stable.

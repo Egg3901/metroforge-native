@@ -71,10 +71,8 @@ impl<'a> PerfSpan<'a> {
 
 impl Drop for PerfSpan<'_> {
     fn drop(&mut self) {
-        self.target.fetch_add(
-            self.start.elapsed().as_micros() as u64,
-            Ordering::Relaxed,
-        );
+        self.target
+            .fetch_add(self.start.elapsed().as_micros() as u64, Ordering::Relaxed);
     }
 }
 

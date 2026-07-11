@@ -220,11 +220,6 @@ fn tree_draw_distance_system(
         } else {
             Visibility::Hidden
         };
-        if *vis == next {
-            counters.visibility_skips.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        } else {
-            counters.visibility_mutations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        *vis = next;
+        crate::perf::set_visibility_if_changed(&mut vis, next, Some(&counters));
     }
 }

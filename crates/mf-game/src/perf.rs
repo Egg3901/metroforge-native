@@ -54,8 +54,10 @@ impl Plugin for MfPerfPlugin {
         if std::env::var_os("MF_PERF").is_none() {
             return;
         }
-        app.init_resource::<PerfHarness>()
-            .add_systems(Update, perf_harness_system.run_if(in_state(AppState::InGame)));
+        app.init_resource::<PerfHarness>().add_systems(
+            Update,
+            perf_harness_system.run_if(in_state(AppState::InGame)),
+        );
     }
 }
 
@@ -280,16 +282,38 @@ fn perf_harness_system(
             }
             harness.layer_counts = layers;
 
-            harness.system_us.building_draw_distance += counters.building_draw_distance_us.load(std::sync::atomic::Ordering::Relaxed);
-            harness.system_us.tree_draw_distance += counters.tree_draw_distance_us.load(std::sync::atomic::Ordering::Relaxed);
-            harness.system_us.street_lamp_visibility += counters.street_lamp_visibility_us.load(std::sync::atomic::Ordering::Relaxed);
-            harness.system_us.road_lod += counters.road_lod_us.load(std::sync::atomic::Ordering::Relaxed);
-            harness.system_us.transit_update += counters.transit_update_us.load(std::sync::atomic::Ordering::Relaxed);
-            harness.system_us.buildings_rebuild += counters.buildings_rebuild_us.load(std::sync::atomic::Ordering::Relaxed);
-            harness.system_us.roads_rebuild += counters.roads_rebuild_us.load(std::sync::atomic::Ordering::Relaxed);
+            harness.system_us.building_draw_distance += counters
+                .building_draw_distance_us
+                .load(std::sync::atomic::Ordering::Relaxed);
+            harness.system_us.tree_draw_distance += counters
+                .tree_draw_distance_us
+                .load(std::sync::atomic::Ordering::Relaxed);
+            harness.system_us.street_lamp_visibility += counters
+                .street_lamp_visibility_us
+                .load(std::sync::atomic::Ordering::Relaxed);
+            harness.system_us.road_lod += counters
+                .road_lod_us
+                .load(std::sync::atomic::Ordering::Relaxed);
+            harness.system_us.transit_update += counters
+                .transit_update_us
+                .load(std::sync::atomic::Ordering::Relaxed);
+            harness.system_us.buildings_rebuild += counters
+                .buildings_rebuild_us
+                .load(std::sync::atomic::Ordering::Relaxed);
+            harness.system_us.roads_rebuild += counters
+                .roads_rebuild_us
+                .load(std::sync::atomic::Ordering::Relaxed);
             harness.system_us.egui_pass += egui_timer.0;
-            harness.system_us.visibility_mutations += u64::from(counters.visibility_mutations.load(std::sync::atomic::Ordering::Relaxed));
-            harness.system_us.visibility_skips += u64::from(counters.visibility_skips.load(std::sync::atomic::Ordering::Relaxed));
+            harness.system_us.visibility_mutations += u64::from(
+                counters
+                    .visibility_mutations
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            );
+            harness.system_us.visibility_skips += u64::from(
+                counters
+                    .visibility_skips
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            );
             harness.system_us.frames += 1;
             counters.reset();
             egui_timer.0 = 0;
@@ -328,9 +352,7 @@ fn finish_and_exit(
 
     bevy::log::info!("========== MF_PERF REPORT ==========");
     bevy::log::info!("samples={n} window={}s", harness.sample_secs);
-    bevy::log::info!(
-        "frame_ms: mean={ft_mean:.2} p50={ft_p50:.2} p95={ft_p95:.2} p99={ft_p99:.2}"
-    );
+    bevy::log::info!("frame_ms: mean={ft_mean:.2} p50={ft_p50:.2} p95={ft_p95:.2} p99={ft_p99:.2}");
     bevy::log::info!(
         "draw_calls(visible Mesh3d): mean={dc_mean:.0} p50={dc_p50:.0} p95={dc_p95:.0} p99={dc_p99:.0}"
     );
@@ -402,7 +424,10 @@ fn finish_and_exit(
     let mut failed = false;
     if std::env::var_os("MF_PERF_ASSERT").is_some() {
         let budget_ft = env_f64("MF_PERF_BUDGET_FRAME_MS_P95", DEFAULT_BUDGET_FRAME_MS_P95);
-        let budget_dc = env_f64("MF_PERF_BUDGET_DRAW_CALLS_P95", DEFAULT_BUDGET_DRAW_CALLS_P95);
+        let budget_dc = env_f64(
+            "MF_PERF_BUDGET_DRAW_CALLS_P95",
+            DEFAULT_BUDGET_DRAW_CALLS_P95,
+        );
         if ft_p95 > budget_ft {
             bevy::log::error!(
                 "MF_PERF budget FAIL: frame_ms p95={ft_p95:.2} > budget={budget_ft:.2}"

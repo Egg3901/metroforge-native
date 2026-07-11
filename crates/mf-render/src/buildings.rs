@@ -35,7 +35,9 @@
 //! its own, wider range — see `FOOTPRINT_MIN_HEIGHT`/`FOOTPRINT_MAX_HEIGHT`)
 //! for buildings the sidecar didn't have a real height for (`height_dm == 0`).
 
+use bevy::math::Vec3A;
 use bevy::prelude::*;
+use bevy::render::primitives::Aabb;
 
 use mf_protocol::BuildingFootprint;
 use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, RevealState, Theme};
@@ -757,12 +759,22 @@ fn build_buildings_system(
             -half + (cz as f32 + 0.5) * chunk_size,
         );
         let mesh = meshes.add(buf.build());
+        // Chunk-aligned AABB (not a full vertex scan): frustum-cull friendly
+        // and O(1) at spawn. Y half-extent covers water-level basements up
+        // through FOOTPRINT_MAX_HEIGHT skyscrapers so culling stays correct
+        // without walking millions of verts on NYC.
+        let half_xz = chunk_size * 0.5;
+        let aabb = Aabb {
+            center: Vec3A::new(center.x, 200.0, center.y),
+            half_extents: Vec3A::new(half_xz, 400.0, half_xz),
+        };
         let entity = commands
             .spawn((
                 Mesh3d(mesh),
                 MeshMaterial3d(material.clone()),
                 Transform::IDENTITY,
                 Visibility::default(),
+                aabb,
                 BuildingChunk { center },
                 Name::new(format!("buildings-chunk-{cx}-{cz}")),
             ))
@@ -799,12 +811,7 @@ fn draw_distance_system(
         } else {
             Visibility::Hidden
         };
-        if *vis == next {
-            counters.visibility_skips.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        } else {
-            counters.visibility_mutations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        *vis = next;
+        crate::perf::set_visibility_if_changed(&mut vis, next, Some(&counters));
     }
 }
 

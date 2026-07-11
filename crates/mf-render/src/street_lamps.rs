@@ -214,8 +214,11 @@ fn street_lamp_visibility_system(
     let Ok(cam) = cameras.single() else {
         for (entity, _) in &chunks {
             if let Ok(mut vis) = visibility.get_mut(entity) {
-                *vis = Visibility::Hidden;
-                counters.visibility_mutations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                crate::perf::set_visibility_if_changed(
+                    &mut vis,
+                    Visibility::Hidden,
+                    Some(&counters),
+                );
             }
         }
         return;
@@ -242,11 +245,6 @@ fn street_lamp_visibility_system(
         // Baseline instrumentation: count redundant writes, still always assign
         // so change-detection cost is visible in MF_PERF before the transition-
         // only fix lands.
-        if *vis == next {
-            counters.visibility_skips.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        } else {
-            counters.visibility_mutations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        *vis = next;
+        crate::perf::set_visibility_if_changed(&mut vis, next, Some(&counters));
     }
 }

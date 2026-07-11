@@ -91,8 +91,12 @@ impl Plugin for MfHudPlugin {
                     connecting_hud_system.run_if(in_state(AppState::ConnectingSim)),
                     main_menu_hud_system.run_if(in_state(AppState::MainMenu)),
                     loading_hud_system.run_if(in_state(AppState::Loading)),
-                    in_game_hud_system.run_if(in_state(AppState::InGame)),
-                    pause_overlay_system.run_if(in_state(AppState::InGame)),
+                    in_game_hud_system
+                        .run_if(in_state(AppState::InGame))
+                        .run_if(crate::egui_idle::egui_content_active),
+                    pause_overlay_system
+                        .run_if(in_state(AppState::InGame))
+                        .run_if(crate::egui_idle::egui_content_active),
                     fatal_banner_system,
                 )
                     .chain()
