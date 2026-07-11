@@ -293,7 +293,14 @@ fn camera_input_system(
         // Screen-space drag -> world-space (rotated by yaw so "up" on screen
         // moves along the camera's forward-ground axis).
         let right = Vec2::new(yaw_cos, -yaw_sin);
-        let fwd = Vec2::new(yaw_sin, yaw_cos);
+        // Screen-forward (top of screen / "into the scene") is world -Z: the
+        // camera sits at +Z (see camera_transform_system's offset) and looks
+        // toward -Z, so "up on screen" is the -Z ground direction. Using
+        // +(sin,cos) here pointed forward at the CAMERA, which inverted both
+        // W/S (and edge-pan) and the vertical axis of left-drag pan relative
+        // to its already-correct horizontal axis. Negate so W = pan up/into
+        // the scene and dragging moves the map with the cursor on both axes.
+        let fwd = Vec2::new(-yaw_sin, -yaw_cos);
         let delta_world = -right * motion_delta.x * pan_scale + fwd * motion_delta.y * pan_scale;
         rig.target += delta_world;
         // Active drag: 1:1, same reasoning as orbit above.
@@ -355,7 +362,14 @@ fn camera_input_system(
         let yaw_cos = rig.yaw.cos();
         let yaw_sin = rig.yaw.sin();
         let right = Vec2::new(yaw_cos, -yaw_sin);
-        let fwd = Vec2::new(yaw_sin, yaw_cos);
+        // Screen-forward (top of screen / "into the scene") is world -Z: the
+        // camera sits at +Z (see camera_transform_system's offset) and looks
+        // toward -Z, so "up on screen" is the -Z ground direction. Using
+        // +(sin,cos) here pointed forward at the CAMERA, which inverted both
+        // W/S (and edge-pan) and the vertical axis of left-drag pan relative
+        // to its already-correct horizontal axis. Negate so W = pan up/into
+        // the scene and dragging moves the map with the cursor on both axes.
+        let fwd = Vec2::new(-yaw_sin, -yaw_cos);
         // WASD/edge pan writes the GOAL only; camera_smoothing_system eases
         // the value toward it, so held-key panning still ramps smoothly
         // frame to frame instead of jumping by a raw per-frame delta.
