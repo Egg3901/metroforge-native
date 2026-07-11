@@ -185,7 +185,8 @@ fn transit_update_system(
 ) {
     // Theme/quality changes recolor stations, tracks, and stripes — force a
     // structural rebuild even when UiState is unchanged (issue #32 gap).
-    if !ui.is_changed() && !theme.is_changed() && !quality.is_changed() {
+    // City arrival updates world_size for viaduct pier chunking.
+    if !ui.is_changed() && !theme.is_changed() && !quality.is_changed() && !city.is_changed() {
         return;
     }
     let Some(u) = &ui.0 else {
