@@ -418,11 +418,13 @@ fn apply_attract_transform(rig: &CameraRig, height_at: &HeightAt, transform: &mu
 /// (`CurrentCity.masks_complete()`): samples the vantage path (or a static
 /// Potato frame), points at `BuildingsDenseCenter`, and eases `CameraRig` +
 /// the actual `Transform` toward that framing every frame.
+#[allow(clippy::too_many_arguments)]
 fn attract_orbit_system(
     time: Res<Time>,
     city: Res<CurrentCity>,
     dense_center: Res<BuildingsDenseCenter>,
     height_at: Res<HeightAt>,
+    config: Res<crate::config::MfConfig>,
     quality: Res<QualityTier>,
     mut cam: ResMut<AttractCameraState>,
     mut rigs: Query<(&mut CameraRig, &mut Transform)>,
@@ -446,6 +448,11 @@ fn attract_orbit_system(
         }
         cam.potato_framed = true;
         sample_attract_path(0.0, 0, dense_center.0, cap, false)
+    } else if config.reduce_motion {
+        // Reduce-motion (a11y): keep the framed diorama but freeze the path —
+        // sample the current phase without advancing it, so there is no
+        // continuous camera drift.
+        sample_attract_path(cam.phase_t, cam.index, dense_center.0, cap, true)
     } else {
         let (phase_t, index) = advance_attract_phase(cam.phase_t, cam.index, dt);
         cam.phase_t = phase_t;

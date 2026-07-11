@@ -5,9 +5,9 @@
 //! directly.
 //!
 //! Resources: [`CurrentCity`], [`LatestFields`], [`LatestUi`],
-//! [`LatestFrame`], [`QualityTier`], [`SubwayView`], [`HeightAt`],
-//! [`RevealState`], [`LatestDemand`], [`OverlayState`], [`RouteFocus`],
-//! [`WeatherEffects`], [`AttractLighting`].
+//! [`LatestFrame`], [`QualityTier`], [`Theme`], [`ColorblindMode`],
+//! [`SubwayView`], [`HeightAt`], [`RevealState`], [`LatestDemand`],
+//! [`OverlayState`], [`RouteFocus`], [`WeatherEffects`], [`AttractLighting`].
 //!
 //! Crate map and pipeline: `docs/ARCHITECTURE.md`.
 
@@ -17,6 +17,8 @@
 pub mod attract;
 /// Loaded city statics + masks + optional building footprints.
 pub mod city;
+/// Colorblind palette-remap mode (a11y Settings).
+pub mod colorblind;
 /// Latest unserved-demand payload from the sidecar.
 pub mod demand;
 /// Latest fields grid (terrain/population/jobs/…).
@@ -45,6 +47,7 @@ pub mod weather;
 
 pub use attract::AttractLighting;
 pub use city::CurrentCity;
+pub use colorblind::ColorblindMode;
 pub use demand::LatestDemand;
 pub use fields::LatestFields;
 pub use frame::LatestFrame;

@@ -27,11 +27,12 @@ use crate::state::{AppState, PendingInit};
 /// each get their own plain-language line rather than echoing the wire
 /// enum's name.
 fn verdict_heading(outcome: ScenarioOutcome) -> &'static str {
+    let s = crate::strings::current();
     match outcome {
-        ScenarioOutcome::Failed(FailReason::Bankrupt) => "Bankrupt",
-        ScenarioOutcome::Failed(FailReason::Approval) => "The city lost faith",
-        ScenarioOutcome::Failed(FailReason::Time) => "Time is up",
-        ScenarioOutcome::Finished => "Scenario complete",
+        ScenarioOutcome::Failed(FailReason::Bankrupt) => s.verdict_bankrupt,
+        ScenarioOutcome::Failed(FailReason::Approval) => s.verdict_lost_faith,
+        ScenarioOutcome::Failed(FailReason::Time) => s.verdict_time_up,
+        ScenarioOutcome::Finished => s.verdict_complete,
         // Not shown by `report_ui_system` (only Failed/Finished trigger the
         // overlay) - present so the match stays exhaustive rather than
         // needing a wildcard arm that could silently swallow a future
@@ -143,6 +144,7 @@ fn report_ui_system(
 
     ds::modal(ctx, egui::Id::new("report_modal"), fade, |ui| {
         ui.set_width(360.0);
+        let s = crate::strings::current();
         ui.vertical_centered(|ui| {
             ui.label(ds::heading(verdict_heading(*outcome)));
             ui.add_space(ds::SPACE_MD);
@@ -165,27 +167,23 @@ fn report_ui_system(
             thin_separator(ui);
             ui.add_space(ds::SPACE_XS);
 
-            key_number_row(ui, "Day", format!("{}", state.day));
-            key_number_row(ui, "Population served", format_thousands(state.population));
+            key_number_row(ui, s.day, format!("{}", state.day));
+            key_number_row(ui, s.population_served, format_thousands(state.population));
             key_number_row(
                 ui,
-                "Daily transit trips",
+                s.daily_transit_trips,
                 format_thousands(state.daily_transit_trips),
             );
-            key_number_row(ui, "Approval", format!("{:.0}%", state.approval));
-            key_number_row(ui, "Coverage", format!("{:.0}%", state.coverage * 100.0));
-            key_number_row(
-                ui,
-                "Net (last day)",
-                format_signed_cash(last_day_net(state)),
-            );
+            key_number_row(ui, s.approval, format!("{:.0}%", state.approval));
+            key_number_row(ui, s.coverage, format!("{:.0}%", state.coverage * 100.0));
+            key_number_row(ui, s.net_last_day, format_signed_cash(last_day_net(state)));
 
             ui.add_space(ds::SPACE_LG);
 
             if matches!(*outcome, ScenarioOutcome::Finished) {
                 let keep_playing = ds::button_sized(
                     ui,
-                    "Keep playing",
+                    s.keep_playing,
                     ds::ButtonKind::Primary,
                     Some(egui::vec2(220.0, 40.0)),
                 );
@@ -199,7 +197,7 @@ fn report_ui_system(
 
             let back_to_menu = ds::button_sized(
                 ui,
-                "Back to menu",
+                s.back_to_menu,
                 ds::ButtonKind::Ghost,
                 Some(egui::vec2(220.0, 40.0)),
             );

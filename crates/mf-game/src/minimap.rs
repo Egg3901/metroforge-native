@@ -241,8 +241,9 @@ fn minimap_ui_system(
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
 
+    let s = crate::strings::current();
     let mut open = config.minimap_open;
-    let response = egui::Window::new("Minimap")
+    let response = egui::Window::new(s.minimap)
         .id(egui::Id::new("hud_minimap"))
         .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -12.0))
         .collapsible(true)
@@ -251,7 +252,7 @@ fn minimap_ui_system(
         .default_open(true)
         .show(ctx, |ui| {
             let Some(static_city) = city.static_city.as_ref() else {
-                ui.label("No city loaded");
+                ui.label(s.no_city_loaded);
                 return;
             };
             let world_half = (static_city.world_size as f32 / 2.0).max(1.0);

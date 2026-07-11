@@ -214,6 +214,9 @@ fn boot_system(
     commands.insert_resource(mf_state::WeatherEffects {
         enabled: weather_enabled,
     });
+    // Replace MfStatePlugin's ColorblindMode::Off default with the persisted
+    // preference so palette remaps are correct before the first Settings open.
+    commands.insert_resource(config.colorblind);
 
     match SimLink::spawn_and_connect(None) {
         Ok(link) => {

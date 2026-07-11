@@ -38,6 +38,7 @@ mod sidecar_kill_test;
 mod single_instance;
 mod soak;
 mod state;
+mod strings;
 mod theme_boot;
 mod tools;
 mod tutorial;
