@@ -112,7 +112,7 @@ impl QualityTier {
                 // Dense-ish: shortest draw distance (3km) means the most
                 // pop-in to hide, so fog closes in early and finishes well
                 // inside the 3km cull.
-                fog: Some((1_200.0, 2_600.0)),
+                fog: Some((900.0, 2_600.0)),
                 atmosphere_enabled: false,
                 atmosphere_fog_steps: 0,
             },

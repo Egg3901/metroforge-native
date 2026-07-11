@@ -87,11 +87,18 @@ pub struct AttractState {
 /// something they consciously track the way they would the RTS camera's own
 /// orbit drag. A full revolution takes `TAU / ATTRACT_YAW_RATE` ≈ 209s.
 const ATTRACT_YAW_RATE: f32 = 0.03;
-/// Pitch goal: a clear elevated 3/4 view over the skyline (same convention
-/// as `verify.rs`'s `frame_elevated`, chosen independently here since that
-/// function is private to `verify.rs`).
-const ATTRACT_PITCH_GOAL: f32 = 0.5;
-const ATTRACT_DISTANCE_GOAL: f32 = 2200.0;
+/// Pitch goal: a steep elevated 3/4 view looking DOWN onto the city core.
+/// Deliberately steeper than a shallow skyline-grazing angle: on the fog
+/// tiers (Potato/Low) the building draw distance is short (3-6km) and the
+/// terrain keeps going past it, so a shallow camera stares straight down a
+/// long recession of raw un-built terrain and partial-fog road scribbles at
+/// the horizon (the "paper map" the owner flagged). Pitching down keeps that
+/// far horizon out of frame — the diorama reads as the city massing under
+/// sky, and distance fog cleanly fades the frame edges — while still a clear
+/// 3/4 view, not a flat top-down. (`verify.rs`'s `frame_elevated` uses a
+/// shallower angle for in-game framing; chosen independently here.)
+const ATTRACT_PITCH_GOAL: f32 = 0.82;
+const ATTRACT_DISTANCE_GOAL: f32 = 1900.0;
 /// Goal-chase settle rate for pitch/distance/target (see
 /// `attract_smooth`/`attract_smooth_yaw`): deliberately gentler than
 /// `camera.rs`'s own `ORBIT_SMOOTH_RATE`/`DOLLY_SMOOTH_RATE` (~150-250ms
