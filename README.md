@@ -74,11 +74,12 @@ below). If it runs slowly, lower the quality tier from the in-game HUD.
 
 Prerequisites: Rust stable (see `rust-toolchain.toml`), Bun 1.3, and a checkout of the
 sibling [`metroforge`](https://github.com/Egg3901/metroforge) repo (the sidecar's
-TypeScript sim source lives there, currently on the `feat/sim-sidecar` branch pending
-merge). See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for full setup.
+TypeScript sim source lives there). Full build docs — profiles, measured cold/warm
+times, Bevy feature audit, `cargo-xwin`, sidecar Bun compile — are in
+[`BUILDING.md`](BUILDING.md). Day-to-day setup: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 ```sh
-# from /root/metroforge-native
+# from the metroforge-native repo root
 cargo build --release -p mf-game
 ```
 

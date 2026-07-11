@@ -40,6 +40,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+CI also runs `cargo deny` (advisories / duplicate versions / licenses) as a
+**non-blocking** warn step — see [`BUILDING.md`](../BUILDING.md) and
+[`deny.toml`](../deny.toml).
+
+Build profiles, measured compile times / binary sizes, Bevy feature trimming,
+and cross-compile notes live in [`BUILDING.md`](../BUILDING.md).
+
 `cargo test --workspace` includes `mf-protocol`'s fixture round-trip tests (binary
 decode -> encode -> byte equality; JSON literal decode -> encode -> value equality)
 and `mf-state`'s quality-tier detection unit tests. It does **not** include
@@ -72,6 +79,20 @@ cargo run -p mf-game
 straight to `Loading` with that city on Normal difficulty: this box has no display
 to click an egui menu through, and it doubles as a fast-boot path for screenshots
 and scripted smoke tests.
+
+### Sidecar crash-recovery harness
+
+`MF_TEST_KILL_SIDECAR=<seconds>` (e.g. `30`) kills the owned sidecar that many
+wall-clock seconds after `InGame`, then asserts the client recovers in place
+(re-handshake + autosave/city restore, no MainMenu bounce). Writes
+`sidecar-recovery-result.txt` (or `$MF_TEST_KILL_SIDECAR_RESULT`) with `ok=1` on
+success. Optional CI job: `sidecar-recovery` in `.github/workflows/ci.yml`
+(`continue-on-error: true` until the sidecar binary path is a hard gate).
+
+```sh
+MF_AUTOSTART=nyc MF_TEST_KILL_SIDECAR=30 MF_SIDECAR_PATH=/path/to/metroforge-sidecar \
+  cargo run -p mf-game --release
+```
 
 ## Performance harness (`MF_PERF`)
 

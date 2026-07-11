@@ -7,6 +7,10 @@
 //! the prepass/shadow counterpart stays in `reveal_prepass.wgsl` (discard
 //! only — facade tint is a color effect, not a geometric one).
 //!
+//! Also samples scrolling cloud-shadow noise from [`crate::atmosphere::
+//! CloudShadowParams`] (Medium/High weather) — a cheap projected multiply
+//! that sells sky weather on the white city fabric.
+//!
 //! ## Why dithered discard, not alpha blending
 //! Two hard, already-observed constraints in this exact Bevy 0.16 setup
 //! rule out `AlphaMode::Blend`:
@@ -53,7 +57,8 @@ use bevy::render::render_resource::{AsBindGroup, ShaderRef};
 
 /// Building chunk material family: `StandardMaterial` (unchanged bindings
 /// and behavior — night-dim, quality-unlit, per-building vertex tint all
-/// keep working exactly as before) extended with reveal + facade uniforms.
+/// keep working exactly as before) extended with reveal + facade uniforms
+/// plus a cloud-shadow multiply.
 /// `buildings.rs` spawns every chunk mesh with this type instead of a bare
 /// `StandardMaterial`, so there is exactly one building material family.
 pub type BuildingMaterial = ExtendedMaterial<StandardMaterial, RevealExtension>;
@@ -62,15 +67,16 @@ const FACADE_SHADER_HANDLE: Handle<Shader> = weak_handle!("2f9d6d9a-2a35-4d0a-9f
 const REVEAL_PREPASS_SHADER_HANDLE: Handle<Shader> =
     weak_handle!("6b3f6f4f-3b7b-4a2b-9c7c-6a3a2e5d8a11");
 
-/// Three `Vec4` fields at the SAME binding index (100) — `AsBindGroup`'s
+/// Four `Vec4` fields at the SAME binding index (100) — `AsBindGroup`'s
 /// derive merges same-binding uniform fields into one generated struct
 /// (see vendored `bevy_render_macros::as_bind_group`), so this is still one
-/// bind-group-100 buffer, not three. Binding 100 (not 0) leaves 0..99 free
-/// for `StandardMaterial`'s own bindings, per the convention the
+/// bind-group-100 buffer. The cloud-shadow noise adds a texture at 101 and
+/// sampler at 102. Binding 100 (not 0) leaves 0..99 free for
+/// `StandardMaterial`'s own bindings, per the convention the
 /// `extended_material` Bevy example itself documents.
 ///
-/// Layout must stay in lockstep with `RevealUniform` in `facade.wgsl` and
-/// `reveal_prepass.wgsl`.
+/// Field order must stay in lockstep with `RevealUniform` in `facade.wgsl`
+/// and `reveal_prepass.wgsl`: reveal, params, cloud, facade.
 #[derive(Asset, AsBindGroup, TypePath, Clone)]
 pub struct RevealExtension {
     /// (center_x, center_z, inner_radius, outer_radius) — world space.
@@ -79,11 +85,17 @@ pub struct RevealExtension {
     /// (strength 0..1, reserved, reserved, reserved).
     #[uniform(100)]
     pub params: Vec4,
+    /// Cloud shadow: (offset_u, offset_v, strength, inv_scale).
+    #[uniform(100)]
+    pub cloud: Vec4,
     /// (night_factor 0..1, facade_enabled 0/1, reserved, reserved).
     /// `night_factor` is copied from [`crate::daynight::DayNightState`] each
     /// frame (quantized); `facade_enabled` is 1 on Medium/High only.
     #[uniform(100)]
     pub facade: Vec4,
+    #[texture(101)]
+    #[sampler(102)]
+    pub cloud_noise: Option<Handle<Image>>,
 }
 
 impl Default for RevealExtension {
@@ -97,7 +109,9 @@ impl Default for RevealExtension {
         RevealExtension {
             reveal: Vec4::new(0.0, 0.0, 60.0, 180.0),
             params: Vec4::ZERO,
+            cloud: Vec4::new(0.0, 0.0, 0.0, 1.0 / 1_100.0),
             facade: Vec4::ZERO,
+            cloud_noise: None,
         }
     }
 }

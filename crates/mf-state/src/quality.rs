@@ -9,10 +9,14 @@ use bevy_ecs::prelude::*;
 /// `config.toml` override always winning (spec §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Resource, Default)]
 pub enum QualityTier {
+    /// Weakest tier (software raster / UHD-class): unlit, no day/night, fogged.
     Potato,
+    /// Integrated-GPU baseline: unlit, day/night on, limited draw distance.
     Low,
+    /// Default: lit materials, MSAA, atmosphere, bloom.
     #[default]
     Medium,
+    /// Discrete-GPU high: larger shadows, unlimited draw distance, denser fog steps.
     High,
 }
 
@@ -20,9 +24,13 @@ pub enum QualityTier {
 /// `RenderAdapterInfo` and feeds into [`detect`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuDeviceKind {
+    /// Discrete GPU adapter.
     Discrete,
+    /// Integrated GPU adapter.
     Integrated,
+    /// CPU / software device kind from the adapter info.
     Cpu,
+    /// Anything else (unknown / other).
     Other,
 }
 
@@ -51,9 +59,11 @@ pub struct QualityKnobs {
     pub unlit_material: bool,
     /// Building draw distance in meters; `None` means unlimited ("full").
     pub building_draw_distance_m: Option<f32>,
+    /// Max agents drawn from the latest frame (0 = none on Potato).
     pub agent_cap: u32,
     /// Terrain mesh subdivision divisor (higher = coarser mesh).
     pub terrain_subdiv_divisor: u32,
+    /// When `false`, day/night is pinned to noon (Potato).
     pub day_night_enabled: bool,
     /// Max spacing (meters) between densified ribbon samples for roads /
     /// transit tracks / route stripes. Higher = fewer vertices on rebuild
@@ -71,14 +81,12 @@ pub struct QualityKnobs {
     /// off on Medium/High where draw distance is unlimited or generous
     /// enough that fog would just look like a boring haze over open sky.
     pub fog: Option<(f32, f32)>,
-    /// When `true`, scrolling volumetric fog/cloud + distance haze are
-    /// eligible (Medium/High). Potato/Low keep this off — volumetric fog
-    /// needs shadow maps, which those tiers disable. The player can still
-    /// turn the effect off via [`crate::WeatherEffects`] even when this is
-    /// `true`.
+    /// When `true`, soft cloud cards + scrolling ground shadows are eligible
+    /// (Medium/High). Potato/Low keep this off. The player can still turn the
+    /// effect off via [`crate::WeatherEffects`] even when this is `true`.
     pub atmosphere_enabled: bool,
-    /// Raymarch step count for [`bevy::pbr::VolumetricFog`] when atmosphere
-    /// is active. Higher = less banding, more GPU.
+    /// Reserved after the billboard rewrite (was volumetric raymarch steps).
+    /// Kept so quality tables stay stable; unused by the renderer.
     pub atmosphere_fog_steps: u32,
     /// Stylized water shader tier (mf-render `water.rs`):
     /// - `0` = flat vertex-color water baked into the terrain mesh (Potato;
@@ -372,5 +380,59 @@ mod tests {
         assert!(QualityTier::High.knobs().fog.is_none());
         assert!(QualityTier::Potato.knobs().fog.is_some());
         assert!(QualityTier::Low.knobs().fog.is_some());
+    }
+
+    /// Property: every numeric knob is monotone across Potato → Low →
+    /// Medium → High (non-decreasing for "more is better", non-increasing
+    /// for "coarser is cheaper"). Catches a future tier-table edit that
+    /// accidentally makes Medium worse than Low on some axis.
+    #[test]
+    fn numeric_knobs_are_monotone_across_tiers() {
+        let tiers = [
+            QualityTier::Potato,
+            QualityTier::Low,
+            QualityTier::Medium,
+            QualityTier::High,
+        ];
+        let knobs: Vec<QualityKnobs> = tiers.iter().map(|t| t.knobs()).collect();
+
+        // "More is better" (or equal): non-decreasing.
+        for w in knobs.windows(2) {
+            assert!(w[0].msaa_samples <= w[1].msaa_samples);
+            assert!(w[0].agent_cap <= w[1].agent_cap);
+            assert!(w[0].atmosphere_fog_steps <= w[1].atmosphere_fog_steps);
+            assert!(w[0].water_quality <= w[1].water_quality);
+        }
+
+        // Draw distances: None = unlimited = greatest. Treat as +∞.
+        let draw = |d: Option<f32>| d.unwrap_or(f32::INFINITY);
+        for w in knobs.windows(2) {
+            assert!(draw(w[0].building_draw_distance_m) <= draw(w[1].building_draw_distance_m));
+            assert!(draw(w[0].tree_draw_distance_m) <= draw(w[1].tree_draw_distance_m));
+        }
+
+        // Shadow map: None < Some(n), and sizes non-decreasing when present.
+        let shadow_rank = |s: Option<u32>| s.map(|n| n as i64).unwrap_or(-1);
+        for w in knobs.windows(2) {
+            assert!(shadow_rank(w[0].shadow_map_size) <= shadow_rank(w[1].shadow_map_size));
+        }
+
+        // "Coarser is cheaper": non-increasing.
+        for w in knobs.windows(2) {
+            assert!(w[0].terrain_subdiv_divisor >= w[1].terrain_subdiv_divisor);
+            assert!(w[0].ribbon_densify_step_m >= w[1].ribbon_densify_step_m);
+        }
+
+        // Bool knobs that flip false→true (or stay) as tier rises.
+        for w in knobs.windows(2) {
+            assert!(!w[0].vsync || w[1].vsync);
+            assert!(!w[0].day_night_enabled || w[1].day_night_enabled);
+            assert!(!w[0].tree_enabled || w[1].tree_enabled);
+            assert!(!w[0].atmosphere_enabled || w[1].atmosphere_enabled);
+            assert!(!w[0].bloom_enabled || w[1].bloom_enabled);
+            assert!(!w[0].street_lamps_enabled || w[1].street_lamps_enabled);
+            // unlit is the inverse: true on weak tiers, false on strong.
+            assert!(!w[1].unlit_material || w[0].unlit_material);
+        }
     }
 }

@@ -22,7 +22,7 @@
 
 use bevy::color::LinearRgba;
 use bevy::prelude::Color;
-use mf_state::Theme;
+use mf_state::{ColorblindMode, Theme};
 use std::sync::atomic::{AtomicU8, Ordering};
 
 fn hex(r: u8, g: u8, b: u8) -> Color {
@@ -166,11 +166,112 @@ fn palette_for(theme: Theme) -> &'static Palette {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Colorblind remaps (accessibility). Only the vivid route table and the four
+// mode accents shift; city massing colors stay theme-authored.
+//
+// Chosen values (Okabe-Ito / Paul Tol inspired) and why they stay
+// distinguishable under each deficiency:
+//
+// Deuteranopia (green-blind): avoid red/green pairs. Table uses orange,
+// sky-blue, yellow, blue, vermillion, purple, olive (not green), magenta —
+// pairwise RGB + deutan-sim distance stays above the test floor.
+//   routes: E69F00, 56B4E9, F0E442, 0072B2, D55E00, CC79A7, 999933, 882255
+//   accents bus/tram/metro/rail: E69F00 / F0E442 / 0072B2 / CC79A7
+//
+// Protanopia (red-blind): similar red/green issue but reds darken further.
+// Prefer brighter oranges and cooler blues; drop dark vermillion.
+//   routes: F0E442, 56B4E9, 009E73, 0072B2, E69F00, CC79A7, 4DB6AC, 882255
+//   accents: E69F00 / 009E73 / 56B4E9 / CC79A7
+//
+// Tritanopia (blue-yellow blind): avoid blue/yellow pairs. Lean on red,
+// green, orange, purple, brown, pink, gray, cyan-green.
+//   routes: E41A1C, 4DAF4A, FF7F00, 984EA3, A65628, F781BF, 1A1A1A, 66C2A5
+//   accents: FF7F00 / 4DAF4A / E41A1C / 984EA3
+// ---------------------------------------------------------------------------
+
+struct AccentRemap {
+    route_colors: [Rgb; 8],
+    mode_bus: Rgb,
+    mode_tram: Rgb,
+    mode_metro: Rgb,
+    mode_rail: Rgb,
+}
+
+const DEUTERANOPIA: AccentRemap = AccentRemap {
+    route_colors: [
+        (0xe6, 0x9f, 0x00),
+        (0x56, 0xb4, 0xe9),
+        (0xf0, 0xe4, 0x42),
+        (0x00, 0x72, 0xb2),
+        (0xd5, 0x5e, 0x00),
+        (0xcc, 0x79, 0xa7),
+        // Olive (yellow-leaning) instead of bluish-green: under deutan
+        // simulation, #009E73 collapses toward #0072B2.
+        (0x99, 0x99, 0x33),
+        (0x88, 0x22, 0x55),
+    ],
+    mode_bus: (0xe6, 0x9f, 0x00),
+    mode_tram: (0xf0, 0xe4, 0x42),
+    mode_metro: (0x00, 0x72, 0xb2),
+    mode_rail: (0xcc, 0x79, 0xa7),
+};
+
+const PROTANOPIA: AccentRemap = AccentRemap {
+    route_colors: [
+        (0xf0, 0xe4, 0x42),
+        (0x56, 0xb4, 0xe9),
+        (0x00, 0x9e, 0x73),
+        (0x00, 0x72, 0xb2),
+        (0xe6, 0x9f, 0x00),
+        (0xcc, 0x79, 0xa7),
+        (0x4d, 0xb6, 0xac),
+        // Magenta-brown instead of deep indigo: indigo collapses toward
+        // bluish-green under protan simulation.
+        (0x88, 0x22, 0x55),
+    ],
+    mode_bus: (0xe6, 0x9f, 0x00),
+    mode_tram: (0x00, 0x9e, 0x73),
+    mode_metro: (0x56, 0xb4, 0xe9),
+    mode_rail: (0xcc, 0x79, 0xa7),
+};
+
+const TRITANOPIA: AccentRemap = AccentRemap {
+    route_colors: [
+        (0xe4, 0x1a, 0x1c),
+        (0x4d, 0xaf, 0x4a),
+        (0xff, 0x7f, 0x00),
+        (0x98, 0x4e, 0xa3),
+        (0xa6, 0x56, 0x28),
+        (0xf7, 0x81, 0xbf),
+        // Near-black instead of mid-gray: gray collapses toward purple under
+        // tritan simulation.
+        (0x1a, 0x1a, 0x1a),
+        (0x66, 0xc2, 0xa5),
+    ],
+    mode_bus: (0xff, 0x7f, 0x00),
+    mode_tram: (0x4d, 0xaf, 0x4a),
+    mode_metro: (0xe4, 0x1a, 0x1c),
+    mode_rail: (0x98, 0x4e, 0xa3),
+};
+
+fn accent_remap(mode: ColorblindMode) -> Option<&'static AccentRemap> {
+    match mode {
+        ColorblindMode::Off => None,
+        ColorblindMode::Deuteranopia => Some(&DEUTERANOPIA),
+        ColorblindMode::Protanopia => Some(&PROTANOPIA),
+        ColorblindMode::Tritanopia => Some(&TRITANOPIA),
+    }
+}
+
 /// Process-global "which theme's colors should `palette.rs` return right
 /// now" — see the module doc comment for why this isn't a `Res<Theme>`
 /// parameter. `0 == Theme::Light`, matching both the atomic's initial value
 /// and `Theme::default()`.
 static CURRENT_THEME: AtomicU8 = AtomicU8::new(0);
+
+/// Process-global colorblind shift. `0 == ColorblindMode::Off`.
+static CURRENT_COLORBLIND: AtomicU8 = AtomicU8::new(0);
 
 /// Called by `lib.rs`'s `sync_theme_system` whenever `Res<Theme>` changes
 /// (and once at startup) — every `palette::` color function reads back
@@ -179,12 +280,33 @@ pub fn set_theme(theme: Theme) {
     CURRENT_THEME.store(theme as u8, Ordering::Relaxed);
 }
 
+/// Publish the active [`ColorblindMode`] (mirrors [`set_theme`]).
+pub fn set_colorblind_mode(mode: ColorblindMode) {
+    let v = match mode {
+        ColorblindMode::Off => 0,
+        ColorblindMode::Deuteranopia => 1,
+        ColorblindMode::Protanopia => 2,
+        ColorblindMode::Tritanopia => 3,
+    };
+    CURRENT_COLORBLIND.store(v, Ordering::Relaxed);
+}
+
 /// The theme every `palette::` color function below currently paints with.
 pub fn current_theme() -> Theme {
     match CURRENT_THEME.load(Ordering::Relaxed) {
         1 => Theme::Dark,
         2 => Theme::Purple,
         _ => Theme::Light,
+    }
+}
+
+/// Active colorblind remapping (defaults to [`ColorblindMode::Off`]).
+pub fn current_colorblind_mode() -> ColorblindMode {
+    match CURRENT_COLORBLIND.load(Ordering::Relaxed) {
+        1 => ColorblindMode::Deuteranopia,
+        2 => ColorblindMode::Protanopia,
+        3 => ColorblindMode::Tritanopia,
+        _ => ColorblindMode::Off,
     }
 }
 
@@ -272,7 +394,11 @@ pub fn vignette_edge(alpha: f32) -> Color {
 /// theme-indexed table indexed by `routeColorIdx` (same index = same color
 /// everywhere, for a given theme).
 pub fn vivid_route_color(idx: usize) -> Color {
-    let table = active().route_colors;
+    let table = if let Some(remap) = accent_remap(current_colorblind_mode()) {
+        &remap.route_colors
+    } else {
+        &active().route_colors
+    };
     if let Some(&(r, g, b)) = table.get(idx) {
         return hex(r, g, b);
     }
@@ -306,12 +432,21 @@ pub fn emissive(color: Color, strength: f32) -> LinearRgba {
 
 /// Mode accent tints for station marker rings (body stays white).
 pub fn mode_accent(mode: mf_protocol::TransitMode) -> Color {
-    let p = active();
-    let (r, g, b) = match mode {
-        mf_protocol::TransitMode::Bus => p.mode_bus,
-        mf_protocol::TransitMode::Tram => p.mode_tram,
-        mf_protocol::TransitMode::Metro => p.mode_metro,
-        mf_protocol::TransitMode::Rail => p.mode_rail,
+    let (r, g, b) = if let Some(remap) = accent_remap(current_colorblind_mode()) {
+        match mode {
+            mf_protocol::TransitMode::Bus => remap.mode_bus,
+            mf_protocol::TransitMode::Tram => remap.mode_tram,
+            mf_protocol::TransitMode::Metro => remap.mode_metro,
+            mf_protocol::TransitMode::Rail => remap.mode_rail,
+        }
+    } else {
+        let p = active();
+        match mode {
+            mf_protocol::TransitMode::Bus => p.mode_bus,
+            mf_protocol::TransitMode::Tram => p.mode_tram,
+            mf_protocol::TransitMode::Metro => p.mode_metro,
+            mf_protocol::TransitMode::Rail => p.mode_rail,
+        }
     };
     hex(r, g, b)
 }
@@ -328,24 +463,31 @@ mod tests {
     /// test's read-after-write sequence atomic relative to its neighbors.
     static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Resets the atomic to `Light` (tests should leave it however they
     /// like otherwise, since the lock guard already serializes them against
     /// each other) so each assertion's expectations don't depend on
     /// execution order.
     fn reset() {
         set_theme(Theme::Light);
+        set_colorblind_mode(ColorblindMode::Off);
     }
 
     #[test]
     fn defaults_to_light_theme() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock();
         reset();
         assert_eq!(current_theme(), Theme::Light);
     }
 
     #[test]
     fn light_theme_first_eight_routes_are_the_fixed_bricks() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock();
         reset();
         for (i, &(r, g, b)) in LIGHT.route_colors.iter().enumerate() {
             assert_eq!(vivid_route_color(i), hex(r, g, b));
@@ -354,14 +496,14 @@ mod tests {
 
     #[test]
     fn ninth_route_extends_via_golden_angle_and_differs_from_first() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock();
         reset();
         assert_ne!(vivid_route_color(8), vivid_route_color(0));
     }
 
     #[test]
     fn switching_theme_changes_building_top() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock();
         reset();
         let light = building_top();
         set_theme(Theme::Dark);
@@ -376,7 +518,7 @@ mod tests {
 
     #[test]
     fn dark_and_purple_pin_sky_day_to_sky_night() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock();
         reset();
         set_theme(Theme::Dark);
         assert_eq!(sky_day(), sky_night());
@@ -387,7 +529,7 @@ mod tests {
 
     #[test]
     fn every_theme_route_table_has_eight_distinct_colors() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock();
         for theme in Theme::ALL {
             let table = palette_for(theme).route_colors;
             for i in 0..table.len() {
@@ -396,5 +538,97 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn rgb_dist(a: Rgb, b: Rgb) -> f32 {
+        let dr = a.0 as f32 - b.0 as f32;
+        let dg = a.1 as f32 - b.1 as f32;
+        let db = a.2 as f32 - b.2 as f32;
+        (dr * dr + dg * dg + db * db).sqrt()
+    }
+
+    /// Crude CVD simulation matrices (Machado et al. approximations) used
+    /// only to assert remapped route sets stay separable under the target
+    /// deficiency — not for runtime rendering.
+    fn simulate_cvd(rgb: Rgb, mode: ColorblindMode) -> (f32, f32, f32) {
+        let r = rgb.0 as f32 / 255.0;
+        let g = rgb.1 as f32 / 255.0;
+        let b = rgb.2 as f32 / 255.0;
+        let (m00, m01, m02, m10, m11, m12, m20, m21, m22) = match mode {
+            ColorblindMode::Deuteranopia => (0.625, 0.375, 0.0, 0.7, 0.3, 0.0, 0.0, 0.3, 0.7),
+            ColorblindMode::Protanopia => (0.567, 0.433, 0.0, 0.558, 0.442, 0.0, 0.0, 0.242, 0.758),
+            ColorblindMode::Tritanopia => (0.95, 0.05, 0.0, 0.0, 0.433, 0.567, 0.0, 0.475, 0.525),
+            ColorblindMode::Off => (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+        };
+        (
+            m00 * r + m01 * g + m02 * b,
+            m10 * r + m11 * g + m12 * b,
+            m20 * r + m21 * g + m22 * b,
+        )
+    }
+
+    fn sim_dist(a: Rgb, b: Rgb, mode: ColorblindMode) -> f32 {
+        let (ar, ag, ab) = simulate_cvd(a, mode);
+        let (br, bg, bb) = simulate_cvd(b, mode);
+        let dr = ar - br;
+        let dg = ag - bg;
+        let db = ab - bb;
+        (dr * dr + dg * dg + db * db).sqrt()
+    }
+
+    #[test]
+    fn colorblind_route_tables_are_pairwise_distinguishable() {
+        let _guard = lock();
+        // Minimum simulated distance (0..sqrt(3) in linear RGB). Empirically
+        // Okabe-Ito pairs clear ~0.25; keep a conservative floor.
+        const MIN_SIM: f32 = 0.18;
+        const MIN_RGB: f32 = 60.0;
+        for mode in [
+            ColorblindMode::Deuteranopia,
+            ColorblindMode::Protanopia,
+            ColorblindMode::Tritanopia,
+        ] {
+            let table = accent_remap(mode).unwrap().route_colors;
+            for i in 0..table.len() {
+                for j in (i + 1)..table.len() {
+                    assert!(
+                        rgb_dist(table[i], table[j]) >= MIN_RGB,
+                        "{mode:?} route {i} vs {j} RGB too close"
+                    );
+                    assert!(
+                        sim_dist(table[i], table[j], mode) >= MIN_SIM,
+                        "{mode:?} route {i} vs {j} CVD-sim too close ({})",
+                        sim_dist(table[i], table[j], mode)
+                    );
+                }
+            }
+            let accents = [
+                accent_remap(mode).unwrap().mode_bus,
+                accent_remap(mode).unwrap().mode_tram,
+                accent_remap(mode).unwrap().mode_metro,
+                accent_remap(mode).unwrap().mode_rail,
+            ];
+            for i in 0..accents.len() {
+                for j in (i + 1)..accents.len() {
+                    assert!(
+                        sim_dist(accents[i], accents[j], mode) >= MIN_SIM,
+                        "{mode:?} accent {i} vs {j} CVD-sim too close"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn colorblind_mode_changes_first_route_color() {
+        let _guard = lock();
+        reset();
+        set_colorblind_mode(ColorblindMode::Off);
+        let off = vivid_route_color(0);
+        set_colorblind_mode(ColorblindMode::Deuteranopia);
+        let deutan = vivid_route_color(0);
+        assert_ne!(off, deutan);
+        set_colorblind_mode(ColorblindMode::Off);
+        reset();
     }
 }

@@ -39,6 +39,7 @@ use mf_state::{CurrentCity, HeightAt, LatestFields, LatestUi};
 use crate::audio::{PlaySfx, Sfx};
 use crate::camera::{screen_to_ground, CLICK_DRAG_THRESHOLD_PX};
 use crate::command_bus::{CmdMeta, CommandBus, CommandFeedback};
+use crate::routes_panel::{self, RoutePanelState};
 
 // ---------------------------------------------------------------------
 // Tunable constants (comments explain the "why", not just the number).
@@ -162,16 +163,21 @@ pub struct ToolState {
     /// Wall-clock time + screen position of the last recognized clean
     /// click, for double-click detection (Route tool confirm gesture).
     last_click: Option<(f32, Vec2)>,
-    /// Place-station ghost facing, in 90-degree steps (0..4), cycled by `R`.
-    /// A station marker is radially symmetric so this is currently a purely
-    /// cosmetic facing tick on the ghost, but it establishes the rotate
-    /// gesture the moment directional footprints (depots, platforms) land.
+    /// Place-station ghost facing, in 90-degree steps (0..4), cycled by `R`
+    /// while the place tool is active. When no place tool is active, `R`
+    /// instead activates the Route tool (see empty-state copy in the routes
+    /// panel: "place two stations and press R").
     pub ghost_quarter_turns: u8,
     /// Screen-space cursor at the last RIGHT-button press, mirroring
     /// `press_pos` for the left button: lets `tool_click_system` tell a
     /// right-CLICK (cancel the active tool) from a right-DRAG (camera orbit,
     /// handled untouched in `camera.rs`).
     right_press_pos: Option<Vec2>,
+    /// When set, the Route tool is editing an existing route's stops (seeded
+    /// from the routes panel). Confirm applies the draft back to the panel's
+    /// `edit_stops` instead of firing `CreateRoute` immediately — the panel
+    /// owns the Delete+Create apply step so name/fare/vehicles survive.
+    pub editing_route_id: Option<i64>,
 }
 
 impl Default for ToolState {
@@ -191,6 +197,7 @@ impl Default for ToolState {
             last_click: None,
             ghost_quarter_turns: 0,
             right_press_pos: None,
+            editing_route_id: None,
         }
     }
 }
@@ -224,15 +231,22 @@ impl Plugin for MfToolsPlugin {
 fn keybind_system(keys: Res<ButtonInput<KeyCode>>, mut tool: ResMut<ToolState>) {
     if keys.just_pressed(KeyCode::Digit1) {
         tool.active = ActiveTool::PlaceStation(TransitMode::Bus);
+        tool.editing_route_id = None;
     } else if keys.just_pressed(KeyCode::Digit2) {
         tool.active = ActiveTool::Route;
     } else if keys.just_pressed(KeyCode::Digit3) {
         tool.active = ActiveTool::Bulldoze;
+        tool.editing_route_id = None;
     }
-    // R rotates the place-station ghost 90 degrees (wrapping 3 -> 0). Only
-    // meaningful while the place tool is active; harmless otherwise.
+    // R: rotate place-station ghost while placing; otherwise activate the
+    // Route tool so "place two stations and press R" matches the empty-state
+    // guidance in the routes panel.
     if keys.just_pressed(KeyCode::KeyR) {
-        tool.ghost_quarter_turns = (tool.ghost_quarter_turns + 1) % 4;
+        if matches!(tool.active, ActiveTool::PlaceStation(_)) {
+            tool.ghost_quarter_turns = next_ghost_quarter_turns(tool.ghost_quarter_turns);
+        } else {
+            tool.active = ActiveTool::Route;
+        }
     }
 }
 
@@ -263,6 +277,7 @@ fn tool_click_system(
     mut bus: ResMut<CommandBus>,
     mut sfx: EventWriter<PlaySfx>,
     mut selected: ResMut<SelectedTarget>,
+    mut panel: ResMut<RoutePanelState>,
 ) {
     let Ok(window) = windows.single() else {
         return;
@@ -292,6 +307,7 @@ fn tool_click_system(
                 tool.active = ActiveTool::None;
                 tool.route_draft.clear();
                 tool.last_cost_quote = None;
+                tool.editing_route_id = None;
                 sfx.write(PlaySfx(Sfx::Cancel));
             }
         }
@@ -321,6 +337,7 @@ fn tool_click_system(
 
     let enter_confirm =
         keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter);
+    let shift_held = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
 
     let Some(link) = link.as_deref() else {
         return; // No live sim connection: nothing any tool does is meaningful.
@@ -328,22 +345,29 @@ fn tool_click_system(
 
     if let (Some(ground), Some(ui)) = (clicked_ground, ui_state.0.as_ref()) {
         match tool.active {
-            // Select tool (v0.3): mirrors `PlaceStation`'s "consume a clean
-            // click" plumbing below, just picking instead of building.
-            // Nearest station within `SELECT_STATION_RADIUS_M` wins; a miss
-            // clears the selection SILENTLY (no sfx/toast - clicking empty
-            // ground is a deliberate "deselect", not an error) rather than
-            // falling back to route-stripe picking, which the mission scopes
-            // out of v0.3 (see `SelectedTarget`'s doc).
+            // Select tool: plain click picks one station for the inspector.
+            // Shift+click multi-selects into `route_draft` (ordered) so the
+            // player can connect several stations without entering the Route
+            // tool first — Enter then builds tracks + creates the route.
             ActiveTool::None => {
-                *selected = match nearest_station_id(&ui.stations, ground, SELECT_STATION_RADIUS_M)
-                {
-                    Some(id) => {
+                if shift_held {
+                    if let Some(station_id) =
+                        nearest_station_id(&ui.stations, ground, SELECT_STATION_RADIUS_M)
+                    {
+                        routes_panel::toggle_station_in_order(&mut tool.route_draft, station_id);
+                        *selected = SelectedTarget::Station(station_id);
                         sfx.write(PlaySfx(Sfx::Confirm));
-                        SelectedTarget::Station(id)
                     }
-                    None => SelectedTarget::None,
-                };
+                } else {
+                    *selected =
+                        match nearest_station_id(&ui.stations, ground, SELECT_STATION_RADIUS_M) {
+                            Some(id) => {
+                                sfx.write(PlaySfx(Sfx::Confirm));
+                                SelectedTarget::Station(id)
+                            }
+                            None => SelectedTarget::None,
+                        };
+                }
             }
             ActiveTool::PlaceStation(mode) => {
                 // Snap the raw click to the city grid / road frontage, then
@@ -378,7 +402,17 @@ fn tool_click_system(
                 }
             }
             ActiveTool::Route => {
-                handle_route_click(&mut tool, ground, ui, link, &mut bus, double_click);
+                handle_route_click(
+                    &mut tool,
+                    ground,
+                    ui,
+                    link,
+                    &mut bus,
+                    &mut panel,
+                    double_click,
+                    shift_held,
+                    &mut sfx,
+                );
             }
             ActiveTool::Bulldoze => {
                 handle_bulldoze_click(&mut tool, ground, ui, link, &mut bus);
@@ -387,42 +421,85 @@ fn tool_click_system(
     }
 
     if enter_confirm {
-        if let (ActiveTool::Route, Some(ui)) = (tool.active, ui_state.0.as_ref()) {
-            if tool.route_draft.len() >= 2 {
-                confirm_route(&mut tool, ui, link, &mut bus);
-                sfx.write(PlaySfx(Sfx::Confirm));
+        // Multi-select from the Select tool, or a Route draft: same confirm.
+        let can_confirm = tool.route_draft.len() >= 2
+            && (tool.active == ActiveTool::Route
+                || tool.active == ActiveTool::None
+                || tool.editing_route_id.is_some());
+        if can_confirm {
+            if let Some(ui) = ui_state.0.as_ref() {
+                if tool.editing_route_id.is_some() {
+                    // Hand the draft back to the panel as `edit_stops`; the
+                    // player hits Apply there (Delete+Create) so props survive.
+                    panel.edit_stops = Some(tool.route_draft.clone());
+                    panel.open = true;
+                    if let Some(id) = tool.editing_route_id {
+                        panel.selected = Some(id);
+                    }
+                    tool.route_draft.clear();
+                    tool.editing_route_id = None;
+                    tool.active = ActiveTool::None;
+                    tool.last_cost_quote = None;
+                    sfx.write(PlaySfx(Sfx::Confirm));
+                } else {
+                    confirm_route(&mut tool, ui, link, &mut bus);
+                    tool.active = ActiveTool::Route;
+                    sfx.write(PlaySfx(Sfx::Confirm));
+                }
             }
         }
     }
 }
 
-/// Route tool click: pick the nearest station within `ROUTE_PICK_RADIUS_M`
-/// (a soft no-op if none is close enough), append it to the draft unless
-/// it would duplicate the draft's current tail, fire a track-cost query
-/// once the draft has a segment to price, and, on a double-click, confirm
-/// the draft (the double-clicked station itself need not be newly
-/// appended: re-clicking the existing last station to finish a route is
-/// the expected gesture, and `should_append_to_draft` already keeps that
-/// from duplicating it).
+/// Route tool click: pick the nearest station within `ROUTE_PICK_RADIUS_M`.
+/// Plain click appends (same as before). Shift+click toggles membership so
+/// multi-select does not require a strict sequential chain. When editing an
+/// existing route (`editing_route_id`), clicks toggle against the draft and
+/// sync into the panel's `edit_stops`. Double-click confirms when the draft
+/// has at least two stations.
+#[allow(clippy::too_many_arguments)]
 fn handle_route_click(
     tool: &mut ToolState,
     ground: Vec2,
     ui: &UiState,
     link: &SimLink,
     bus: &mut CommandBus,
+    panel: &mut RoutePanelState,
     double_click: bool,
+    shift_held: bool,
+    sfx: &mut EventWriter<PlaySfx>,
 ) {
     let Some(station_id) = nearest_station_id(&ui.stations, ground, ROUTE_PICK_RADIUS_M) else {
         return;
     };
-    if should_append_to_draft(&tool.route_draft, station_id) {
-        tool.route_draft.push(station_id);
-        if tool.route_draft.len() >= 2 {
-            query_latest_segment_cost(tool, &ui.stations, link);
+    if shift_held || tool.editing_route_id.is_some() {
+        routes_panel::toggle_station_in_order(&mut tool.route_draft, station_id);
+        if tool.editing_route_id.is_some() {
+            panel.edit_stops = Some(tool.route_draft.clone());
+        }
+        sfx.write(PlaySfx(Sfx::Confirm));
+    } else {
+        let after = tool.route_draft.last().copied();
+        if routes_panel::insert_stop_after(&mut tool.route_draft, station_id, after).is_some() {
+            if tool.route_draft.len() >= 2 {
+                query_latest_segment_cost(tool, &ui.stations, link);
+            }
+            sfx.write(PlaySfx(Sfx::Confirm));
         }
     }
     if double_click && tool.route_draft.len() >= 2 {
-        confirm_route(tool, ui, link, bus);
+        if tool.editing_route_id.is_some() {
+            panel.edit_stops = Some(tool.route_draft.clone());
+            panel.open = true;
+            if let Some(id) = tool.editing_route_id {
+                panel.selected = Some(id);
+            }
+            tool.route_draft.clear();
+            tool.editing_route_id = None;
+            tool.last_cost_quote = None;
+        } else {
+            confirm_route(tool, ui, link, bus);
+        }
     }
 }
 
@@ -520,7 +597,7 @@ fn confirm_route(tool: &mut ToolState, ui: &UiState, link: &SimLink, bus: &mut C
 // Feedback: CommandBus results -> SFX, TrackCost replies -> the quote.
 // ---------------------------------------------------------------------
 
-/// Confirm/Error chime for any `CommandFeedback` this module itself
+/// Confirm/Error/Placement chime for any `CommandFeedback` this module itself
 /// requested (see `ToolState::pending_seqs`'s doc). On failure the active
 /// tool is deliberately left as-is (spec: "keep tool active on failure") so
 /// a bad click can just be retried without re-selecting the tool.
@@ -533,7 +610,15 @@ fn command_feedback_system(
         if !tool.pending_seqs.remove(&fb.seq) {
             continue; // Not ours: some other CommandBus caller's action.
         }
-        sfx.write(PlaySfx(if fb.ok { Sfx::Confirm } else { Sfx::Error }));
+        let kind = if fb.ok {
+            match fb.meta {
+                CmdMeta::BuildStation { .. } => Sfx::Placement,
+                _ => Sfx::Confirm,
+            }
+        } else {
+            Sfx::Error
+        };
+        sfx.write(PlaySfx(kind));
     }
 }
 
@@ -599,52 +684,88 @@ fn tool_gizmo_system(
     ui_state: Res<LatestUi>,
     city: Res<CurrentCity>,
     fields: Res<LatestFields>,
+    focus: Res<mf_state::RouteFocus>,
 ) {
-    if tool.active == ActiveTool::None {
-        return;
-    }
-    let over_egui = egui_contexts
-        .ctx_mut()
-        .map(|ctx| ctx.wants_pointer_input())
-        .unwrap_or(false);
-    if over_egui {
+    let drafting = !tool.route_draft.is_empty();
+    let editing_focus = focus.editing && focus.route_id.is_some();
+    if tool.active == ActiveTool::None && !drafting && !editing_focus {
         return;
     }
     let Ok(window) = windows.single() else {
         return;
     };
-    let Some(cursor_screen) = window.cursor_position() else {
+    let over_egui = egui_contexts
+        .ctx_mut()
+        .map(|ctx| ctx.wants_pointer_input())
+        .unwrap_or(false);
+    if over_egui && tool.active == ActiveTool::None && !editing_focus {
+        // Still allow draft preview under the cursor-free case below.
+    }
+
+    let cursor = window.cursor_position();
+    let cursor_world = match (cursor, cameras.single()) {
+        (Some(pos), Ok((camera, camera_transform))) => {
+            screen_to_ground(camera, camera_transform, &height_at, pos)
+                .map(|g| Vec3::new(g.x, height_at.sample(g.x, g.y), g.y))
+        }
+        _ => None,
+    };
+
+    // Stop numbers + direction ticks for the focused route while editing.
+    if editing_focus {
+        if let (Some(ui), Some(route_id)) = (ui_state.0.as_ref(), focus.route_id) {
+            if let Some(route) = ui.routes.iter().find(|r| r.id == route_id) {
+                let stops =
+                    if tool.editing_route_id == Some(route_id) && !tool.route_draft.is_empty() {
+                        tool.route_draft.as_slice()
+                    } else {
+                        route.station_ids.as_slice()
+                    };
+                draw_numbered_stops(&mut gizmos, &ui.stations, stops, &height_at);
+                draw_direction_ticks(&mut gizmos, &ui.stations, stops, &height_at);
+            }
+        }
+    }
+
+    // Multi-select draft preview while the Select tool is active.
+    if tool.active == ActiveTool::None && drafting {
+        if let Some(ui) = ui_state.0.as_ref() {
+            let color = route_ghost_color(ui.routes.len());
+            draw_draft_polyline(
+                &mut gizmos,
+                &ui.stations,
+                &tool.route_draft,
+                cursor_world,
+                color,
+                &height_at,
+            );
+            draw_numbered_stops(&mut gizmos, &ui.stations, &tool.route_draft, &height_at);
+        }
+        return;
+    }
+
+    let Some(cursor_world) = cursor_world else {
         return;
     };
-    let Ok((camera, camera_transform)) = cameras.single() else {
+    if over_egui {
         return;
-    };
-    let Some(cursor_ground) = screen_to_ground(camera, camera_transform, &height_at, cursor_screen)
-    else {
-        return;
-    };
-    let cursor_world = Vec3::new(
-        cursor_ground.x,
-        height_at.sample(cursor_ground.x, cursor_ground.y),
-        cursor_ground.y,
-    );
+    }
 
     match tool.active {
         ActiveTool::None => {}
         ActiveTool::PlaceStation(_) => {
-            // Snap to grid / road frontage, then colour the ghost by whether
-            // the snapped cell is actually buildable (green) or blocked by
-            // water / another station / the map edge (red).
-            let placement = city
-                .static_city
-                .as_ref()
-                .map(|c| resolve_placement(cursor_ground, c));
-            let snapped = placement.map(|p| p.pos).unwrap_or(cursor_ground);
             let stations = ui_state
                 .0
                 .as_ref()
                 .map(|u| u.stations.as_slice())
                 .unwrap_or(&[]);
+            let placement = city
+                .static_city
+                .as_ref()
+                .map(|c| resolve_placement(Vec2::new(cursor_world.x, cursor_world.z), c));
+            let snapped = placement
+                .map(|p| p.pos)
+                .unwrap_or(Vec2::new(cursor_world.x, cursor_world.z));
             let valid = placement_valid(
                 snapped,
                 city.static_city.as_ref(),
@@ -662,11 +783,9 @@ fn tool_gizmo_system(
             );
             // Facing tick: a short spoke pointing in the R-rotated direction,
             // so the rotate gesture reads on screen even for a round marker.
-            let ang = tool.ghost_quarter_turns as f32 * std::f32::consts::FRAC_PI_2;
-            let facing = Vec3::new(ang.sin(), 0.0, ang.cos()) * (STATION_GHOST_RADIUS_M * 1.4);
+            let facing_xz = ghost_facing_xz(tool.ghost_quarter_turns);
+            let facing = Vec3::new(facing_xz.x, 0.0, facing_xz.y) * (STATION_GHOST_RADIUS_M * 1.4);
             gizmos.line(snapped_world, snapped_world + facing, tint);
-            // Snap guide: a subtle line from the plain grid cell to the road
-            // frontage the ghost jumped to, present only when road-snapped.
             if let Some(guide_from) = placement.and_then(|p| p.guide_from) {
                 let from_world = Vec3::new(
                     guide_from.x,
@@ -681,21 +800,17 @@ fn tool_gizmo_system(
                 return;
             };
             let color = route_ghost_color(ui.routes.len());
-            let mut points: Vec<Vec3> = tool
-                .route_draft
-                .iter()
-                .filter_map(|id| ui.stations.iter().find(|s| s.id == *id))
-                .map(|s| {
-                    Vec3::new(
-                        s.x as f32,
-                        height_at.sample(s.x as f32, s.y as f32),
-                        s.y as f32,
-                    )
-                })
-                .collect();
-            points.push(cursor_world);
-            if points.len() >= 2 {
-                gizmos.linestrip(points, color);
+            draw_draft_polyline(
+                &mut gizmos,
+                &ui.stations,
+                &tool.route_draft,
+                Some(cursor_world),
+                color,
+                &height_at,
+            );
+            draw_numbered_stops(&mut gizmos, &ui.stations, &tool.route_draft, &height_at);
+            if tool.route_draft.len() >= 2 {
+                draw_direction_ticks(&mut gizmos, &ui.stations, &tool.route_draft, &height_at);
             }
         }
         ActiveTool::Bulldoze => {
@@ -709,9 +824,127 @@ fn tool_gizmo_system(
     }
 }
 
+fn draw_draft_polyline(
+    gizmos: &mut Gizmos,
+    stations: &[UiStation],
+    draft: &[i64],
+    cursor_world: Option<Vec3>,
+    color: Color,
+    height_at: &HeightAt,
+) {
+    let mut points: Vec<Vec3> = draft
+        .iter()
+        .filter_map(|id| stations.iter().find(|s| s.id == *id))
+        .map(|s| {
+            Vec3::new(
+                s.x as f32,
+                height_at.sample(s.x as f32, s.y as f32),
+                s.y as f32,
+            )
+        })
+        .collect();
+    if let Some(c) = cursor_world {
+        points.push(c);
+    }
+    if points.len() >= 2 {
+        gizmos.linestrip(points, color);
+    }
+}
+
+/// Numbered stop markers (1-based) for route draft / edit mode. Drawn as
+/// stacked short vertical ticks whose count encodes the stop index so we
+/// stay on Bevy gizmos (no egui world-text dependency).
+fn draw_numbered_stops(
+    gizmos: &mut Gizmos,
+    stations: &[UiStation],
+    stops: &[i64],
+    height_at: &HeightAt,
+) {
+    let mark = Color::srgb_u8(0xff, 0xff, 0xff);
+    for (i, sid) in stops.iter().enumerate() {
+        let Some(s) = stations.iter().find(|st| st.id == *sid) else {
+            continue;
+        };
+        let base = Vec3::new(
+            s.x as f32,
+            height_at.sample(s.x as f32, s.y as f32) + 2.0,
+            s.y as f32,
+        );
+        draw_ground_circle(gizmos, base, 6.0, mark);
+        // Index encoding: N short vertical pips (capped) plus a taller stem
+        // so stop order reads at a glance without a text atlas.
+        let n = (i + 1).min(8);
+        for p in 0..n {
+            let y0 = base + Vec3::Y * (8.0 + p as f32 * 3.0);
+            gizmos.line(y0, y0 + Vec3::Y * 2.0, mark);
+        }
+        gizmos.line(
+            base,
+            base + Vec3::Y * (10.0 + n as f32 * 3.0),
+            accent_blue(),
+        );
+    }
+}
+
+/// Direction ticks along consecutive stop pairs (edit-mode polish alongside
+/// the mesh chevrons on finished routes).
+fn draw_direction_ticks(
+    gizmos: &mut Gizmos,
+    stations: &[UiStation],
+    stops: &[i64],
+    height_at: &HeightAt,
+) {
+    let color = accent_blue();
+    for w in stops.windows(2) {
+        let (Some(a), Some(b)) = (
+            stations.iter().find(|s| s.id == w[0]),
+            stations.iter().find(|s| s.id == w[1]),
+        ) else {
+            continue;
+        };
+        let pa = Vec2::new(a.x as f32, a.y as f32);
+        let pb = Vec2::new(b.x as f32, b.y as f32);
+        let delta = pb - pa;
+        let len = delta.length();
+        if len < 1.0 {
+            continue;
+        }
+        let dir = delta / len;
+        let mid = pa + dir * (len * 0.5);
+        let y = height_at.sample(mid.x, mid.y) + 3.0;
+        let tip = mid + dir * 10.0;
+        let perp = Vec2::new(-dir.y, dir.x);
+        let left = tip - dir * 8.0 + perp * 4.0;
+        let right = tip - dir * 8.0 - perp * 4.0;
+        let tip3 = Vec3::new(tip.x, y, tip.y);
+        gizmos.line(tip3, Vec3::new(left.x, y, left.y), color);
+        gizmos.line(tip3, Vec3::new(right.x, y, right.y), color);
+        gizmos.line(
+            Vec3::new(mid.x, y, mid.y) - Vec3::new(dir.x, 0.0, dir.y) * 10.0,
+            tip3,
+            color,
+        );
+    }
+}
+
 // ---------------------------------------------------------------------
 // Pure helpers (no ECS types), unit-tested directly with hand data.
 // ---------------------------------------------------------------------
+
+/// Advance the place-station ghost's R-rotate state one quarter-turn,
+/// wrapping `3 -> 0`. Extracted from `keybind_system` so the wrap is
+/// unit-testable without an input event.
+fn next_ghost_quarter_turns(turns: u8) -> u8 {
+    (turns + 1) % 4
+}
+
+/// Unit facing direction in world XZ for a given quarter-turn state
+/// (0 = +Z / "north", 1 = +X / "east", 2 = -Z / "south", 3 = -X / "west"),
+/// matching the gizmo spoke drawn by `tool_gizmo_system`.
+fn ghost_facing_xz(quarter_turns: u8) -> Vec2 {
+    let ang = (quarter_turns % 4) as f32 * std::f32::consts::FRAC_PI_2;
+    Vec2::new(ang.sin(), ang.cos())
+}
 
 /// Nearest station to `point` within `max_dist` meters, or `None` if every
 /// station is farther than that (including the trivial case of an empty
@@ -1299,5 +1532,105 @@ mod tests {
             nearest_point_on_roads(Vec2::new(50.0, 500.0), &roads, 45.0),
             None
         );
+    }
+
+    // --- rotation states ---------------------------------------------------
+
+    #[test]
+    fn ghost_quarter_turns_wrap_three_to_zero() {
+        assert_eq!(next_ghost_quarter_turns(0), 1);
+        assert_eq!(next_ghost_quarter_turns(1), 2);
+        assert_eq!(next_ghost_quarter_turns(2), 3);
+        assert_eq!(next_ghost_quarter_turns(3), 0);
+        // A full spin returns to the start.
+        let mut t = 0u8;
+        for _ in 0..4 {
+            t = next_ghost_quarter_turns(t);
+        }
+        assert_eq!(t, 0);
+    }
+
+    #[test]
+    fn ghost_facing_covers_cardinal_directions() {
+        let expected = [
+            Vec2::new(0.0, 1.0),  // 0: +Z / north
+            Vec2::new(1.0, 0.0),  // 1: +X / east
+            Vec2::new(0.0, -1.0), // 2: -Z / south
+            Vec2::new(-1.0, 0.0), // 3: -X / west
+        ];
+        for (turns, want) in expected.into_iter().enumerate() {
+            let got = ghost_facing_xz(turns as u8);
+            assert!(
+                (got - want).length() < 1e-5,
+                "turns={turns}: got {got:?}, want {want:?}"
+            );
+        }
+    }
+
+    // --- CityGrid bounds / snap edge cases ---------------------------------
+
+    #[test]
+    fn grid_cell_of_at_exact_cell_boundaries() {
+        let grid = CityGrid::from_city(&grid_city(vec![]));
+        // Left/bottom edge of cell (2,3) is at world (20, 30); floor maps
+        // that exact boundary into (2,3), not the previous cell.
+        assert_eq!(grid.cell_of(Vec2::new(20.0, 30.0)), (2, 3));
+        // One ulp inside the next cell.
+        assert_eq!(grid.cell_of(Vec2::new(29.999, 39.999)), (2, 3));
+        assert_eq!(grid.cell_of(Vec2::new(30.0, 40.0)), (3, 4));
+    }
+
+    #[test]
+    fn grid_in_bounds_rejects_negative_and_past_far_edge() {
+        let grid = CityGrid::from_city(&grid_city(vec![]));
+        assert!(grid.in_bounds(0, 0));
+        assert!(grid.in_bounds(9, 9));
+        assert!(!grid.in_bounds(-1, 0));
+        assert!(!grid.in_bounds(0, -1));
+        assert!(!grid.in_bounds(10, 9));
+        assert!(!grid.in_bounds(9, 10));
+        // cell_of of a point past the far edge is out of bounds.
+        let (cx, cy) = grid.cell_of(Vec2::new(100.0, 100.0));
+        assert!(!grid.in_bounds(cx, cy));
+    }
+
+    #[test]
+    fn road_snap_includes_exact_radius_excludes_just_beyond() {
+        // Horizontal road on y=0. Grid-snapped cursor at (50, 45) is exactly
+        // ROAD_SNAP_RADIUS_M from the road; (50, 45+ε) is not.
+        let roads = vec![road(vec![0.0, 0.0, 100.0, 0.0])];
+        let on_boundary = nearest_point_on_roads(
+            Vec2::new(50.0, ROAD_SNAP_RADIUS_M),
+            &roads,
+            ROAD_SNAP_RADIUS_M,
+        );
+        assert_eq!(on_boundary, Some(Vec2::new(50.0, 0.0)));
+
+        let just_beyond = nearest_point_on_roads(
+            Vec2::new(50.0, ROAD_SNAP_RADIUS_M + 0.5),
+            &roads,
+            ROAD_SNAP_RADIUS_M,
+        );
+        assert_eq!(just_beyond, None);
+    }
+
+    #[test]
+    fn road_snap_skips_degenerate_polylines() {
+        // Fewer than 2 vertices (4 floats) must be ignored, not panic.
+        let roads = vec![road(vec![0.0, 0.0]), road(vec![0.0, 0.0, 100.0, 0.0])];
+        let p = nearest_point_on_roads(Vec2::new(40.0, 5.0), &roads, 45.0);
+        assert_eq!(p, Some(Vec2::new(40.0, 0.0)));
+    }
+
+    #[test]
+    fn station_separation_boundary_is_inclusive_invalid() {
+        let city = grid_city(vec![]);
+        let stations = vec![station(1, 50.0, 50.0)];
+        // Exactly STATION_MIN_SEPARATION_M away: `<=` in nearest_station_id
+        // means occupied / invalid.
+        let on_ring = Vec2::new(50.0 + STATION_MIN_SEPARATION_M, 50.0);
+        assert!(!placement_valid(on_ring, Some(&city), None, &stations));
+        let outside = Vec2::new(50.0 + STATION_MIN_SEPARATION_M + 1.0, 50.0);
+        assert!(placement_valid(outside, Some(&city), None, &stations));
     }
 }

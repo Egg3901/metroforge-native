@@ -27,6 +27,7 @@ mod stats;
 mod street_lamps;
 mod subway;
 mod terrain;
+mod terrain_material;
 mod transit;
 mod trees;
 mod vehicles;
@@ -39,7 +40,7 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::pbr::{DirectionalLightShadowMap, DistanceFog, FogFalloff};
 use bevy::prelude::*;
 
-use mf_state::{QualityTier, Theme};
+use mf_state::{ColorblindMode, QualityTier, Theme};
 
 use crate::daynight::DayNightState;
 
@@ -86,6 +87,7 @@ impl Plugin for MfRenderPlugin {
             (
                 perf::MfPerfCountersPlugin,
                 reveal::MfRevealPlugin,
+                terrain_material::MfTerrainMaterialPlugin,
                 sky::MfSkyPlugin,
                 terrain::MfTerrainPlugin,
                 water::MfWaterPlugin,
@@ -109,6 +111,7 @@ impl Plugin for MfRenderPlugin {
             Update,
             (
                 sync_theme_system.before(MfRenderSet::Terrain),
+                sync_colorblind_system.before(MfRenderSet::Terrain),
                 // Runs before daynight's apply system (same `Dynamic` set)
                 // so a freshly-inserted `DistanceFog` gets its real
                 // day/night-matched color the same frame it's spawned,
@@ -139,6 +142,16 @@ fn sync_theme_system(theme: Res<Theme>) {
         return;
     }
     palette::set_theme(*theme);
+}
+
+/// Publishes `Res<ColorblindMode>` into `palette.rs` (same process-global
+/// pattern as [`sync_theme_system`]) so route/accent remaps take effect the
+/// same frame Settings changes the mode.
+fn sync_colorblind_system(mode: Res<ColorblindMode>) {
+    if !mode.is_changed() {
+        return;
+    }
+    palette::set_colorblind_mode(*mode);
 }
 
 /// Spec §4 knob table, the render-global settings that don't belong to any
@@ -242,6 +255,14 @@ fn apply_quality_render_settings_system(
                 },
                 Tonemapping::None,
             ));
+        }
+    } else {
+        // Medium/High want no fog: strip leftover startup DistanceFog that
+        // `camera.rs` inserted at spawn. If that spawn lands after the tier's
+        // first change tick the `is_changed` sweep below never removes it,
+        // leaving a milky wash on lit tiers — so strip it every frame here.
+        for camera in &cameras {
+            commands.entity(camera).remove::<DistanceFog>();
         }
     }
     // Bloom backfill for Medium/High: camera may spawn after the tier's

@@ -11,8 +11,19 @@ bevy_app = { workspace = true }
 bevy_ecs = { workspace = true }
 crossbeam-channel = { workspace = true }
 tungstenite = { workspace = true }
+directories = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }

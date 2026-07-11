@@ -1,13 +1,14 @@
 //! Persistent client config (spec §3.4 `config.rs`): a `config.toml` under
 //! the OS config dir (see [`crate::paths`]), holding a quality-tier
-//! override, a theme override (issue #32), the weather-effects toggle, and
-//! window chrome (size/position/borderless-fullscreen). Auto-detection
-//! (spec §4) is used whenever no quality override is set; `Theme::Light` is
-//! used whenever no theme override is set. Either override always wins over
-//! its default.
+//! override, a theme override (issue #32), the weather-effects toggle,
+//! window chrome (size/position/borderless-fullscreen), audio
+//! (volume/mute), accessibility prefs (UI scale / colorblind /
+//! reduce-motion), and HUD prefs. Auto-detection (spec §4) is used whenever
+//! no quality override is set; `Theme::Light` is used whenever no theme
+//! override is set. Either override always wins over its default.
 
 use bevy::prelude::*;
-use mf_state::{QualityTier, Theme};
+use mf_state::{ColorblindMode, QualityTier, Theme};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -77,6 +78,49 @@ impl From<Theme> for ConfigTheme {
     }
 }
 
+/// TOML-serializable mirror of [`ColorblindMode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigColorblind {
+    #[default]
+    Off,
+    Deuteranopia,
+    Protanopia,
+    Tritanopia,
+}
+
+impl From<ConfigColorblind> for ColorblindMode {
+    fn from(c: ConfigColorblind) -> Self {
+        match c {
+            ConfigColorblind::Off => ColorblindMode::Off,
+            ConfigColorblind::Deuteranopia => ColorblindMode::Deuteranopia,
+            ConfigColorblind::Protanopia => ColorblindMode::Protanopia,
+            ConfigColorblind::Tritanopia => ColorblindMode::Tritanopia,
+        }
+    }
+}
+
+impl From<ColorblindMode> for ConfigColorblind {
+    fn from(c: ColorblindMode) -> Self {
+        match c {
+            ColorblindMode::Off => ConfigColorblind::Off,
+            ColorblindMode::Deuteranopia => ConfigColorblind::Deuteranopia,
+            ColorblindMode::Protanopia => ConfigColorblind::Protanopia,
+            ColorblindMode::Tritanopia => ConfigColorblind::Tritanopia,
+        }
+    }
+}
+
+/// Inclusive UI-scale range applied via egui `pixels_per_point` /
+/// `EguiContextSettings::scale_factor`.
+pub const UI_SCALE_MIN: f32 = 0.85;
+pub const UI_SCALE_MAX: f32 = 1.5;
+pub const UI_SCALE_DEFAULT: f32 = 1.0;
+
+pub fn clamp_ui_scale(scale: f32) -> f32 {
+    scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,6 +159,24 @@ struct ConfigFile {
     /// `weather_effects` above.
     #[serde(default = "default_minimap_open")]
     minimap_open: bool,
+    /// Master output gain in `[0, 1]`. Defaults to 1.0 for legacy configs
+    /// that predate the audio settings row.
+    #[serde(default = "default_master_volume")]
+    master_volume: f32,
+    /// When true, all procedural SFX and ambience are silent. Omitted from
+    /// TOML when false (fresh-install default), same pattern as
+    /// `tutorial_completed`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    mute: bool,
+    /// egui UI scale multiplier (0.85..=1.5). Defaults to 1.0.
+    #[serde(default = "default_ui_scale")]
+    ui_scale: f32,
+    /// Colorblind palette shift. Defaults to off.
+    #[serde(default, skip_serializing_if = "is_colorblind_off")]
+    colorblind: ConfigColorblind,
+    /// Disable UI fades and attract-mode camera drift.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    reduce_motion: bool,
 }
 
 fn default_weather_effects() -> bool {
@@ -127,6 +189,18 @@ fn default_autosave_interval_days() -> u32 {
 
 fn default_minimap_open() -> bool {
     true
+}
+
+fn default_ui_scale() -> f32 {
+    UI_SCALE_DEFAULT
+}
+
+fn is_colorblind_off(c: &ConfigColorblind) -> bool {
+    *c == ConfigColorblind::Off
+}
+
+fn default_master_volume() -> f32 {
+    1.0
 }
 
 impl Default for ConfigFile {
@@ -143,12 +217,17 @@ impl Default for ConfigFile {
             window_y: None,
             autosave_interval_days: default_autosave_interval_days(),
             minimap_open: true,
+            master_volume: default_master_volume(),
+            mute: false,
+            ui_scale: UI_SCALE_DEFAULT,
+            colorblind: ConfigColorblind::Off,
+            reduce_motion: false,
         }
     }
 }
 
 /// Loaded/persisted client config. A Bevy `Resource` so `hud.rs`'s quality,
-/// theme, and weather selectors can read/write it directly.
+/// theme, and accessibility selectors can read/write it directly.
 #[derive(Resource, Debug, Clone)]
 pub struct MfConfig {
     pub quality_override: Option<QualityTier>,
@@ -177,6 +256,16 @@ pub struct MfConfig {
     /// (verified unclaimed by grep before wiring it up, same convention
     /// `map_mode.rs`'s module doc uses for `M`).
     pub minimap_open: bool,
+    /// Master output gain in `[0, 1]` for procedural SFX + ambience.
+    pub master_volume: f32,
+    /// When true, all audio is silent regardless of `master_volume`.
+    pub mute: bool,
+    /// egui UI scale (clamped to [`UI_SCALE_MIN`]..=[`UI_SCALE_MAX`]).
+    pub ui_scale: f32,
+    /// Colorblind palette remapping preference.
+    pub colorblind: ColorblindMode,
+    /// When true, skip UI fades and attract camera yaw drift.
+    pub reduce_motion: bool,
     path: Option<PathBuf>,
 }
 
@@ -194,6 +283,11 @@ impl Default for MfConfig {
             window_y: None,
             autosave_interval_days: crate::saves::DEFAULT_AUTOSAVE_INTERVAL_DAYS,
             minimap_open: true,
+            master_volume: 1.0,
+            mute: false,
+            ui_scale: UI_SCALE_DEFAULT,
+            colorblind: ColorblindMode::Off,
+            reduce_motion: false,
             path: None,
         }
     }
@@ -229,6 +323,11 @@ impl MfConfig {
             window_y: file.window_y,
             autosave_interval_days: file.autosave_interval_days,
             minimap_open: file.minimap_open,
+            master_volume: file.master_volume.clamp(0.0, 1.0),
+            mute: file.mute,
+            ui_scale: clamp_ui_scale(file.ui_scale),
+            colorblind: ColorblindMode::from(file.colorblind),
+            reduce_motion: file.reduce_motion,
             path: Some(path),
         }
     }
@@ -254,6 +353,11 @@ impl MfConfig {
             window_y: self.window_y,
             autosave_interval_days: self.autosave_interval_days,
             minimap_open: self.minimap_open,
+            master_volume: self.master_volume.clamp(0.0, 1.0),
+            mute: self.mute,
+            ui_scale: clamp_ui_scale(self.ui_scale),
+            colorblind: ConfigColorblind::from(self.colorblind),
+            reduce_motion: self.reduce_motion,
         };
         let toml_str = toml::to_string_pretty(&file)?;
         std::fs::write(path, toml_str)?;
@@ -313,6 +417,47 @@ impl MfConfig {
             tracing::warn!("mf-game: failed to persist config.toml: {e}");
         }
     }
+
+    /// Persist master volume in `[0, 1]` (Settings slider).
+    pub fn set_master_volume(&mut self, volume: f32) {
+        self.master_volume = volume.clamp(0.0, 1.0);
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
+
+    /// Persist the egui UI scale (Settings slider), clamped.
+    pub fn set_ui_scale(&mut self, scale: f32) {
+        self.ui_scale = clamp_ui_scale(scale);
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
+
+    /// Persist the colorblind palette-remap preference.
+    pub fn set_colorblind(&mut self, mode: ColorblindMode) {
+        self.colorblind = mode;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
+
+    /// Persist reduce-motion (Settings checkbox).
+    pub fn set_reduce_motion(&mut self, enabled: bool) {
+        self.reduce_motion = enabled;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
+
+    /// Persist mute (Settings checkbox). When muted, procedural SFX and
+    /// ambience are silent regardless of `master_volume`.
+    pub fn set_mute(&mut self, mute: bool) {
+        self.mute = mute;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -332,6 +477,11 @@ mod tests {
             window_y: None,
             autosave_interval_days: 10,
             minimap_open: true,
+            master_volume: 1.0,
+            mute: false,
+            ui_scale: 1.0,
+            colorblind: ConfigColorblind::Off,
+            reduce_motion: false,
         }
     }
 
@@ -353,16 +503,24 @@ mod tests {
         assert_eq!(back.theme_override, None);
         assert!(back.weather_effects);
         assert!(!back.borderless_fullscreen);
+        assert!((back.ui_scale - 1.0).abs() < f32::EPSILON);
+        assert_eq!(back.colorblind, ConfigColorblind::Off);
+        assert!(!back.reduce_motion);
     }
 
     #[test]
-    fn legacy_config_without_weather_defaults_on() {
+    fn legacy_config_without_a11y_defaults() {
         let back: ConfigFile = toml::from_str("quality_override = \"medium\"\n").unwrap();
         assert!(back.weather_effects);
         assert_eq!(back.quality_override, Some(ConfigQuality::Medium));
         assert!(!back.borderless_fullscreen);
         assert_eq!(back.window_width, None);
         assert_eq!(back.autosave_interval_days, 10);
+        assert!((back.master_volume - 1.0).abs() < f32::EPSILON);
+        assert!(!back.mute);
+        assert!((back.ui_scale - 1.0).abs() < f32::EPSILON);
+        assert_eq!(back.colorblind, ConfigColorblind::Off);
+        assert!(!back.reduce_motion);
     }
 
     #[test]
@@ -440,6 +598,35 @@ mod tests {
     }
 
     #[test]
+    fn colorblind_conversion_roundtrips_every_variant() {
+        for mode in ColorblindMode::ALL {
+            let cfg: ConfigColorblind = mode.into();
+            let back: ColorblindMode = cfg.into();
+            assert_eq!(mode, back);
+        }
+    }
+
+    #[test]
+    fn a11y_settings_roundtrip() {
+        let mut file = sample_file();
+        file.ui_scale = 1.25;
+        file.colorblind = ConfigColorblind::Deuteranopia;
+        file.reduce_motion = true;
+        let s = toml::to_string_pretty(&file).unwrap();
+        let back: ConfigFile = toml::from_str(&s).unwrap();
+        assert!((back.ui_scale - 1.25).abs() < f32::EPSILON);
+        assert_eq!(back.colorblind, ConfigColorblind::Deuteranopia);
+        assert!(back.reduce_motion);
+    }
+
+    #[test]
+    fn clamp_ui_scale_respects_range() {
+        assert!((clamp_ui_scale(0.5) - UI_SCALE_MIN).abs() < f32::EPSILON);
+        assert!((clamp_ui_scale(2.0) - UI_SCALE_MAX).abs() < f32::EPSILON);
+        assert!((clamp_ui_scale(1.1) - 1.1).abs() < f32::EPSILON);
+    }
+
+    #[test]
     fn autosave_interval_roundtrips_and_defaults() {
         let file = ConfigFile {
             autosave_interval_days: 5,
@@ -452,5 +639,28 @@ mod tests {
 
         let legacy: ConfigFile = toml::from_str("weather_effects = false\n").unwrap();
         assert_eq!(legacy.autosave_interval_days, 10);
+    }
+
+    #[test]
+    fn master_volume_and_mute_roundtrip_and_default() {
+        let file = ConfigFile {
+            master_volume: 0.35,
+            mute: true,
+            ..sample_file()
+        };
+        let s = toml::to_string_pretty(&file).unwrap();
+        assert!(s.contains("master_volume"), "serialized:\n{s}");
+        assert!(s.contains("mute"), "serialized:\n{s}");
+        let back: ConfigFile = toml::from_str(&s).unwrap();
+        assert!((back.master_volume - 0.35).abs() < 1e-5);
+        assert!(back.mute);
+
+        let legacy: ConfigFile = toml::from_str("weather_effects = false\n").unwrap();
+        assert!((legacy.master_volume - 1.0).abs() < f32::EPSILON);
+        assert!(!legacy.mute);
+
+        let unmuted = sample_file();
+        let s2 = toml::to_string_pretty(&unmuted).unwrap();
+        assert!(!s2.contains("mute"));
     }
 }

@@ -64,7 +64,7 @@ fn legacy_payload_without_sim_depth_still_parses() {
     assert_eq!(state.farebox_recovery, None);
     assert_eq!(state.lifetime, None);
     assert!(state.districts.is_empty());
-    assert!(state.overcrowded_routes.is_empty());
+    assert!(state.overcrowded_routes.is_none());
 
     let route = &state.routes[0];
     assert_eq!(route.live_crowding, None);
@@ -123,12 +123,19 @@ fn new_payload_with_sim_depth_parses_every_field() {
         "hourOfDay": 8.5,
         "demandFactor": 1.7,
         "fareboxRecovery": 1.43,
-        "lifetime": 987654.0,
+        "lifetime": {
+            "fares": 500000.0,
+            "subsidy": 400000.0,
+            "operations": 300000.0,
+            "maintenance": 100000.0,
+            "interest": 50000.0,
+            "days": 120.0
+        },
         "districts": [
             {"id": 1, "name": "Downtown", "x": 100.0, "y": 200.0, "population": 40000.0, "jobs": 55000.0},
             {"id": 2, "name": "Riverside", "x": -50.0, "y": 30.0, "population": 12000.0, "jobs": 3000.0}
         ],
-        "overcrowdedRoutes": [1, 5]
+        "overcrowdedRoutes": 2
     }"##;
 
     let state: UiState = serde_json::from_str(json).expect("new payload must deserialize");
@@ -136,8 +143,10 @@ fn new_payload_with_sim_depth_parses_every_field() {
     assert_eq!(state.hour_of_day, Some(8.5));
     assert_eq!(state.demand_factor, Some(1.7));
     assert_eq!(state.farebox_recovery, Some(1.43));
-    assert_eq!(state.lifetime, Some(987654.0));
-    assert_eq!(state.overcrowded_routes, vec![1, 5]);
+    let lifetime = state.lifetime.as_ref().expect("lifetime ledger present");
+    assert!((lifetime.fares - 500000.0).abs() < 1e-6);
+    assert!((lifetime.days - 120.0).abs() < 1e-6);
+    assert_eq!(state.overcrowded_routes, Some(2));
     assert_eq!(state.districts.len(), 2);
     assert_eq!(state.districts[0].name, "Downtown");
     assert!((state.districts[1].jobs - 3000.0).abs() < 1e-6);

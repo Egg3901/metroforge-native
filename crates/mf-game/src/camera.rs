@@ -277,8 +277,9 @@ fn camera_input_system(
 
     // Right-drag or middle-drag orbit.
     if mouse_buttons.pressed(MouseButton::Right) || mouse_buttons.pressed(MouseButton::Middle) {
-        rig.yaw -= motion_delta.x * 0.005;
-        rig.pitch = (rig.pitch - motion_delta.y * 0.005).clamp(0.1, 1.4);
+        let (yaw, pitch) = apply_orbit_drag(rig.yaw, rig.pitch, motion_delta);
+        rig.yaw = yaw;
+        rig.pitch = pitch;
         // Active drag: value and goal move together, 1:1 with the mouse.
         // Orbit under the cursor must never feel like it's lagging.
         rig.yaw_goal = rig.yaw;
@@ -383,10 +384,30 @@ fn camera_input_system(
     // just past the edge, so smoothing keeps trying to push past the wall
     // every frame. Clamping both means there is never a goal on the far
     // side of a value for smoothing to oscillate against.
-    let bounds_min = Vec2::splat(-world_half);
-    let bounds_max = Vec2::splat(world_half);
-    rig.target = rig.target.clamp(bounds_min, bounds_max);
-    rig.target_goal = rig.target_goal.clamp(bounds_min, bounds_max);
+    rig.target = clamp_camera_target(rig.target, world_half);
+    rig.target_goal = clamp_camera_target(rig.target_goal, world_half);
+}
+
+/// Wrap a yaw angle into `[0, τ)`. The live orbit path keeps yaw unbounded
+/// so exponential smoothing never takes the long way across the 0-cut; this
+/// helper exists for callers/tests that need a canonical representative
+/// (e.g. comparing two orientations, serializing a snapshot).
+fn wrap_yaw(yaw: f32) -> f32 {
+    yaw.rem_euclid(std::f32::consts::TAU)
+}
+
+/// One right/middle-drag orbit step: yaw decreases with positive screen-X
+/// motion (standard RTS feel); pitch clamps to `[0.1, 1.4]`. Yaw is left
+/// unbounded on purpose — see [`wrap_yaw`].
+fn apply_orbit_drag(yaw: f32, pitch: f32, motion_delta: Vec2) -> (f32, f32) {
+    let yaw = yaw - motion_delta.x * 0.005;
+    let pitch = (pitch - motion_delta.y * 0.005).clamp(0.1, 1.4);
+    (yaw, pitch)
+}
+
+/// Clamp a pan target into the square world bounds `[-world_half, world_half]`.
+fn clamp_camera_target(target: Vec2, world_half: f32) -> Vec2 {
+    target.clamp(Vec2::splat(-world_half), Vec2::splat(world_half))
 }
 
 /// Applies one wheel-dolly notch (or an accumulated multi-notch delta) to a
@@ -508,10 +529,14 @@ fn camera_transform_system(
         let ground_y = height_at.sample(rig.target.x, rig.target.y);
         let target_world = Vec3::new(rig.target.x, ground_y, rig.target.y);
         let horiz = rig.distance * rig.pitch.cos();
+        // Canonicalize yaw before sin/cos so a long orbit session's unbounded
+        // accumulator still maps through a well-conditioned angle; sin/cos
+        // are 2π-periodic so the on-screen pose is unchanged.
+        let yaw = wrap_yaw(rig.yaw);
         let offset = Vec3::new(
-            rig.yaw.sin() * horiz,
+            yaw.sin() * horiz,
             rig.distance * rig.pitch.sin(),
-            rig.yaw.cos() * horiz,
+            yaw.cos() * horiz,
         );
         transform.translation = target_world + offset;
         *transform = transform.looking_at(target_world, Vec3::Y);
@@ -690,6 +715,72 @@ mod tests {
         assert_eq!(
             zoom_toward_cursor(target, Vec2::new(9.0, 9.0), 0.0, 100.0),
             target
+        );
+    }
+
+    #[test]
+    fn zoom_in_then_out_by_same_ratio_is_near_identity_when_unclamped() {
+        // Property: a modest zoom-in followed by the inverse zoom-out
+        // (same ratio, under the shift clamp) returns the target to its
+        // start — the recenter is a linear function of the distance ratio.
+        let target = Vec2::new(100.0, -50.0);
+        let cursor = Vec2::new(500.0, 200.0);
+        let old = 2_000.0;
+        let mid = 1_800.0; // 10% in — well under the 50% clamp
+        let after_in = zoom_toward_cursor(target, cursor, old, mid);
+        let after_out = zoom_toward_cursor(after_in, cursor, mid, old);
+        assert!(
+            (after_out - target).length() < 1e-3,
+            "expected near-identity, got {after_out:?} vs {target:?}"
+        );
+    }
+
+    #[test]
+    fn zoom_toward_cursor_is_noop_when_cursor_equals_target() {
+        let target = Vec2::new(42.0, -7.0);
+        let out = zoom_toward_cursor(target, target, 1000.0, 500.0);
+        assert_eq!(out, target);
+    }
+
+    // --- orbit / yaw wrap / bounds ----------------------------------------
+
+    #[test]
+    fn wrap_yaw_maps_into_tau_and_preserves_equivalent_angles() {
+        let tau = std::f32::consts::TAU;
+        for yaw in [-7.0 * tau, -0.1, 0.0, 1.0, tau, tau + 0.5, 3.0 * tau + 1.2] {
+            let w = wrap_yaw(yaw);
+            assert!((0.0..tau).contains(&w) || (w - 0.0).abs() < 1e-5, "got {w}");
+            // cos/sin must match the unwrapped angle.
+            assert!((w.cos() - yaw.cos()).abs() < 1e-4);
+            assert!((w.sin() - yaw.sin()).abs() < 1e-4);
+        }
+        assert!((wrap_yaw(0.0) - wrap_yaw(tau)).abs() < 1e-5);
+        assert!((wrap_yaw(-0.25) - wrap_yaw(tau - 0.25)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn apply_orbit_drag_clamps_pitch_and_yaws_against_screen_x() {
+        let (yaw, pitch) = apply_orbit_drag(0.0, 0.7, Vec2::new(100.0, 0.0));
+        assert!(yaw < 0.0, "positive screen-X must decrease yaw, got {yaw}");
+        assert!((pitch - 0.7).abs() < 1e-6);
+
+        let (_, lo) = apply_orbit_drag(0.0, 0.15, Vec2::new(0.0, 1000.0));
+        assert!((lo - 0.1).abs() < 1e-6, "pitch must clamp to 0.1, got {lo}");
+
+        let (_, hi) = apply_orbit_drag(0.0, 1.3, Vec2::new(0.0, -1000.0));
+        assert!((hi - 1.4).abs() < 1e-6, "pitch must clamp to 1.4, got {hi}");
+    }
+
+    #[test]
+    fn clamp_camera_target_pins_to_world_square() {
+        let half = 5_000.0;
+        assert_eq!(
+            clamp_camera_target(Vec2::new(half + 100.0, -half - 50.0), half),
+            Vec2::new(half, -half)
+        );
+        assert_eq!(
+            clamp_camera_target(Vec2::new(10.0, -20.0), half),
+            Vec2::new(10.0, -20.0)
         );
     }
 

@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::audio::{PlaySfx, Sfx};
+use crate::design_system as ds;
 use crate::hud::ToastLog;
 use crate::state::{AppState, PendingInit};
 use mf_protocol::ToastTone;
@@ -35,17 +37,43 @@ pub enum GoalId {
     ApprovalAbove60,
 }
 
-/// One goal's static definition: display copy, which tier it belongs to,
-/// and how to read its progress out of a `UiState`.
+/// One goal's static definition: tier and progress function. Display copy
+/// is looked up at render time via `title()` / `description()` so the
+/// strings table can be swapped for a different locale without rebuilding
+/// the const table.
 pub struct GoalDef {
     pub id: GoalId,
     pub tier: u8,
-    pub title: &'static str,
-    pub description: &'static str,
     /// Returns `(current, target)`; the goal is complete when
     /// `current >= target`. Kept as plain numbers (not a bool) so the HUD
     /// can draw a progress bar instead of just a checkmark.
     pub progress: fn(&UiState) -> (f64, f64),
+}
+
+impl GoalDef {
+    pub fn title(&self) -> &'static str {
+        let s = crate::strings::current();
+        match self.id {
+            GoalId::PlaceThreeStations => s.goal_place_3_stations_title,
+            GoalId::LayFirstTrack => s.goal_lay_first_track_title,
+            GoalId::LaunchARoute => s.goal_launch_route_title,
+            GoalId::ReachCoverage25 => s.goal_coverage_25_title,
+            GoalId::Reach500Riders => s.goal_500_riders_title,
+            GoalId::ApprovalAbove60 => s.goal_approval_60_title,
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        let s = crate::strings::current();
+        match self.id {
+            GoalId::PlaceThreeStations => s.goal_place_3_stations_desc,
+            GoalId::LayFirstTrack => s.goal_lay_first_track_desc,
+            GoalId::LaunchARoute => s.goal_launch_route_desc,
+            GoalId::ReachCoverage25 => s.goal_coverage_25_desc,
+            GoalId::Reach500Riders => s.goal_500_riders_desc,
+            GoalId::ApprovalAbove60 => s.goal_approval_60_desc,
+        }
+    }
 }
 
 /// All goals, ordered by tier then by definition order within the tier.
@@ -56,43 +84,31 @@ pub const GOAL_DEFS: &[GoalDef] = &[
     GoalDef {
         id: GoalId::PlaceThreeStations,
         tier: 1,
-        title: "Place 3 stations",
-        description: "Drop down three stations to start your network.",
         progress: |s| (s.stations.len() as f64, 3.0),
     },
     GoalDef {
         id: GoalId::LayFirstTrack,
         tier: 1,
-        title: "Lay your first track",
-        description: "Connect two stations with a track.",
         progress: |s| (s.tracks.len().min(1) as f64, 1.0),
     },
     GoalDef {
         id: GoalId::LaunchARoute,
         tier: 2,
-        title: "Launch a route",
-        description: "Turn a connected line into a running route.",
         progress: |s| (s.routes.len().min(1) as f64, 1.0),
     },
     GoalDef {
         id: GoalId::ReachCoverage25,
         tier: 2,
-        title: "Cover a quarter of the city",
-        description: "Get transit coverage to 25%.",
         progress: |s| ((s.coverage * 100.0).min(25.0), 25.0),
     },
     GoalDef {
         id: GoalId::Reach500Riders,
         tier: 3,
-        title: "Reach 500 daily riders",
-        description: "Grow daily transit trips to 500.",
         progress: |s| (s.daily_transit_trips.min(500.0), 500.0),
     },
     GoalDef {
         id: GoalId::ApprovalAbove60,
         tier: 3,
-        title: "Win over the city",
-        description: "Get approval above 60%.",
         progress: |s| (s.approval.min(60.0), 60.0),
     },
 ];
@@ -263,16 +279,19 @@ fn goals_eval_system(
     ui_state: Res<LatestUi>,
     mut goals: ResMut<GoalsState>,
     mut toasts: ResMut<ToastLog>,
+    mut sfx: EventWriter<PlaySfx>,
 ) {
     let Some(state) = &ui_state.0 else { return };
     let newly = newly_completed(GOAL_DEFS, state, &goals.completed);
     if newly.is_empty() {
         return;
     }
+    let s = crate::strings::current();
     for id in newly {
         goals.completed.insert(id);
-        let title = goal_def(id).title;
-        toasts.push(format!("Goal complete: {title}"), ToastTone::Good);
+        let title = goal_def(id).title();
+        toasts.push(s.goal_complete(title), ToastTone::Good);
+        sfx.write(PlaySfx(Sfx::GoalComplete));
     }
     goals.save();
 }
@@ -294,52 +313,55 @@ pub fn goals_panel_system(
     };
     let ctx = contexts.ctx_mut()?;
 
+    let s = crate::strings::current();
     let unlocked = goals.unlocked_tier();
     let max_tier = GOAL_DEFS.iter().map(|g| g.tier).max().unwrap_or(1);
 
-    egui::Window::new("Goals")
-        .id(egui::Id::new("goals_panel"))
-        .collapsible(true)
-        .resizable(false)
-        .open(&mut open.0)
-        .default_pos(egui::pos2(14.0, 70.0))
-        .show(ctx, |ui| {
+    ds::window(
+        ctx,
+        ds::WindowOpts {
+            title: s.goals,
+            id: egui::Id::new("goals_panel"),
+            open: Some(&mut open.0),
+            collapsible: true,
+            resizable: false,
+            default_pos: Some(egui::pos2(14.0, 70.0)),
+            default_width: None,
+            anchor: None,
+        },
+        |ui| {
             for tier in 1..=unlocked {
-                ui.label(crate::design_system::label_muted(format!("Tier {tier}")));
+                ui.label(crate::design_system::label_muted(s.tier(tier)));
                 for def in GOAL_DEFS.iter().filter(|g| g.tier == tier) {
                     let done = goals.is_complete(def.id);
                     let (cur, target) = (def.progress)(state);
                     ui.horizontal(|ui| {
                         if done {
-                            ui.colored_label(egui::Color32::from_rgb(0x34, 0xc7, 0x59), "\u{2713}");
+                            ui.colored_label(crate::design_system::GOOD, "\u{2713}");
                         } else {
                             ui.label("  ");
                         }
                         ui.vertical(|ui| {
-                            ui.label(crate::design_system::value_strong(def.title));
-                            ui.label(crate::design_system::label_muted(def.description));
+                            ui.label(crate::design_system::value_strong(def.title()));
+                            ui.label(crate::design_system::label_muted(def.description()));
                             let frac = if target > 0.0 {
                                 (cur / target).clamp(0.0, 1.0) as f32
                             } else {
                                 1.0
                             };
-                            ui.add(
-                                egui::ProgressBar::new(frac)
-                                    .desired_width(200.0)
-                                    .show_percentage(),
-                            );
+                            let _ = crate::design_system::progress_bar(ui, frac, 200.0);
                         });
                     });
                 }
-                ui.separator();
+                crate::design_system::thin_separator(ui);
             }
             if unlocked < max_tier {
-                ui.label(crate::design_system::label_muted(format!(
-                    "Tier {} locked. Finish tier {unlocked} to unlock it.",
-                    unlocked + 1
-                )));
+                ui.label(crate::design_system::label_muted(
+                    s.tier_locked(unlocked + 1, unlocked),
+                ));
             }
-        });
+        },
+    );
     Ok(())
 }
 
@@ -385,7 +407,7 @@ mod tests {
             farebox_recovery: None,
             lifetime: None,
             districts: Vec::new(),
-            overcrowded_routes: Vec::new(),
+            overcrowded_routes: None,
         }
     }
 

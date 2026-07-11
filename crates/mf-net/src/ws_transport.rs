@@ -28,13 +28,12 @@ use tungstenite::{Message, WebSocket};
 use crate::transport::SimTransport;
 
 /// How long with zero inbound traffic before the transport calls itself dead
-/// (spec §1.4: "No inbound traffic for 10 s -> client declares sim dead").
-/// This is measured against `last_inbound_millis` (wall-clock, set only on
-/// actual inbound frames/pings/pongs — see `mark_alive`), so it's independent
-/// of `POLL_INTERVAL`: tightening the poll below doesn't change this math.
-/// `plugin.rs` pings every 5s, i.e. at half this window, so one dropped pong
-/// still leaves a full ping-interval of slack before `is_alive()` would flap.
-const LIVENESS_WINDOW: Duration = Duration::from_secs(10);
+/// (1.0: websocket silence > 5 s). Measured against `last_inbound_millis`
+/// (wall-clock, set only on actual inbound frames/pings/pongs — see
+/// `mark_alive`), so it's independent of `POLL_INTERVAL`. `plugin.rs` pings
+/// every 2.5 s (half this window) so one dropped pong still leaves slack
+/// before `is_alive()` would flap.
+pub const LIVENESS_WINDOW: Duration = Duration::from_secs(5);
 /// Read-timeout granularity for the worker loop: on every timeout (no inbound
 /// frame arrived within the window) the loop falls through to drain the
 /// outbound queue, so this both bounds worst-case outbound-send latency and
@@ -120,14 +119,18 @@ impl SimTransport for WsTransport {
         if self.closed.load(Ordering::Relaxed) {
             return false;
         }
+        self.silence_duration() < LIVENESS_WINDOW
+    }
+
+    fn silence_duration(&self) -> Duration {
         let last = self.last_inbound_millis.load(Ordering::Relaxed);
         if last == 0 {
-            // Nothing received yet; alive as long as we're still inside the
-            // liveness window since connect (hello should arrive immediately).
-            return self.started_at.elapsed() < LIVENESS_WINDOW;
+            // Nothing received yet; measure silence from connect time
+            // (hello should arrive immediately).
+            return self.started_at.elapsed();
         }
         let elapsed_ms = self.started_at.elapsed().as_millis() as u64;
-        elapsed_ms.saturating_sub(last) < LIVENESS_WINDOW.as_millis() as u64
+        Duration::from_millis(elapsed_ms.saturating_sub(last))
     }
 }
 
@@ -195,10 +198,9 @@ fn run_worker(
         }
 
         // Drain everything currently queued for send. `WebSocket::send`
-        // (tungstenite 0.24) is `write` + `flush` in one call, so each
-        // message reaches the socket immediately rather than sitting in an
-        // internal write buffer for the next batch — no explicit `flush()`
-        // needed here.
+        // is `write` + `flush` in one call, so each message reaches the
+        // socket immediately rather than sitting in an internal write
+        // buffer for the next batch — no explicit `flush()` needed here.
         loop {
             match outbound_rx.try_recv() {
                 Ok(msg) => {
@@ -211,7 +213,10 @@ fn run_worker(
                             continue;
                         }
                     };
-                    if let Err(e) = socket.send(Message::Text(text)) {
+                    // tungstenite 0.26+: `Message::Text` holds `Utf8Bytes`;
+                    // `Message::text` accepts anything `Into<Utf8Bytes>`
+                    // (including `String`) so the wire payload is unchanged.
+                    if let Err(e) = socket.send(Message::text(text)) {
                         tracing::warn!("mf-net: send error: {e}");
                         closed.store(true, Ordering::Relaxed);
                         return;

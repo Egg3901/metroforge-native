@@ -92,9 +92,10 @@ impl SaveSlot {
 
     /// Human-readable label for menus.
     pub fn label(self) -> String {
+        let s = crate::strings::current();
         match self {
-            SaveSlot::Autosave(n) => format!("Autosave {}", n + 1),
-            SaveSlot::Slot(n) => format!("Slot {n}"),
+            SaveSlot::Autosave(n) => s.autosave_label(n + 1),
+            SaveSlot::Slot(n) => s.slot_label(n),
         }
     }
 }
@@ -427,6 +428,29 @@ impl SaveManager {
         self.pending_load.is_some()
     }
 
+    /// Read the autosave slot and return its opaque sim JSON for an
+    /// immediate mid-game `LoadSave` (reconnect path). Returns `None` when
+    /// missing/unreadable so the caller can fall back to a fresh `Init`.
+    pub fn take_autosave_json_for_reconnect(&mut self) -> Option<String> {
+        // The autosave ring holds up to `AUTOSAVE_RING_SIZE` entries; pick the
+        // newest readable one by `saved_at_epoch_secs` so reconnect restores
+        // the most recent state regardless of where the write cursor sits.
+        let newest = (0..AUTOSAVE_RING_SIZE)
+            .filter_map(|n| {
+                Self::try_load(SaveSlot::Autosave(n))
+                    .ok()
+                    .map(|(meta, sim_json)| (meta.saved_at_epoch_secs, sim_json))
+            })
+            .max_by_key(|(ts, _)| *ts);
+        match newest {
+            Some((_ts, sim_json)) => Some(sim_json),
+            None => {
+                tracing::info!("mf-game: no autosave for reconnect");
+                None
+            }
+        }
+    }
+
     /// Start a save into `slot`: sends `ToSim::RequestSave` and remembers
     /// the metadata snapshotted at click time.
     pub fn request_save(
@@ -443,7 +467,10 @@ impl SaveManager {
             }
             Err(e) => {
                 tracing::warn!("mf-game: failed to send requestSave: {e}");
-                toasts.push(format!("Save failed: {e}"), ToastTone::Warn);
+                toasts.push(
+                    crate::strings::current().save_failed(&e.to_string()),
+                    ToastTone::Warn,
+                );
                 sfx.write(PlaySfx(Sfx::Error));
             }
         }
@@ -467,7 +494,10 @@ impl SaveManager {
             }
             Err(e) => {
                 tracing::warn!("mf-game: failed to load save slot: {e}");
-                toasts.push(format!("Load failed: {e}"), ToastTone::Warn);
+                toasts.push(
+                    crate::strings::current().load_failed(&e.to_string()),
+                    ToastTone::Warn,
+                );
                 sfx.write(PlaySfx(Sfx::Error));
                 None
             }
@@ -528,15 +558,55 @@ pub fn list() -> Vec<SlotEntry> {
     out
 }
 
+/// Newest occupied save whose [`SaveMeta::city_label`] matches `city_key`
+/// (case-sensitive preset key). "Newest" is by `saved_at_epoch_secs`, then
+/// by sim `day` as a tiebreak. Returns `None` when no slot matches.
+#[allow(dead_code)] // exercised by unit tests + available to menu callers
+pub fn newest_save_for_city<'a>(slots: &'a [SlotEntry], city_key: &str) -> Option<&'a SlotEntry> {
+    slots
+        .iter()
+        .filter(|e| e.meta.as_ref().and_then(|m| m.city_label.as_deref()) == Some(city_key))
+        .max_by_key(|e| {
+            let m = e.meta.as_ref().expect("filtered to occupied");
+            (m.saved_at_epoch_secs, m.day)
+        })
+}
+
+/// Map of city preset key → newest occupied slot for that city.
+pub fn newest_saves_by_city(slots: &[SlotEntry]) -> std::collections::HashMap<String, &SlotEntry> {
+    let mut best: std::collections::HashMap<String, &SlotEntry> = std::collections::HashMap::new();
+    for entry in slots {
+        let Some(meta) = entry.meta.as_ref() else {
+            continue;
+        };
+        let Some(key) = meta.city_label.as_ref() else {
+            continue;
+        };
+        match best.get(key) {
+            Some(existing) => {
+                let em = existing.meta.as_ref().expect("occupied");
+                if (meta.saved_at_epoch_secs, meta.day) > (em.saved_at_epoch_secs, em.day) {
+                    best.insert(key.clone(), entry);
+                }
+            }
+            None => {
+                best.insert(key.clone(), entry);
+            }
+        }
+    }
+    best
+}
+
 fn read_meta(slot: SaveSlot) -> Option<SaveMeta> {
     let path = slot_path(slot)?;
     try_load_at(&path).ok().map(|(meta, _)| meta)
 }
 
 fn slot_saved_message(slot: SaveSlot) -> String {
+    let s = crate::strings::current();
     match slot {
-        SaveSlot::Autosave(_) => "Autosaved".to_string(),
-        SaveSlot::Slot(n) => format!("Saved to slot {n}"),
+        SaveSlot::Autosave(_) => s.autosaved.to_string(),
+        SaveSlot::Slot(n) => s.saved_to_slot(n),
     }
 }
 
@@ -564,7 +634,10 @@ fn capture_saved_system(
             }
             Err(e) => {
                 tracing::warn!("mf-game: failed to write save slot: {e}");
-                toasts.push(format!("Save failed: {e}"), ToastTone::Warn);
+                toasts.push(
+                    crate::strings::current().save_failed(&e.to_string()),
+                    ToastTone::Warn,
+                );
                 sfx.write(PlaySfx(Sfx::Error));
             }
         }
@@ -611,11 +684,18 @@ fn autosave_system(
     manager.last_autosave_day = Some(state.day);
 }
 
+/// Sends the actual `ToSim::LoadSave` for whatever [`SaveManager::load`]
+/// (or [`SaveManager::stage_autosave_for_reconnect`]) queued. Runs in
+/// `Loading` (menu continue) and `InGame` (sidecar reconnect restore). See
+/// the module doc's CRITICAL section for why this is deferred here instead
+/// of sent directly from `load`.
 fn send_pending_load_system(mut manager: ResMut<SaveManager>, link: Option<Res<SimLink>>) {
     if manager.pending_load.is_none() {
         return;
     }
     let Some(link) = link else {
+        // No transport yet — retry next frame rather than dropping the
+        // queued load (reconnect may still be swapping SimLink).
         return;
     };
     if let Some(sim_json) = manager.pending_load.take() {
@@ -676,7 +756,8 @@ impl Plugin for MfSavesPlugin {
                     capture_saved_system,
                     autosave_system.run_if(in_state(AppState::InGame)),
                     tick_playtime_system.run_if(in_state(AppState::InGame)),
-                    send_pending_load_system.run_if(in_state(AppState::Loading)),
+                    send_pending_load_system
+                        .run_if(in_state(AppState::Loading).or(in_state(AppState::InGame))),
                     apply_pending_load_meta_system.run_if(in_state(AppState::Loading)),
                 ),
             );
@@ -988,5 +1069,53 @@ mod tests {
         assert_eq!(manager.next_autosave_slot(), SaveSlot::Autosave(1));
         assert_eq!(manager.next_autosave_slot(), SaveSlot::Autosave(2));
         assert_eq!(manager.next_autosave_slot(), SaveSlot::Autosave(0));
+    }
+
+    #[test]
+    fn newest_save_for_city_picks_latest_by_timestamp() {
+        let slots = vec![
+            SlotEntry {
+                slot: SaveSlot::Slot(1),
+                meta: Some(SaveMeta {
+                    city_label: Some("nyc".into()),
+                    day: 10,
+                    cash: 1.0,
+                    saved_at_epoch_secs: 100,
+                    network_size: 1,
+                    playtime_secs: 60,
+                    thumbnail_png_base64: None,
+                }),
+            },
+            SlotEntry {
+                slot: SaveSlot::Autosave(0),
+                meta: Some(SaveMeta {
+                    city_label: Some("nyc".into()),
+                    day: 20,
+                    cash: 2.0,
+                    saved_at_epoch_secs: 200,
+                    network_size: 2,
+                    playtime_secs: 120,
+                    thumbnail_png_base64: None,
+                }),
+            },
+            SlotEntry {
+                slot: SaveSlot::Slot(2),
+                meta: Some(SaveMeta {
+                    city_label: Some("cleveland".into()),
+                    day: 5,
+                    cash: 3.0,
+                    saved_at_epoch_secs: 300,
+                    network_size: 3,
+                    playtime_secs: 30,
+                    thumbnail_png_base64: None,
+                }),
+            },
+        ];
+        let nyc = newest_save_for_city(&slots, "nyc").expect("nyc save");
+        assert_eq!(nyc.slot, SaveSlot::Autosave(0));
+        assert_eq!(nyc.meta.as_ref().unwrap().day, 20);
+        let cle = newest_save_for_city(&slots, "cleveland").expect("cleveland save");
+        assert_eq!(cle.slot, SaveSlot::Slot(2));
+        assert!(newest_save_for_city(&slots, "boston").is_none());
     }
 }
