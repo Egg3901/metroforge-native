@@ -230,7 +230,9 @@ pub fn city_select_screen_ui(
 
                                 field_label(ui, crate::strings::current().city);
                                 ui.add_space(ds::SPACE_XXS);
-                                ui.label(ds::label_muted(crate::strings::current().city_select_hint));
+                                ui.label(ds::label_muted(
+                                    crate::strings::current().city_select_hint,
+                                ));
                                 ui.add_space(ds::SPACE_SM);
 
                                 // Ensure preview textures exist for every city we show.

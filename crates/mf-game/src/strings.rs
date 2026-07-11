@@ -803,7 +803,13 @@ impl Strings {
         )
     }
 
-    pub fn route_row_subtitle(&self, stops: usize, riders: &str, mode: &str, paused: bool) -> String {
+    pub fn route_row_subtitle(
+        &self,
+        stops: usize,
+        riders: &str,
+        mode: &str,
+        paused: bool,
+    ) -> String {
         let paused_suffix = if paused { self.route_paused_suffix } else { "" };
         format!(
             "{stops}{}{riders}{}{mode}{paused_suffix}",

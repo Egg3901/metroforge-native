@@ -484,12 +484,14 @@ fn draw_route_row(
     });
 
     let paused = route.vehicle_count == 0;
-    ui.label(ds::label_small(crate::strings::current().route_row_subtitle(
-        route.station_ids.len(),
-        &format_thousands(route.daily_ridership),
-        mode_word(route.mode),
-        paused,
-    )));
+    ui.label(ds::label_small(
+        crate::strings::current().route_row_subtitle(
+            route.station_ids.len(),
+            &format_thousands(route.daily_ridership),
+            mode_word(route.mode),
+            paused,
+        ),
+    ));
 
     if is_selected {
         route_editor(
@@ -1009,11 +1011,7 @@ fn route_panel_feedback_system(
             if ours {
                 let s = crate::strings::current();
                 let detail = fb.error.as_deref().unwrap_or(s.unknown_error);
-                push_toast(
-                    &mut toasts,
-                    s.route_update_failed(detail),
-                    ToastTone::Warn,
-                );
+                push_toast(&mut toasts, s.route_update_failed(detail), ToastTone::Warn);
                 sfx.write(PlaySfx(Sfx::Error));
             }
             if panel
