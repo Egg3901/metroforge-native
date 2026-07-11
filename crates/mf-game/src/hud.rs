@@ -91,8 +91,12 @@ impl Plugin for MfHudPlugin {
                     connecting_hud_system.run_if(in_state(AppState::ConnectingSim)),
                     main_menu_hud_system.run_if(in_state(AppState::MainMenu)),
                     loading_hud_system.run_if(in_state(AppState::Loading)),
-                    in_game_hud_system.run_if(in_state(AppState::InGame)),
-                    pause_overlay_system.run_if(in_state(AppState::InGame)),
+                    in_game_hud_system
+                        .run_if(in_state(AppState::InGame))
+                        .run_if(crate::egui_idle::egui_content_active),
+                    pause_overlay_system
+                        .run_if(in_state(AppState::InGame))
+                        .run_if(crate::egui_idle::egui_content_active),
                     fatal_banner_system,
                 )
                     .chain()
@@ -1513,7 +1517,9 @@ fn in_game_hud_system(
     mut route_panel: ResMut<crate::build_ui::RoutePanelState>,
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
+    mut egui_timer: Option<ResMut<crate::perf::EguiPerfTimer>>,
 ) -> Result {
+    let t0 = egui_timer.as_ref().map(|_| std::time::Instant::now());
     let ctx = contexts.ctx_mut()?;
 
     // Art-direction §8: off-white panel, near-black text, consistent
@@ -1707,6 +1713,9 @@ fn in_game_hud_system(
                 });
             }
         });
+    if let (Some(t0), Some(timer)) = (t0, egui_timer.as_mut()) {
+        timer.0 = timer.0.saturating_add(t0.elapsed().as_micros() as u64);
+    }
     Ok(())
 }
 
