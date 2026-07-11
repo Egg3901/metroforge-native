@@ -10,5 +10,6 @@ use bevy_ecs::prelude::*;
 /// stays warm and moody even while attract runs the sim at 30×.
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AttractLighting {
+    /// Whether attract-mode golden-hour lighting is pinned (see the type doc).
     pub active: bool,
 }

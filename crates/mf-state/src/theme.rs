@@ -15,15 +15,20 @@ use bevy_ecs::prelude::*;
 /// palette variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Resource, Default)]
 pub enum Theme {
+    /// Default Mirror's Edge white-city look.
     #[default]
     Light,
+    /// Standing near-black city with glowing transit (not a time-of-day state).
     Dark,
+    /// Violet / vaporwave palette variant.
     Purple,
 }
 
 impl Theme {
+    /// Every theme in HUD combo order.
     pub const ALL: [Theme; 3] = [Theme::Light, Theme::Dark, Theme::Purple];
 
+    /// Player-facing label for combo boxes.
     pub fn label(self) -> &'static str {
         match self {
             Theme::Light => "Light",
