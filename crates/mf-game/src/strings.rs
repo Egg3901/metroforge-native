@@ -244,6 +244,7 @@ pub struct Strings {
     pub saved_to_slot_prefix: &'static str,
     pub demand_overlay_toast: &'static str,
     pub unserved_overlay_toast: &'static str,
+    pub traffic_overlay_toast: &'static str,
     pub star_earned_prefix: &'static str,
 
     // --- Campaign star goals --------------------------------------------
@@ -528,6 +529,7 @@ pub static EN: Strings = Strings {
     saved_to_slot_prefix: "Saved to slot ",
     demand_overlay_toast: "Demand overlay on. Arcs show where the city wants to travel. Press G again for unserved trips.",
     unserved_overlay_toast: "Unserved overlay on. These arcs are trips you are losing to cars right now.",
+    traffic_overlay_toast: "Traffic overlay on. Roads glow green to red by congestion. Press G again to clear.",
     star_earned_prefix: "Star earned: ",
 
     star_cover_city_prefix: "Cover ",
@@ -1078,6 +1080,7 @@ pub fn all_static_strings(s: &Strings) -> Vec<&'static str> {
         s.autosaved,
         s.saved_to_slot_prefix,
         s.demand_overlay_toast,
+        s.traffic_overlay_toast,
         s.unserved_overlay_toast,
         s.star_earned_prefix,
         s.star_cover_city_prefix,

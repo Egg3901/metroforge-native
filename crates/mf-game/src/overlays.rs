@@ -1,11 +1,11 @@
 //! Unserved-demand / travel-demand desire-line overlays (ship-plan #25,
 //! v0.3): "the single most important insight view" per the web version this
-//! ports from. `KeyCode::KeyG` cycles Off -> Demand -> Unserved -> Off
-//! (`mf_state::OverlayState`, owned there rather than here so `mf-render`
+//! ports from. `KeyCode::KeyG` cycles Off -> Demand -> Unserved -> Traffic ->
+//! Off (`mf_state::OverlayState`, owned there rather than here so `mf-render`
 //! can read it too and fade the transit network's vivid colors while an
 //! overlay owns the stage).
 //!
-//! Two modes, deliberately very different in what they draw:
+//! Three modes, deliberately very different in what they draw:
 //!
 //! - **Demand**: a client-computed, network-independent gravity model over
 //!   `LatestFields`' population/jobs grids ("where the city wants to go",
@@ -19,8 +19,13 @@
 //!   — OD pairs the assignment engine found underserved by the CURRENT
 //!   network. Still useful as "trips being lost to cars right now", just no
 //!   longer the only lens on offer.
+//! - **Traffic** (#27): the sim's own road-congestion grid (`LatestTraffic`,
+//!   msgType=3) painted ONTO the street network — each road segment glows
+//!   green (free) to red (jammed) by the density sampled at its midpoint, not
+//!   a floating heatmap. Free-flowing segments are skipped so jams read fast.
 //!
-//! Both modes render as elevated arcs (gizmos, immediate-mode, zero asset
+//! The demand/unserved modes render as elevated arcs (gizmos, immediate-mode,
+//! zero asset
 //! churn — same technique `tools.rs` uses for build-tool ghosts), not
 //! straight ground lines: think flight-route maps, a smooth parabolic bow
 //! from A to B, grounded at both ends.
@@ -39,7 +44,8 @@
 use bevy::prelude::*;
 use mf_protocol::ToastTone;
 use mf_state::{
-    CurrentCity, HeightAt, LatestDemand, LatestFields, OverlayMode, OverlayState, SubwayView,
+    CurrentCity, HeightAt, LatestDemand, LatestFields, LatestTraffic, OverlayMode, OverlayState,
+    SubwayView,
 };
 
 use crate::hud::ToastLog;
@@ -152,7 +158,67 @@ fn overlay_color(mode: OverlayMode, normalized_t: f32) -> Color {
     match mode {
         OverlayMode::Demand => lerp_rgb(STEEL_BLUE, AMBER, normalized_t),
         OverlayMode::Unserved => lerp_rgb(AMBER, HOT_PINK, normalized_t),
-        OverlayMode::Off => Color::WHITE, // unreachable: draw system returns early on Off
+        OverlayMode::Traffic => traffic_color(normalized_t), // drawn via draw_traffic_congestion
+        OverlayMode::Off => Color::WHITE, // unreachable: draw returns early on Off
+    }
+}
+
+/// Congestion ramp: free-flowing green -> busy amber -> jammed red.
+fn traffic_color(t: f32) -> Color {
+    if t < 0.5 {
+        lerp_rgb((60, 200, 90), (240, 190, 40), (t * 2.0).clamp(0.0, 1.0))
+    } else {
+        lerp_rgb(
+            (240, 190, 40),
+            (230, 50, 40),
+            ((t - 0.5) * 2.0).clamp(0.0, 1.0),
+        )
+    }
+}
+
+/// Lift (m) so the congestion line sits just above the road ribbon.
+const TRAFFIC_LIFT_M: f32 = 1.2;
+/// Below this normalized congestion a segment is free-flowing and skipped, so
+/// the overlay highlights only where traffic actually builds up.
+const TRAFFIC_MIN_T: f32 = 0.08;
+
+/// #27: paint congestion ONTO the street network (not a heatmap). For each
+/// road segment, sample the sim's traffic density grid at the segment midpoint
+/// and draw a green->amber->red line along the segment. Free-flowing segments
+/// are skipped so jams read at a glance. Network dimming (when any overlay is
+/// active) is owned elsewhere; this just adds the congestion coloring.
+fn draw_traffic_congestion(
+    gizmos: &mut Gizmos,
+    height_at: &HeightAt,
+    city: &CurrentCity,
+    traffic: &LatestTraffic,
+) {
+    let Some(static_city) = &city.static_city else {
+        return;
+    };
+    let max_d = traffic.max_density();
+    if max_d <= 0.0 {
+        return;
+    }
+    for road in &static_city.roads {
+        // `points` is a flat [x, y, x, y, ...] world-space polyline (same
+        // decode as roads.rs's ribbon mesh).
+        let pts: Vec<Vec2> = road
+            .points
+            .chunks_exact(2)
+            .map(|c| Vec2::new(c[0] as f32, c[1] as f32))
+            .collect();
+        for seg in pts.windows(2) {
+            let (a, b) = (seg[0], seg[1]);
+            let mid = (a + b) * 0.5;
+            let t = (traffic.density_at(mid.x, mid.y) / max_d).clamp(0.0, 1.0);
+            if t < TRAFFIC_MIN_T {
+                continue;
+            }
+            let pa = Vec3::new(a.x, height_at.sample(a.x, a.y) + TRAFFIC_LIFT_M, a.y);
+            let pb = Vec3::new(b.x, height_at.sample(b.x, b.y) + TRAFFIC_LIFT_M, b.y);
+            gizmos.line(pa, pb, traffic_color(t));
+        }
     }
 }
 
@@ -436,6 +502,7 @@ fn overlay_toggle_system(
     mut toasts: ResMut<ToastLog>,
     mut demand_toast_shown: Local<bool>,
     mut unserved_toast_shown: Local<bool>,
+    mut traffic_toast_shown: Local<bool>,
 ) {
     if !keys.just_pressed(KeyCode::KeyG) {
         return;
@@ -451,6 +518,10 @@ fn overlay_toggle_system(
             toasts.push(s.unserved_overlay_toast.to_string(), ToastTone::Info);
             *unserved_toast_shown = true;
         }
+        OverlayMode::Traffic if !*traffic_toast_shown => {
+            toasts.push(s.traffic_overlay_toast.to_string(), ToastTone::Info);
+            *traffic_toast_shown = true;
+        }
         _ => {}
     }
 }
@@ -465,6 +536,7 @@ fn overlay_draw_system(
     subway: Res<SubwayView>,
     height_at: Res<HeightAt>,
     demand: Res<LatestDemand>,
+    traffic: Res<LatestTraffic>,
     fields: Res<LatestFields>,
     city: Res<CurrentCity>,
     mut gravity_cache: ResMut<GravityDemandCache>,
@@ -474,6 +546,11 @@ fn overlay_draw_system(
         return;
     }
     if subway.t > SUBWAY_T_GATE {
+        return;
+    }
+
+    if overlay.mode == OverlayMode::Traffic {
+        draw_traffic_congestion(&mut gizmos, &height_at, &city, &traffic);
         return;
     }
 
