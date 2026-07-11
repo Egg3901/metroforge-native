@@ -20,6 +20,7 @@ use crate::mesh_utils::{
     append_ribbon, arc_length_table, offset_polyline, point_along, MeshBuffers,
 };
 use crate::palette;
+use crate::RenderCacheStats;
 
 const STATION_RADIUS: f32 = 14.0;
 const STATION_HEIGHT: f32 = 10.0;
@@ -136,6 +137,7 @@ fn transit_update_system(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut ring_query: Query<(&mut StationRing, &MeshMaterial3d<StandardMaterial>)>,
     counters: Res<crate::perf::PerfCounters>,
+    mut stats: ResMut<RenderCacheStats>,
 ) {
     let _span = tracing::info_span!("transit_update").entered();
     let _timer = crate::perf::PerfSpan::start(&counters.transit_update_us);
@@ -185,6 +187,9 @@ fn transit_update_system(
             &mut meshes,
             &mut materials,
         );
+        stats.transit_station_entities = state.station_entities.len();
+        stats.transit_track_entities = state.track_entities.len();
+        stats.transit_route_entities = state.route_entities.len();
     } else if ui.is_changed() {
         update_station_crowding(u, &mut materials, &mut ring_query);
     }

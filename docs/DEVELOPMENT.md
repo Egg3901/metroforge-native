@@ -124,6 +124,31 @@ proxy for "the renderer actually drew something" on a box with no eyes on it.
 Required packages on a fresh box: `xvfb` and Mesa's Vulkan driver package
 (lavapipe), plus whatever X11 utility packages your distro splits `xvfb-run` into.
 
+## Soak harness (unbounded-growth check)
+
+`MF_SOAK=<seconds>` arms a long-session growth check (`crates/mf-game/src/soak.rs`).
+Pair it with `MF_AUTOSTART` so the run reaches `InGame` without a menu. While
+armed the harness:
+
+1. Sets sim speed to **20x** so dusk/dawn churn the night-paint path many times.
+2. Orbits the camera around the dense city center.
+3. Logs entity / `Assets<Mesh>` / `Assets<StandardMaterial>` / per-layer cache
+   counts **every minute**.
+4. After a 90s warmup, fails (exit code 1) if any tracked counter grows
+   **superlinearly** across the sample series. Plateau or mild linear growth
+   (e.g. the grow-only vehicle entity pool hitting a new high-water mark) passes.
+
+```sh
+export MF_AUTOSTART=nyc
+export MF_SOAK=7200   # two wall-clock hours; use a smaller value for a smoke check
+xvfb-run -a cargo run --release -p mf-game
+```
+
+A short smoke check (`MF_SOAK=300`) is enough to confirm the harness arms and
+samples; the full 7200s run is what catches dusk/dawn material churn and
+transit rebuild leaks over a long session. Toggle the in-game **F11** overlay
+during a normal play session to watch the same counters live.
+
 ## Windows cross-compile
 
 Windows release builds are cross-compiled from Linux with `cargo-xwin` rather than

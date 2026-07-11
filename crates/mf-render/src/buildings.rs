@@ -52,6 +52,7 @@ use crate::mesh_utils::{
 };
 use crate::palette;
 use crate::reveal::{BuildingMaterial, RevealExtension};
+use crate::RenderCacheStats;
 
 const CHUNKS_PER_SIDE: usize = 8;
 
@@ -309,6 +310,7 @@ fn build_buildings_system(
     mut dense_center: ResMut<BuildingsDenseCenter>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<BuildingMaterial>>,
+    mut stats: ResMut<RenderCacheStats>,
     counters: Res<crate::perf::PerfCounters>,
 ) {
     let Some(city_json) = &city.static_city else {
@@ -852,6 +854,7 @@ fn build_buildings_system(
             .id();
         state.chunks.push(entity);
     }
+    stats.building_chunks = state.chunks.len();
 }
 
 /// Per-tier building draw distance (spec §4: 3/6/12km/unlimited).

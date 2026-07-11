@@ -11,6 +11,7 @@ mod campaign;
 mod command_bus;
 mod config;
 mod crash_report;
+mod debug_overlay;
 mod design_system;
 mod egui_idle;
 mod goals;
@@ -29,6 +30,7 @@ mod report_ui;
 mod reveal_input;
 mod saves;
 mod single_instance;
+mod soak;
 mod state;
 mod theme_boot;
 mod tools;
@@ -101,6 +103,8 @@ fn main() {
             promo::MfPromoPlugin,
             tutorial::MfTutorialPlugin,
             goals::MfGoalsPlugin,
+            debug_overlay::MfDebugOverlayPlugin,
+            soak::MfSoakPlugin,
             perf::MfPerfPlugin,
             egui_idle::MfEguiIdlePlugin,
             photomode::MfPhotoModePlugin,
