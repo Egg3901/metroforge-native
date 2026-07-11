@@ -10,6 +10,7 @@ mod camera;
 mod campaign;
 mod command_bus;
 mod config;
+mod crash;
 mod crash_report;
 mod debug_overlay;
 mod design_system;
@@ -39,6 +40,7 @@ mod window_mgmt;
 
 use bevy::prelude::*;
 use bevy::window::WindowPlugin;
+use crash::{MfCrashPlugin, SafeMode};
 use mf_net::MfNetPlugin;
 use mf_render::MfRenderPlugin;
 use mf_state::MfStatePlugin;
@@ -58,20 +60,31 @@ fn main() {
     if !single_instance::ensure_single_instance() {
         return;
     }
+    // Panic hooks before any Bevy/plugin work so boot-time panics still leave
+    // reports. `crash` (safe-mode/log-ring report) installs first; the simpler
+    // `crash_report` OS-native writer chains to it, so both run on a panic. The
+    // log ring attaches via `LogPlugin::custom_layer` in the WindowPlugin set.
+    crash::install_panic_hook();
     crash_report::install_panic_hook();
+    let cli = crash::parse_cli(std::env::args());
 
     // Load config before the window is created so size/position/fullscreen
-    // apply on the first frame (boot_system used to load it too late).
+    // apply on the first frame. `window_from_config` also honors MF_RESOLUTION.
     let config = config::MfConfig::load();
     let window = window_mgmt::window_from_config(&config);
 
     let mut app = App::new();
     app.insert_resource(ClearColor(SKY_DAY))
+        .insert_resource(SafeMode(cli.safe_mode))
         .insert_resource(config)
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(window),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(window),
+                    ..default()
+                })
+                .set(crash::log_plugin_with_ring()),
+        )
         .add_plugins((MfNetPlugin, MfStatePlugin, MfRenderPlugin))
         .add_plugins(app_icon::MfAppIconPlugin)
         .add_plugins(window_mgmt::MfWindowPlugin)
@@ -81,6 +94,7 @@ fn main() {
             input::MfInputPlugin,
             reveal_input::MfRevealInputPlugin,
             hud::MfHudPlugin,
+            MfCrashPlugin,
             saves::MfSavesPlugin,
             verify::MfVerifyPlugin,
             MfQualityBootPlugin,

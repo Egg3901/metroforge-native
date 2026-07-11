@@ -12,6 +12,7 @@ use mf_state::{CurrentCity, LatestFields, LatestUi};
 
 use crate::attract::AttractState;
 use crate::config::MfConfig;
+use crate::crash::SafeMode;
 
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AppState {
@@ -188,12 +189,16 @@ fn boot_system(
     config: Res<MfConfig>,
     mut reconnect: ResMut<ReconnectState>,
     mut next_state: ResMut<NextState<AppState>>,
+    safe_mode: Res<SafeMode>,
 ) {
-    // `MfConfig` is loaded and inserted in `main` before the window is
-    // created (so size/position/fullscreen apply on first frame). Boot only
-    // mirrors the weather preference into the render-facing resource.
+    // `MfConfig` is loaded and inserted in `main` before the window is created
+    // (so size/position/fullscreen apply on first frame); boot reads it via the
+    // `config` param. Safe mode forces weather off for this session
+    // (bloom/outlines already follow Potato via quality_boot); the on-disk
+    // config is left alone.
+    let weather_enabled = config.weather_effects && !safe_mode.0;
     commands.insert_resource(mf_state::WeatherEffects {
-        enabled: config.weather_effects,
+        enabled: weather_enabled,
     });
 
     match SimLink::spawn_and_connect(None) {

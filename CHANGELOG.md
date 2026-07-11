@@ -10,6 +10,11 @@ sibling `metroforge` repo and reach releases via the pinned sidecar SHA in
 ## [Unreleased]
 
 ### Added
+- Crash handling: local panic reports (message, backtrace, OS/GPU, version,
+  last 200 log lines) under the OS data dir; next-launch dismissible notice
+  with Open report location / Continue / Safe mode; `--safe-mode` forces
+  Potato and disables weather (bloom/outlines follow Potato); sidecar stderr
+  captured to a rotating log
 - Windows desktop polish wave 2 (#72): DPI-aware scaling, F11/Alt+Enter
   borderless fullscreen (persisted), window size/position recall, rendering
   pause on minimize/alt-tab, single-instance focus guard, native icon in
