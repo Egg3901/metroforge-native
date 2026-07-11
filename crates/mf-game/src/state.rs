@@ -12,6 +12,7 @@ use mf_state::{CurrentCity, LatestFields, LatestUi};
 
 use crate::attract::AttractState;
 use crate::config::MfConfig;
+use crate::crash::SafeMode;
 
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AppState {
@@ -24,8 +25,8 @@ pub enum AppState {
 }
 
 /// Which screen `hud.rs`'s `AppState::MainMenu` systems are showing right
-/// now. Not a second `States` machine (that's overkill for three egui
-/// panels) — a plain resource `hud.rs` reads/writes directly, since
+/// now. Not a second `States` machine (that's overkill for a handful of
+/// egui panels) — a plain resource `hud.rs` reads/writes directly, since
 /// nothing outside the menu (net status, sim init, etc.) reacts to it.
 ///
 /// Owner feedback ("takes me right to city select"): the player must land
@@ -35,6 +36,8 @@ pub enum MenuScreen {
     #[default]
     Title,
     CitySelect,
+    /// Save browser: per-slot metadata for continue/load from the title screen.
+    LoadGame,
     Settings,
 }
 
@@ -171,6 +174,7 @@ fn menu_screen_override() -> Option<MenuScreen> {
     match std::env::var("MF_MENU_SCREEN").ok()?.trim() {
         "title" => Some(MenuScreen::Title),
         "city" => Some(MenuScreen::CitySelect),
+        "load" => Some(MenuScreen::LoadGame),
         "settings" => Some(MenuScreen::Settings),
         _ => None,
     }
@@ -182,14 +186,20 @@ fn menu_screen_override() -> Option<MenuScreen> {
 /// instead of duplicating that policy here.
 fn boot_system(
     mut commands: Commands,
+    config: Res<MfConfig>,
     mut reconnect: ResMut<ReconnectState>,
     mut next_state: ResMut<NextState<AppState>>,
+    safe_mode: Res<SafeMode>,
 ) {
-    let config = MfConfig::load();
+    // `MfConfig` is loaded and inserted in `main` before the window is created
+    // (so size/position/fullscreen apply on first frame); boot reads it via the
+    // `config` param. Safe mode forces weather off for this session
+    // (bloom/outlines already follow Potato via quality_boot); the on-disk
+    // config is left alone.
+    let weather_enabled = config.weather_effects && !safe_mode.0;
     commands.insert_resource(mf_state::WeatherEffects {
-        enabled: config.weather_effects,
+        enabled: weather_enabled,
     });
-    commands.insert_resource(config);
 
     match SimLink::spawn_and_connect(None) {
         Ok(link) => {

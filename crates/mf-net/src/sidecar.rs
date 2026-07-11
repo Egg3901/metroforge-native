@@ -1,7 +1,12 @@
 //! `SidecarProcess` — locates and spawns the TypeScript sim sidecar, parses
 //! its one-line stdout handshake, and kills it on drop (spec §3.2, §2.3).
+//!
+//! Sidecar stderr is captured to a rotating log under the OS data dir so a
+//! sidecar panic is diagnosable the same way as a native panic (local disk
+//! only; nothing is transmitted).
 
-use std::io::{BufRead, BufReader};
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -20,6 +25,9 @@ struct HandshakeLine {
 
 /// How long to wait for the sidecar's stdout handshake line before giving up.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Rotate `sidecar-stderr.log` once it exceeds this many bytes.
+const STDERR_LOG_MAX_BYTES: u64 = 512 * 1024;
 
 pub struct SidecarProcess {
     child: Child,
@@ -40,7 +48,7 @@ impl SidecarProcess {
             cmd.arg("--headless-speed").arg(speed.to_string());
         }
         cmd.stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .stdin(Stdio::null());
 
         // The Bun-compiled sidecar is a console-subsystem exe; without this
@@ -56,6 +64,10 @@ impl SidecarProcess {
         let mut child = cmd
             .spawn()
             .map_err(|e| anyhow::anyhow!("failed to spawn sidecar ({launch_desc}): {e}"))?;
+
+        if let Some(stderr) = child.stderr.take() {
+            spawn_stderr_capture(stderr);
+        }
 
         let stdout = child.stdout.take().expect("piped stdout");
         let handshake = read_handshake(stdout)?;
@@ -195,4 +207,141 @@ fn read_handshake(stdout: std::process::ChildStdout) -> anyhow::Result<Handshake
     }
     serde_json::from_str(trimmed)
         .map_err(|e| anyhow::anyhow!("bad handshake line {trimmed:?}: {e}"))
+}
+
+/// OS data dir logs folder (same ProjectDirs qualifier as mf-game saves).
+fn sidecar_logs_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("com", "[REDACTED]", "MetroForge")
+        .map(|dirs| dirs.data_dir().join("logs"))
+}
+
+fn sidecar_stderr_log_path() -> Option<PathBuf> {
+    sidecar_logs_dir().map(|d| d.join("sidecar-stderr.log"))
+}
+
+/// Drain sidecar stderr onto a size-rotated log file on a background thread.
+fn spawn_stderr_capture(stderr: std::process::ChildStderr) {
+    std::thread::spawn(move || {
+        let Some(path) = sidecar_stderr_log_path() else {
+            // No data dir on this platform: drain and discard so the pipe
+            // cannot fill and block the sidecar.
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                line.clear();
+            }
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!("mf-net: could not create sidecar log dir: {e}");
+                return;
+            }
+        }
+        let mut writer = match RotatingLog::open(&path, STDERR_LOG_MAX_BYTES) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::warn!("mf-net: could not open sidecar stderr log: {e}");
+                return;
+            }
+        };
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            match line {
+                Ok(l) => {
+                    if let Err(e) = writer.write_line(&l) {
+                        tracing::warn!("mf-net: sidecar stderr log write failed: {e}");
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+/// Append-only log that renames to `*.1` and starts fresh past `max_bytes`.
+struct RotatingLog {
+    path: PathBuf,
+    max_bytes: u64,
+    file: File,
+    written: u64,
+}
+
+impl RotatingLog {
+    fn open(path: &std::path::Path, max_bytes: u64) -> std::io::Result<Self> {
+        let written = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            max_bytes,
+            file,
+            written,
+        })
+    }
+
+    fn write_line(&mut self, line: &str) -> std::io::Result<()> {
+        if self.written >= self.max_bytes {
+            self.rotate()?;
+        }
+        writeln!(self.file, "{line}")?;
+        self.written = self.written.saturating_add(line.len() as u64 + 1);
+        Ok(())
+    }
+
+    fn rotate(&mut self) -> std::io::Result<()> {
+        // Flush before rename so the rotated file is complete.
+        self.file.flush()?;
+        let rotated = self.path.with_extension("log.1");
+        let _ = std::fs::remove_file(&rotated);
+        let _ = std::fs::rename(&self.path, &rotated);
+        self.file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.path)?;
+        self.written = 0;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn rotating_log_rolls_when_past_max() {
+        let dir = std::env::temp_dir().join(format!("mf-sidecar-log-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sidecar-stderr.log");
+
+        let mut log = RotatingLog::open(&path, 32).unwrap();
+        log.write_line("short").unwrap();
+        // Push past the cap.
+        log.write_line("this line is definitely longer than thirty two bytes")
+            .unwrap();
+        // Next write should rotate first.
+        log.write_line("after-rotate").unwrap();
+        drop(log);
+
+        let mut current = String::new();
+        File::open(&path)
+            .unwrap()
+            .read_to_string(&mut current)
+            .unwrap();
+        assert!(
+            current.contains("after-rotate"),
+            "current log should hold post-rotate lines: {current:?}"
+        );
+        let rotated = path.with_extension("log.1");
+        assert!(
+            rotated.is_file(),
+            "expected rotated sibling at {}",
+            rotated.display()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -282,8 +282,7 @@ pub struct CampaignProgress {
 
 impl CampaignProgress {
     fn campaign_path() -> Option<PathBuf> {
-        directories::ProjectDirs::from("com", "ahousedivided", "MetroForge")
-            .map(|dirs| dirs.config_dir().join("campaign.toml"))
+        crate::paths::campaign_toml_path()
     }
 
     /// Load from disk, falling back to no progress at all if the file is
@@ -417,11 +416,6 @@ fn compute_outcome(ui: &UiState, all_three_stars_earned: bool) -> ScenarioOutcom
     }
 }
 
-/// Same cap `hud.rs`'s `ToastLog` trims to (kept in sync by convention, not
-/// by a shared constant — `TOAST_LOG_CAP` there is private and this file
-/// must not touch `hud.rs`).
-const TOAST_LOG_CAP: usize = 20;
-
 /// ~1Hz evaluation: checks the active city's stars against [`LatestUi`],
 /// toasts + persists any newly-earned ones, and updates [`ScenarioOutcome`].
 /// The active city is [`PendingInit::preset_key`] — it's set once at
@@ -452,14 +446,10 @@ fn evaluate_progress_system(
         let earned = evaluate_earned_stars(objectives, state);
         if earned > previous {
             for goal in &objectives.stars[previous as usize..earned as usize] {
-                toasts.0.push((
+                toasts.push(
                     format!("Star earned: {}", describe_goal(*goal)),
                     ToastTone::Good,
-                ));
-            }
-            if toasts.0.len() > TOAST_LOG_CAP {
-                let excess = toasts.0.len() - TOAST_LOG_CAP;
-                toasts.0.drain(0..excess);
+                );
             }
             sfx.write(PlaySfx(Sfx::Confirm));
             progress.record_stars(&pending.preset_key, earned);
@@ -524,6 +514,12 @@ mod tests {
             max_day: None,
             era_label: None,
             command_count: 0,
+            hour_of_day: None,
+            demand_factor: None,
+            farebox_recovery: None,
+            lifetime: None,
+            districts: Vec::new(),
+            overcrowded_routes: Vec::new(),
         }
     }
 

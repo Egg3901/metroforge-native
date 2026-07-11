@@ -18,9 +18,11 @@ mod outline;
 /// Public so `mf-game` ghost previews can share the same vivid route table
 /// (and theme) as finished transit — see `tools.rs` route_ghost_color.
 pub mod palette;
+pub mod perf;
 mod reveal;
 mod roads;
 mod sky;
+mod stats;
 mod street_lamps;
 mod subway;
 mod terrain;
@@ -28,6 +30,9 @@ mod terrain_material;
 mod transit;
 mod trees;
 mod vehicles;
+mod water;
+
+pub use stats::RenderCacheStats;
 
 use bevy::core_pipeline::bloom::{Bloom, BloomCompositeMode, BloomPrefilter};
 use bevy::core_pipeline::tonemapping::Tonemapping;
@@ -39,6 +44,7 @@ use mf_state::{QualityTier, Theme};
 use crate::daynight::DayNightState;
 
 pub use buildings::BuildingsDenseCenter;
+pub use perf::{MfPerfCountersPlugin, PerfCounters};
 
 /// Peak bloom intensity at full night (Medium/High). Ramps linearly with
 /// `DayNightState.night_factor`; 0 during day so the bloom node early-outs.
@@ -74,22 +80,29 @@ impl Plugin for MfRenderPlugin {
                 .chain(),
         )
         .insert_resource(DirectionalLightShadowMap { size: 2048 })
+        .init_resource::<RenderCacheStats>()
         .add_plugins((
-            reveal::MfRevealPlugin,
-            terrain_material::MfTerrainMaterialPlugin,
-            sky::MfSkyPlugin,
-            terrain::MfTerrainPlugin,
-            roads::MfRoadsPlugin,
-            buildings::MfBuildingsPlugin,
-            transit::MfTransitPlugin,
-            trees::MfTreesPlugin,
-            street_lamps::MfStreetLampsPlugin,
-            vehicles::MfVehiclesPlugin,
-            agents::MfAgentsPlugin,
-            daynight::MfDayNightPlugin,
-            atmosphere::MfAtmospherePlugin,
-            subway::MfSubwayPlugin,
-            outline::MfOutlinePlugin,
+            (
+                perf::MfPerfCountersPlugin,
+                reveal::MfRevealPlugin,
+                terrain_material::MfTerrainMaterialPlugin,
+                sky::MfSkyPlugin,
+                terrain::MfTerrainPlugin,
+                water::MfWaterPlugin,
+                roads::MfRoadsPlugin,
+                buildings::MfBuildingsPlugin,
+                transit::MfTransitPlugin,
+            ),
+            (
+                trees::MfTreesPlugin,
+                street_lamps::MfStreetLampsPlugin,
+                vehicles::MfVehiclesPlugin,
+                agents::MfAgentsPlugin,
+                daynight::MfDayNightPlugin,
+                atmosphere::MfAtmospherePlugin,
+                subway::MfSubwayPlugin,
+                outline::MfOutlinePlugin,
+            ),
         ))
         .add_systems(
             Update,
@@ -134,6 +147,16 @@ fn sync_theme_system(theme: Res<Theme>) {
 /// else in the table (materials, draw distances, agent caps, terrain
 /// subdivision, day/night on/off) is consumed directly by the relevant
 /// layer module from `QualityTier::knobs()`.
+/// True if `falloff` is already the linear `start..end` we'd set — lets the
+/// per-frame fog reconcile skip a redundant write (and its change-detection
+/// trigger) when the camera's fog is already correct for the tier.
+fn fog_falloff_matches(falloff: &FogFalloff, start: f32, end: f32) -> bool {
+    matches!(
+        falloff,
+        FogFalloff::Linear { start: s, end: e } if *s == start && *e == end
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_quality_render_settings_system(
     quality: Res<QualityTier>,
@@ -142,6 +165,11 @@ fn apply_quality_render_settings_system(
     cameras: Query<Entity, With<Camera3d>>,
     cameras_missing_msaa: Query<Entity, (With<Camera3d>, Without<Msaa>)>,
     cameras_missing_fog: Query<Entity, (With<Camera3d>, Without<DistanceFog>)>,
+    // Cameras that ALREADY have a `DistanceFog` (the in-game camera spawns
+    // with one at `Startup`, see `mf-game`'s `camera.rs`). Needed so the
+    // per-tier fog knob can *override* that spawn-time falloff — see the fog
+    // reconcile block below.
+    mut cameras_with_fog: Query<(Entity, &mut DistanceFog, Option<&Tonemapping>), With<Camera3d>>,
     cameras_missing_bloom: Query<Entity, (With<Camera3d>, Without<Bloom>)>,
     mut camera_hdr: Query<&mut Camera, With<Camera3d>>,
 ) {
@@ -182,26 +210,45 @@ fn apply_quality_render_settings_system(
     // the seam exactly (fully-fogged pixel == sky pixel) and renders the
     // palette faithfully. Lit tiers (Medium/High) keep Bevy's default.
     //
-    // Also strip leftover startup DistanceFog from Medium/High cameras:
-    // `camera.rs` inserts a linear fog at spawn, and if that lands after
-    // the quality tier's first change tick the `is_changed` sweep below
-    // never removes it — leaving a milky wash on lit tiers.
-    match knobs.fog {
-        Some((start, end)) => {
-            for camera in &cameras_missing_fog {
-                commands.entity(camera).insert((
-                    DistanceFog {
-                        falloff: FogFalloff::Linear { start, end },
-                        ..default()
-                    },
-                    Tonemapping::None,
-                ));
+    // IMPORTANT (horizon "paper map" fix): `mf-game`'s `camera.rs` spawns the
+    // in-game camera at `Startup` *already carrying* a long-range
+    // `DistanceFog` (start 8km / end 55km) tuned for the Medium/High framing.
+    // On the fog tiers (Potato/Low) the draw distance is only 3-6km, so that
+    // 8km fog never engages and the horizon renders raw un-fogged terrain and
+    // aliased road scribbles — exactly the reported bug. The old backfill
+    // only touched cameras `Without<DistanceFog>`, so a camera that already
+    // had the spawn-time fog was never corrected to the per-tier knob values,
+    // and `daynight` only syncs fog *color*, never the falloff. Reconcile the
+    // falloff (and `Tonemapping::None`, see note above) on EVERY camera every
+    // frame when the tier wants fog — cheap, one camera — so the knob is
+    // authoritative regardless of any spawn-time or Medium-default fog.
+    if let Some((start, end)) = knobs.fog {
+        for (camera, mut fog, tonemapping) in &mut cameras_with_fog {
+            if !fog_falloff_matches(&fog.falloff, start, end) {
+                fog.falloff = FogFalloff::Linear { start, end };
+            }
+            // Guarded so we only re-insert (and respecialize the pipeline)
+            // when it isn't already `None`, not every frame.
+            if tonemapping != Some(&Tonemapping::None) {
+                commands.entity(camera).insert(Tonemapping::None);
             }
         }
-        None => {
-            for camera in &cameras {
-                commands.entity(camera).remove::<DistanceFog>();
-            }
+        for camera in &cameras_missing_fog {
+            commands.entity(camera).insert((
+                DistanceFog {
+                    falloff: FogFalloff::Linear { start, end },
+                    ..default()
+                },
+                Tonemapping::None,
+            ));
+        }
+    } else {
+        // Medium/High want no fog: strip leftover startup DistanceFog that
+        // `camera.rs` inserted at spawn. If that spawn lands after the tier's
+        // first change tick the `is_changed` sweep below never removes it,
+        // leaving a milky wash on lit tiers — so strip it every frame here.
+        for camera in &cameras {
+            commands.entity(camera).remove::<DistanceFog>();
         }
     }
     // Bloom backfill for Medium/High: camera may spawn after the tier's

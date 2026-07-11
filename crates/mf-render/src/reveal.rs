@@ -1,13 +1,11 @@
-//! Building "reveal" dissolve (issue #18, `mf-render` half): a
-//! `MaterialExtension` on top of `StandardMaterial` that discards fragments
-//! near `mf_state::RevealState.center` in a dithered (ordered/Bayer)
-//! pattern, thinning out toward `outer` and fully solid past it.
-//! `mf-game`'s `reveal_input.rs` computes *where* the hole should be
-//! (cursor ray, close camera); `buildings.rs` copies that shared
-//! `RevealState` into this extension's uniform each frame (see its
-//! `apply_reveal_system`, quantized the same way `apply_night_dim_system`
-//! already is, for the same no-churn reason) and spawns chunk meshes with
-//! [`BuildingMaterial`] instead of a bare `StandardMaterial`.
+//! Building material extension: reveal dissolve + procedural facade detail.
+//!
+//! [`BuildingMaterial`] is `StandardMaterial` extended with [`RevealExtension`],
+//! which carries both the reveal-hole uniforms (issue #18) and the facade
+//! uniforms (night factor, Medium/High enable bit). The main-pass fragment
+//! shader is [`facade.wgsl`](facade.wgsl) (reveal discard + window grid);
+//! the prepass/shadow counterpart stays in `reveal_prepass.wgsl` (discard
+//! only — facade tint is a color effect, not a geometric one).
 //!
 //! Also samples scrolling cloud-shadow noise from [`crate::atmosphere::
 //! CloudShadowParams`] (Medium/High weather) — a cheap projected multiply
@@ -33,7 +31,7 @@
 //! Without that, discarding in the main pass only would leave a "dissolved"
 //! building still fully solid in the shadow map. See `reveal_prepass.wgsl`
 //! for the matching prepass/shadow shader this unlocks — it mirrors
-//! `reveal.wgsl`'s discard test exactly so both passes agree.
+//! `facade.wgsl`'s discard test exactly so both passes agree.
 //!
 //! ## Shader embedding
 //! The shipped binary has no `assets/` folder, so both WGSL files are
@@ -44,14 +42,13 @@
 //!
 //! ## Unlit path
 //! `apply_quality_to_buildings_material_system` only ever flips
-//! `mat.base.unlit`, which both `reveal.wgsl`'s and the vendored `pbr.wgsl`'s
+//! `mat.base.unlit`, which both `facade.wgsl`'s and the vendored `pbr.wgsl`'s
 //! non-prepass fragment functions check *after* our discard test already
 //! ran (`STANDARD_MATERIAL_FLAGS_UNLIT_BIT` gates the lit-vs-flat-color
 //! branch, not whether the fragment shader runs at all) — so the reveal
-//! discard applies identically on unlit (potato/low) and lit tiers. This is
-//! the "works on potato" property the mission calls for: the effect is a
-//! property of the shared extension, orthogonal to the base material's
-//! lit/unlit flag.
+//! discard applies identically on unlit (potato/low) and lit tiers. Facade
+//! window detail is separately gated to Medium/High via
+//! [`RevealExtension::facade`].y (see `buildings.rs`).
 
 use bevy::asset::{load_internal_asset, weak_handle};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin};
@@ -60,19 +57,26 @@ use bevy::render::render_resource::{AsBindGroup, ShaderRef};
 
 /// Building chunk material family: `StandardMaterial` (unchanged bindings
 /// and behavior — night-dim, quality-unlit, per-building vertex tint all
-/// keep working exactly as before) extended with the reveal discard +
-/// cloud-shadow multiply.
+/// keep working exactly as before) extended with reveal + facade uniforms
+/// plus a cloud-shadow multiply.
 /// `buildings.rs` spawns every chunk mesh with this type instead of a bare
 /// `StandardMaterial`, so there is exactly one building material family.
 pub type BuildingMaterial = ExtendedMaterial<StandardMaterial, RevealExtension>;
 
-const REVEAL_SHADER_HANDLE: Handle<Shader> = weak_handle!("2f9d6d9a-2a35-4d0a-9f7d-6a6a2e5d8a10");
+const FACADE_SHADER_HANDLE: Handle<Shader> = weak_handle!("2f9d6d9a-2a35-4d0a-9f7d-6a6a2e5d8a10");
 const REVEAL_PREPASS_SHADER_HANDLE: Handle<Shader> =
     weak_handle!("6b3f6f4f-3b7b-4a2b-9c7c-6a3a2e5d8a11");
 
-/// Uniforms at binding 100 (merged by `AsBindGroup`) plus cloud-shadow
-/// texture at 101/102. Binding 100 (not 0) leaves 0..99 free for
-/// `StandardMaterial`'s own bindings.
+/// Four `Vec4` fields at the SAME binding index (100) — `AsBindGroup`'s
+/// derive merges same-binding uniform fields into one generated struct
+/// (see vendored `bevy_render_macros::as_bind_group`), so this is still one
+/// bind-group-100 buffer. The cloud-shadow noise adds a texture at 101 and
+/// sampler at 102. Binding 100 (not 0) leaves 0..99 free for
+/// `StandardMaterial`'s own bindings, per the convention the
+/// `extended_material` Bevy example itself documents.
+///
+/// Field order must stay in lockstep with `RevealUniform` in `facade.wgsl`
+/// and `reveal_prepass.wgsl`: reveal, params, cloud, facade.
 #[derive(Asset, AsBindGroup, TypePath, Clone)]
 pub struct RevealExtension {
     /// (center_x, center_z, inner_radius, outer_radius) — world space.
@@ -84,6 +88,11 @@ pub struct RevealExtension {
     /// Cloud shadow: (offset_u, offset_v, strength, inv_scale).
     #[uniform(100)]
     pub cloud: Vec4,
+    /// (night_factor 0..1, facade_enabled 0/1, reserved, reserved).
+    /// `night_factor` is copied from [`crate::daynight::DayNightState`] each
+    /// frame (quantized); `facade_enabled` is 1 on Medium/High only.
+    #[uniform(100)]
+    pub facade: Vec4,
     #[texture(101)]
     #[sampler(102)]
     pub cloud_noise: Option<Handle<Image>>,
@@ -95,11 +104,13 @@ impl Default for RevealExtension {
     /// — `smoothstep(inner, outer, dist)` with `inner == outer == 0` would
     /// be a degenerate (NaN-prone) edge case on some GPUs, and there is no
     /// reason to court that when a harmless non-zero default is free.
+    /// Facade starts disabled; `buildings.rs` enables it on Medium/High.
     fn default() -> Self {
         RevealExtension {
             reveal: Vec4::new(0.0, 0.0, 60.0, 180.0),
             params: Vec4::ZERO,
             cloud: Vec4::new(0.0, 0.0, 0.0, 1.0 / 1_100.0),
+            facade: Vec4::ZERO,
             cloud_noise: None,
         }
     }
@@ -107,7 +118,7 @@ impl Default for RevealExtension {
 
 impl MaterialExtension for RevealExtension {
     fn fragment_shader() -> ShaderRef {
-        REVEAL_SHADER_HANDLE.into()
+        FACADE_SHADER_HANDLE.into()
     }
 
     fn prepass_fragment_shader() -> ShaderRef {
@@ -130,7 +141,7 @@ pub struct MfRevealPlugin;
 
 impl Plugin for MfRevealPlugin {
     fn build(&self, app: &mut App) {
-        load_internal_asset!(app, REVEAL_SHADER_HANDLE, "reveal.wgsl", Shader::from_wgsl);
+        load_internal_asset!(app, FACADE_SHADER_HANDLE, "facade.wgsl", Shader::from_wgsl);
         load_internal_asset!(
             app,
             REVEAL_PREPASS_SHADER_HANDLE,

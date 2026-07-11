@@ -118,6 +118,27 @@ pub const BAD: egui::Color32 = egui::Color32::from_rgb(0xff, 0x3b, 0x30);
 /// De-emphasized secondary text (same role as `hud.rs`'s `MUTED_TEXT`).
 pub const MUTED: egui::Color32 = egui::Color32::from_rgb(0x5c, 0x5e, 0x63);
 
+/// Semantic crowding ramp for a `0.0..1.0` live-crowding value (sim-depth,
+/// PR #31): interpolates [`GOOD`] (empty) -> [`WARN`] (filling) -> [`BAD`]
+/// (packed) so a route stripe/row reads its load at a glance. Values are
+/// clamped, so out-of-range inputs saturate at the endpoints rather than
+/// wrapping. Kept as a plain color helper (no theme lookup) since
+/// `GOOD`/`WARN`/`BAD` are the fixed status colors that read on every theme.
+pub fn crowding_color(crowding: f64) -> egui::Color32 {
+    let t = crowding.clamp(0.0, 1.0) as f32;
+    let lerp = |a: u8, b: u8, t: f32| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    let (from, to, seg_t) = if t < 0.5 {
+        (GOOD, WARN, t / 0.5)
+    } else {
+        (WARN, BAD, (t - 0.5) / 0.5)
+    };
+    egui::Color32::from_rgb(
+        lerp(from.r(), to.r(), seg_t),
+        lerp(from.g(), to.g(), seg_t),
+        lerp(from.b(), to.b(), seg_t),
+    )
+}
+
 /// Fill for an inactive/idle toggle-style control (`hud.rs` uses this same
 /// value for its speed/subway toggle buttons' resting state).
 pub const INACTIVE_BG: egui::Color32 = egui::Color32::from_rgb(0xe9, 0xea, 0xe5);
@@ -259,6 +280,54 @@ pub fn scrim() -> egui::Color32 {
 pub fn menu_wash() -> egui::Color32 {
     let c = current_colors().panel_bg;
     egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 38)
+}
+
+/// Horizontal gradient wash over the attract diorama: opaque behind the
+/// menu column on the left, fading to fully transparent on the far right so
+/// the city stays visible and moody instead of milked out by a flat scrim.
+///
+/// Painted as overlapping vertical strips (no Mesh dependency) — cheap even
+/// on Potato. Callers should use a transparent `CentralPanel` frame and
+/// paint this into `ui.max_rect()` before drawing widgets.
+pub fn paint_menu_gradient_scrim(painter: &egui::Painter, rect: egui::Rect) {
+    let c = current_colors().panel_bg;
+    const STRIPS: i32 = 48;
+    let w = rect.width() / STRIPS as f32;
+    if w <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    for i in 0..STRIPS {
+        let t = i as f32 / (STRIPS - 1) as f32;
+        let alpha = (menu_gradient_alpha(t) * 255.0).round().clamp(0.0, 255.0) as u8;
+        if alpha == 0 {
+            continue;
+        }
+        let x0 = rect.left() + w * i as f32;
+        let strip = egui::Rect::from_min_max(
+            egui::pos2(x0, rect.top()),
+            // Slight overlap kills 1px seams between strips.
+            egui::pos2(x0 + w + 1.0, rect.bottom()),
+        );
+        painter.rect_filled(
+            strip,
+            egui::CornerRadius::ZERO,
+            egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha),
+        );
+    }
+}
+
+/// Alpha at normalized horizontal position `t` ∈ [0, 1] for
+/// [`paint_menu_gradient_scrim`] — pure so the falloff is unit-testable.
+pub fn menu_gradient_alpha(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    // Plateau of readability through the left/center menu column, then a
+    // steep falloff so the right half of the city reads clearly.
+    if t < 0.38 {
+        0.72 - t * 0.25
+    } else {
+        let u = ((t - 0.38) / 0.62).clamp(0.0, 1.0);
+        (0.62 * (1.0 - u).powf(1.55)).max(0.0)
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -715,6 +784,29 @@ pub fn sparkline(ui: &mut egui::Ui, values: &[f64], size: egui::Vec2) -> egui::R
 mod tests {
     use super::*;
 
+    #[test]
+    fn crowding_color_hits_the_semantic_endpoints() {
+        assert_eq!(crowding_color(0.0), GOOD);
+        assert_eq!(crowding_color(0.5), WARN);
+        assert_eq!(crowding_color(1.0), BAD);
+    }
+
+    #[test]
+    fn crowding_color_clamps_out_of_range_inputs() {
+        assert_eq!(crowding_color(-3.0), GOOD);
+        assert_eq!(crowding_color(9.0), BAD);
+    }
+
+    #[test]
+    fn crowding_color_interpolates_between_endpoints() {
+        // A quarter of the way is between GOOD and WARN, distinct from both.
+        let mid = crowding_color(0.25);
+        assert_ne!(mid, GOOD);
+        assert_ne!(mid, WARN);
+        // Red channel rises monotonically as crowding climbs (GOOD..BAD).
+        assert!(crowding_color(0.2).r() <= crowding_color(0.8).r());
+    }
+
     /// Every `IconKind` should paint without panicking against a plain
     /// headless `egui::Context` - no window/render backend needed, this
     /// exercises the same `Painter` calls a real frame would make. Not a
@@ -747,6 +839,17 @@ mod tests {
         for pair in SPACING.windows(2) {
             assert!(pair[0] < pair[1]);
         }
+    }
+
+    #[test]
+    fn menu_gradient_is_opaque_on_the_left_and_clear_on_the_right() {
+        let left = menu_gradient_alpha(0.0);
+        let mid = menu_gradient_alpha(0.35);
+        let right = menu_gradient_alpha(1.0);
+        assert!(left > 0.55, "left column should stay readable, got {left}");
+        assert!(mid > 0.4, "menu column plateau too thin, got {mid}");
+        assert!(right < 0.05, "far side should be nearly clear, got {right}");
+        assert!(left > right);
     }
 
     // --- route_line_diagram: tick_offsets --------------------------------

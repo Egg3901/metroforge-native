@@ -11,6 +11,7 @@ bevy_app = { workspace = true }
 bevy_ecs = { workspace = true }
 crossbeam-channel = { workspace = true }
 tungstenite = { workspace = true }
+directories = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

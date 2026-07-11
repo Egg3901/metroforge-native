@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use bevy::prelude::*;
+use bevy::render::mesh::MeshAabb;
 
 use mf_protocol::{TransitMode, UiState};
 use mf_state::{HeightAt, LatestUi, QualityTier, Theme};
@@ -19,6 +20,7 @@ use crate::mesh_utils::{
     append_ribbon, arc_length_table, offset_polyline, point_along, MeshBuffers,
 };
 use crate::palette;
+use crate::RenderCacheStats;
 
 const STATION_RADIUS: f32 = 14.0;
 const STATION_HEIGHT: f32 = 10.0;
@@ -99,6 +101,9 @@ struct TransitState {
     station_entities: Vec<Entity>,
     track_entities: Vec<Entity>,
     route_entities: Vec<Entity>,
+    /// Reused track mesh assets keyed by (mode, grade).
+    track_meshes: HashMap<(TransitMode, String), Handle<Mesh>>,
+    track_materials: HashMap<(TransitMode, String), Handle<StandardMaterial>>,
 }
 
 /// Structural fingerprint of `ui` (station/track/route identity), used to
@@ -131,7 +136,11 @@ fn transit_update_system(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut ring_query: Query<(&mut StationRing, &MeshMaterial3d<StandardMaterial>)>,
+    counters: Res<crate::perf::PerfCounters>,
+    mut stats: ResMut<RenderCacheStats>,
 ) {
+    let _span = tracing::info_span!("transit_update").entered();
+    let _timer = crate::perf::PerfSpan::start(&counters.transit_update_us);
     // Theme/quality changes recolor stations, tracks, and stripes — force a
     // structural rebuild even when UiState is unchanged (issue #32 gap).
     if !ui.is_changed() && !theme.is_changed() && !quality.is_changed() {
@@ -178,6 +187,9 @@ fn transit_update_system(
             &mut meshes,
             &mut materials,
         );
+        stats.transit_station_entities = state.station_entities.len();
+        stats.transit_track_entities = state.track_entities.len();
+        stats.transit_route_entities = state.route_entities.len();
     } else if ui.is_changed() {
         update_station_crowding(u, &mut materials, &mut ring_query);
     }
@@ -314,7 +326,10 @@ fn rebuild_tracks(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
 ) {
-    for e in state.track_entities.drain(..) {
+    // Hide previous track entities; we'll reuse mesh assets and re-show /
+    // respawn as needed. Despawn only entities whose key disappeared.
+    let mut old_entities = std::mem::take(&mut state.track_entities);
+    for e in old_entities.drain(..) {
         commands.entity(e).despawn();
     }
     let unlit = quality.knobs().unlit_material;
@@ -343,39 +358,56 @@ fn rebuild_tracks(
             |x, z| height_at.sample(x, z),
         );
     }
-    for ((mode, grade), buf) in groups {
+    let mut live_keys = std::collections::HashSet::new();
+    for ((mode, grade), mut buf) in groups {
         if buf.is_empty() {
             continue;
         }
+        let key = (mode, grade.clone());
+        live_keys.insert(key.clone());
         let alpha = if grade == "tunnel" { 0.18 } else { 0.28 };
-        let mesh = meshes.add(buf.build());
-        // Genuinely translucent always (0.18/0.28, never faded to 1.0 by
-        // subway.rs) — stays `Blend`, unlike the road/stripe materials.
-        // `double_sided`/`cull_mode` also stay as before: this is an
-        // `append_ribbon`-built, `Blend`-mode, no-reactive-`unlit`-updater
-        // material — the same shape as roads.rs's road-class materials,
-        // where single-siding was A/B-diff-verified to visibly brighten the
-        // subway+low-quality combination versus baseline (see the long
-        // comment there). Reverted alongside that fix out of caution rather
-        // than independently re-verified.
-        let material = materials.add(StandardMaterial {
-            double_sided: true,
-            cull_mode: None,
-            // Material-level mode accent (same Blend vertex-color bug that
-            // washed roads/stripes white when color lived only in vertices).
-            base_color: palette::mode_accent(mode).with_alpha(alpha),
-            alpha_mode: AlphaMode::Blend,
-            unlit,
-            perceptual_roughness: 1.0,
-            reflectance: 0.0,
-            ..default()
-        });
+        let mesh_handle = state
+            .track_meshes
+            .entry(key.clone())
+            .or_insert_with(|| {
+                meshes.add(Mesh::new(
+                    bevy::render::mesh::PrimitiveTopology::TriangleList,
+                    bevy::render::render_asset::RenderAssetUsages::default(),
+                ))
+            })
+            .clone();
+        let aabb = {
+            let mesh = meshes.get_mut(&mesh_handle).expect("track mesh");
+            buf.apply_to_mesh(mesh);
+            mesh.compute_aabb().unwrap_or_default()
+        };
+        let material_handle = state
+            .track_materials
+            .entry(key)
+            .or_insert_with(|| {
+                materials.add(StandardMaterial {
+                    double_sided: true,
+                    cull_mode: None,
+                    base_color: palette::mode_accent(mode).with_alpha(alpha),
+                    alpha_mode: AlphaMode::Blend,
+                    unlit,
+                    perceptual_roughness: 1.0,
+                    reflectance: 0.0,
+                    ..default()
+                })
+            })
+            .clone();
+        if let Some(mat) = materials.get_mut(&material_handle) {
+            mat.base_color = palette::mode_accent(mode).with_alpha(alpha);
+            mat.unlit = unlit;
+        }
         let e = commands
             .spawn((
-                Mesh3d(mesh),
-                MeshMaterial3d(material),
+                Mesh3d(mesh_handle),
+                MeshMaterial3d(material_handle),
                 Transform::IDENTITY,
                 Visibility::default(),
+                aabb,
                 TrackRibbon {
                     color: palette::mode_accent(mode),
                 },
@@ -384,6 +416,9 @@ fn rebuild_tracks(
             .id();
         state.track_entities.push(e);
     }
+    // Drop mesh/material handles for keys that no longer exist so Assets can GC.
+    state.track_meshes.retain(|k, _| live_keys.contains(k));
+    state.track_materials.retain(|k, _| live_keys.contains(k));
 }
 
 /// Per-STATION-PAIR ribbon widths for a route's stripe (v0.3, ship-plan
