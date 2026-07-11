@@ -10,6 +10,10 @@ sibling `metroforge` repo and reach releases via the pinned sidecar SHA in
 ## [Unreleased]
 
 ### Added
+- Windows desktop polish: DPI-aware windowing, F11/Alt+Enter borderless fullscreen
+  (persisted), remember size/position, pause rendering when minimized/alt-tabbed,
+  single-instance focus-existing-window guard, embedded exe icon + VERSIONINFO,
+  crash reports under the OS local data dir
 - Main menu overhaul and app icon (#47)
 - Release installers: Windows NSIS setup.exe, macOS .dmg, Linux tarball with
   desktop integration (#52)
@@ -17,6 +21,8 @@ sibling `metroforge` repo and reach releases via the pinned sidecar SHA in
 ### Fixed
 - Sidecar: NYC terrain water-bleed and missing NJ/Brooklyn road coverage
   (metroforge#29)
+- README SmartScreen / Gatekeeper notes now match unsigned Windows and ad-hoc
+  signed macOS release reality
 
 ## [0.4.2-alpha] - 2026-07-10
 

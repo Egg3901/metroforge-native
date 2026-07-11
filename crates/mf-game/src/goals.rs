@@ -156,8 +156,7 @@ struct GoalsFile {
 }
 
 fn goals_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("com", "ahousedivided", "MetroForge")
-        .map(|dirs| dirs.config_dir().join("goals.toml"))
+    crate::paths::goals_toml_path()
 }
 
 /// Per-city goal completion, persisted to `goals.toml` next to

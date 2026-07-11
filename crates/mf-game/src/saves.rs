@@ -1,7 +1,6 @@
 //! Disk save slots (ship-plan #25 v0.4 `saves.rs`): 3 numbered slots plus one
-//! autosave slot, each a JSON file under `ProjectDirs("com","ahousedivided",
-//! "MetroForge").data_dir()/saves/<slot>.json` — same `directories` crate
-//! pattern `config.rs` uses for `config.toml`.
+//! autosave slot, each a JSON file under `paths::saves_dir()` (OS data dir
+//! via `ProjectDirs`, with an exe-adjacent fallback — see `paths.rs`).
 //!
 //! The sim's own save format (`mf_protocol::envelope::SavedPayload.json` /
 //! `LoadSavePayload.json`) is opaque to this client — see `deserialize`/
@@ -125,8 +124,7 @@ pub struct SlotEntry {
 }
 
 fn saves_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("com", "ahousedivided", "MetroForge")
-        .map(|dirs| dirs.data_dir().join("saves"))
+    crate::paths::saves_dir()
 }
 
 fn slot_path(slot: SaveSlot) -> Option<PathBuf> {
