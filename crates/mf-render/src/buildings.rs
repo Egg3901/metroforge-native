@@ -40,7 +40,9 @@
 //! its own, wider range — see `FOOTPRINT_MIN_HEIGHT`/`FOOTPRINT_MAX_HEIGHT`)
 //! for buildings the sidecar didn't have a real height for (`height_dm == 0`).
 
+use bevy::math::Vec3A;
 use bevy::prelude::*;
+use bevy::render::primitives::Aabb;
 
 use mf_protocol::BuildingFootprint;
 use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, RevealState, Theme};
@@ -307,6 +309,7 @@ fn build_buildings_system(
     mut dense_center: ResMut<BuildingsDenseCenter>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<BuildingMaterial>>,
+    counters: Res<crate::perf::PerfCounters>,
 ) {
     let Some(city_json) = &city.static_city else {
         return;
@@ -321,6 +324,8 @@ fn build_buildings_system(
     {
         return;
     }
+    let _span = tracing::info_span!("buildings_rebuild").entered();
+    let _timer = crate::perf::PerfSpan::start(&counters.buildings_rebuild_us);
     state.version = Some(new_version);
     state.buildings_count = new_buildings_count;
     state.theme = Some(*theme);
@@ -825,12 +830,22 @@ fn build_buildings_system(
             -half + (cz as f32 + 0.5) * chunk_size,
         );
         let mesh = meshes.add(buf.build());
+        // Chunk-aligned AABB (not a full vertex scan): frustum-cull friendly
+        // and O(1) at spawn. Y half-extent covers water-level basements up
+        // through FOOTPRINT_MAX_HEIGHT skyscrapers so culling stays correct
+        // without walking millions of verts on NYC.
+        let half_xz = chunk_size * 0.5;
+        let aabb = Aabb {
+            center: Vec3A::new(center.x, 200.0, center.y),
+            half_extents: Vec3A::new(half_xz, 400.0, half_xz),
+        };
         let entity = commands
             .spawn((
                 Mesh3d(mesh),
                 MeshMaterial3d(material.clone()),
                 Transform::IDENTITY,
                 Visibility::default(),
+                aabb,
                 BuildingChunk { center },
                 Name::new(format!("buildings-chunk-{cx}-{cz}")),
             ))
@@ -845,7 +860,10 @@ fn draw_distance_system(
     chunks: Query<(Entity, &BuildingChunk)>,
     cameras: Query<&Transform, With<Camera3d>>,
     mut visibility: Query<&mut Visibility>,
+    counters: Res<crate::perf::PerfCounters>,
 ) {
+    let _span = tracing::info_span!("building_draw_distance").entered();
+    let _timer = crate::perf::PerfSpan::start(&counters.building_draw_distance_us);
     let Ok(cam) = cameras.single() else {
         return;
     };
@@ -859,11 +877,12 @@ fn draw_distance_system(
             None => true,
             Some(limit) => cam_xz.distance(chunk.center) <= limit,
         };
-        *vis = if visible {
+        let next = if visible {
             Visibility::Visible
         } else {
             Visibility::Hidden
         };
+        crate::perf::set_visibility_if_changed(&mut vis, next, Some(&counters));
     }
 }
 

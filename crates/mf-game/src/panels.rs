@@ -620,6 +620,7 @@ impl Plugin for MfPanelsPlugin {
                 EguiPrimaryContextPass,
                 (station_panel_system, finance_panel_system)
                     .run_if(in_state(AppState::InGame))
+                    .run_if(crate::egui_idle::egui_content_active)
                     .run_if(|| !crate::design_system::hud_hidden()),
             );
     }

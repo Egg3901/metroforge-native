@@ -18,6 +18,7 @@ mod outline;
 /// Public so `mf-game` ghost previews can share the same vivid route table
 /// (and theme) as finished transit — see `tools.rs` route_ghost_color.
 pub mod palette;
+pub mod perf;
 mod photomode;
 mod reveal;
 mod roads;
@@ -40,6 +41,7 @@ use mf_state::{QualityTier, Theme};
 use crate::daynight::DayNightState;
 
 pub use buildings::BuildingsDenseCenter;
+pub use perf::{MfPerfCountersPlugin, PerfCounters};
 pub use photomode::PhotoModeRender;
 
 /// Peak bloom intensity at full night (Medium/High). Ramps linearly with
@@ -77,21 +79,26 @@ impl Plugin for MfRenderPlugin {
         )
         .insert_resource(DirectionalLightShadowMap { size: 2048 })
         .add_plugins((
-            reveal::MfRevealPlugin,
-            sky::MfSkyPlugin,
-            terrain::MfTerrainPlugin,
-            water::MfWaterPlugin,
-            roads::MfRoadsPlugin,
-            buildings::MfBuildingsPlugin,
-            transit::MfTransitPlugin,
-            trees::MfTreesPlugin,
-            street_lamps::MfStreetLampsPlugin,
-            vehicles::MfVehiclesPlugin,
-            agents::MfAgentsPlugin,
-            daynight::MfDayNightPlugin,
-            atmosphere::MfAtmospherePlugin,
-            subway::MfSubwayPlugin,
-            outline::MfOutlinePlugin,
+            (
+                perf::MfPerfCountersPlugin,
+                reveal::MfRevealPlugin,
+                sky::MfSkyPlugin,
+                terrain::MfTerrainPlugin,
+                water::MfWaterPlugin,
+                roads::MfRoadsPlugin,
+                buildings::MfBuildingsPlugin,
+                transit::MfTransitPlugin,
+            ),
+            (
+                trees::MfTreesPlugin,
+                street_lamps::MfStreetLampsPlugin,
+                vehicles::MfVehiclesPlugin,
+                agents::MfAgentsPlugin,
+                daynight::MfDayNightPlugin,
+                atmosphere::MfAtmospherePlugin,
+                subway::MfSubwayPlugin,
+                outline::MfOutlinePlugin,
+            ),
         ))
         .add_plugins(photomode::MfPhotoModeRenderPlugin)
         .add_systems(
