@@ -5,14 +5,24 @@
 
 use thiserror::Error;
 
+/// Errors from decoding a binary hot-path frame.
 #[derive(Debug, Error, PartialEq)]
 pub enum BinaryError {
+    /// Buffer shorter than the bytes required at this offset.
     #[error("frame too short: need at least {need} bytes, got {got}")]
-    TooShort { need: usize, got: usize },
+    TooShort {
+        /// Minimum byte length required.
+        need: usize,
+        /// Actual buffer length.
+        got: usize,
+    },
+    /// Byte 0 was not a known `msgType` (1–5).
     #[error("unknown binary msgType {0}")]
     UnknownMsgType(u8),
+    /// Byte 1 was not an accepted wire version for this `msgType`.
     #[error("unsupported version {0}")]
     UnsupportedVersion(u8),
+    /// `StaticMask.which` was not 0/1/2.
     #[error("unknown StaticMask.which {0}")]
     UnknownMaskWhich(u8),
     /// A `StaticBuildings` building's `vertexCount` byte was outside the
@@ -20,14 +30,22 @@ pub enum BinaryError {
     /// emit valid polygons, but decode must not trust that: a future data
     /// bug on the wire must fail closed here, not panic or read garbage.
     #[error("StaticBuildings building has vertexCount {got}, must be 3..=64")]
-    InvalidVertexCount { got: u8 },
+    InvalidVertexCount {
+        /// The out-of-range `vertexCount` byte from the wire.
+        got: u8,
+    },
     /// `StaticBuildings.vertexTotal` (used by the caller for prealloc) did
     /// not match the sum of every building's `vertexCount`. Since the
     /// per-building loop is driven by `buildingCount` alone, this can only
     /// be checked after decoding all buildings, unlike `TooShort` (which
     /// fires mid-loop on truncation).
     #[error("StaticBuildings vertexTotal header says {declared}, buildings summed to {actual}")]
-    VertexTotalMismatch { declared: u32, actual: u32 },
+    VertexTotalMismatch {
+        /// `vertexTotal` from the message header.
+        declared: u32,
+        /// Sum of per-building `vertexCount` values.
+        actual: u32,
+    },
 }
 
 fn u8_at(b: &[u8], off: usize) -> Result<u8, BinaryError> {
@@ -111,8 +129,11 @@ fn write_f32_array(out: &mut Vec<u8>, values: &[f32]) {
 /// msgType=1 — every 50 ms simulation step.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameSnapshot {
+    /// Simulation tick counter.
     pub tick: u32,
+    /// Number of vehicles in `vehicles` (`len / 6`).
     pub vehicle_count: u32,
+    /// Number of agents in `agents` (`len / 3`).
     pub agent_count: u32,
     /// packed 0x00RRGGBB per route color index; index by `vehicles[i*6+5]`.
     pub color_table: Vec<u32>,
@@ -125,6 +146,7 @@ pub struct FrameSnapshot {
 const FRAME_HEADER_LEN: usize = 24;
 
 impl FrameSnapshot {
+    /// Decode a msgType=1 frame from a little-endian byte buffer.
     pub fn decode(b: &[u8]) -> Result<Self, BinaryError> {
         if b.len() < FRAME_HEADER_LEN {
             return Err(BinaryError::TooShort {
@@ -157,6 +179,7 @@ impl FrameSnapshot {
         })
     }
 
+    /// Encode this snapshot as a msgType=1 little-endian frame.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(
             FRAME_HEADER_LEN
@@ -183,19 +206,28 @@ impl FrameSnapshot {
 /// (reused from `StaticCityJson.fieldW * fieldH` by the caller).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fields {
+    /// Fields bump counter; client uses it to know when to re-upload grids.
     pub version: u32,
+    /// Number of cells (`fieldW * fieldH`); length of each array below.
     pub cell_count: u32,
+    /// Per-cell terrain height / elevation values.
     pub terrain: Vec<f32>,
+    /// Per-cell population density.
     pub population: Vec<f32>,
+    /// Per-cell jobs density.
     pub jobs: Vec<f32>,
+    /// Per-cell land value.
     pub land_value: Vec<f32>,
+    /// Per-cell water flag (0/1), `cell_count` bytes.
     pub water: Vec<u8>,
+    /// Per-cell park flag (0/1), `cell_count` bytes.
     pub parks: Vec<u8>,
 }
 
 const FIELDS_HEADER_LEN: usize = 16;
 
 impl Fields {
+    /// Decode a msgType=2 fields frame from a little-endian byte buffer.
     pub fn decode(b: &[u8]) -> Result<Self, BinaryError> {
         if b.len() < FIELDS_HEADER_LEN {
             return Err(BinaryError::TooShort {
@@ -233,6 +265,7 @@ impl Fields {
         })
     }
 
+    /// Encode this fields payload as a msgType=2 little-endian frame.
     pub fn encode(&self) -> Vec<u8> {
         let n = self.cell_count as usize;
         let mut out = Vec::with_capacity(FIELDS_HEADER_LEN + n * 4 * 4 + n * 2);
@@ -253,27 +286,40 @@ impl Fields {
 }
 
 /// msgType=3.
+/// One congestion hotspot point in world space.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrafficHotspot {
+    /// World X of the hotspot.
     pub x: f32,
+    /// World Y of the hotspot.
     pub y: f32,
+    /// Congestion severity (higher = worse).
     pub severity: f32,
 }
 
+/// msgType=3 — traffic density grid plus hotspot list.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Traffic {
+    /// Grid width in cells.
     pub w: u32,
+    /// Grid height in cells.
     pub h: u32,
+    /// World meters per cell.
     pub cell_size: f32,
+    /// World X of the grid origin (top-left / min corner).
     pub origin_x: f32,
+    /// World Y of the grid origin (top-left / min corner).
     pub origin_y: f32,
+    /// Row-major density values, length typically `w * h`.
     pub values: Vec<f32>,
+    /// Peak congestion points for overlay markers.
     pub hotspots: Vec<TrafficHotspot>,
 }
 
 const TRAFFIC_HEADER_LEN: usize = 32;
 
 impl Traffic {
+    /// Decode a msgType=3 traffic frame from a little-endian byte buffer.
     pub fn decode(b: &[u8]) -> Result<Self, BinaryError> {
         if b.len() < TRAFFIC_HEADER_LEN {
             return Err(BinaryError::TooShort {
@@ -319,6 +365,7 @@ impl Traffic {
         })
     }
 
+    /// Encode this traffic payload as a msgType=3 little-endian frame.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(
             TRAFFIC_HEADER_LEN + self.values.len() * 4 + self.hotspots.len() * 12,
@@ -346,8 +393,11 @@ impl Traffic {
 /// msgType=4 — 0-3 frames sent right after `ready`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaskWhich {
+    /// Water body mask (`which = 0`).
     Water = 0,
+    /// Park / green-space mask (`which = 1`).
     Park = 1,
+    /// Building footprint mask (`which = 2`).
     Building = 2,
 }
 
@@ -362,9 +412,12 @@ impl MaskWhich {
     }
 }
 
+/// msgType=4 — one static occupancy mask (water, park, or building).
 #[derive(Debug, Clone, PartialEq)]
 pub struct StaticMask {
+    /// Which mask layer this frame carries.
     pub which: MaskWhich,
+    /// Side length in pixels; `mask` is `res * res` bytes.
     pub res: u32,
     /// `res * res` bytes, row-major.
     pub mask: Vec<u8>,
@@ -373,6 +426,7 @@ pub struct StaticMask {
 const STATIC_MASK_HEADER_LEN: usize = 12;
 
 impl StaticMask {
+    /// Decode a msgType=4 static-mask frame from a little-endian byte buffer.
     pub fn decode(b: &[u8]) -> Result<Self, BinaryError> {
         if b.len() < STATIC_MASK_HEADER_LEN {
             return Err(BinaryError::TooShort {
@@ -388,6 +442,7 @@ impl StaticMask {
         Ok(StaticMask { which, res, mask })
     }
 
+    /// Encode this mask as a msgType=4 little-endian frame.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(STATIC_MASK_HEADER_LEN + self.mask.len());
         out.push(4);
@@ -431,8 +486,10 @@ pub struct BuildingFootprint {
     pub verts: Vec<[f32; 2]>,
 }
 
+/// msgType=5 — all building footprints for the city (sent once).
 #[derive(Debug, Clone, PartialEq)]
 pub struct StaticBuildings {
+    /// Decoded building footprints in wire order.
     pub buildings: Vec<BuildingFootprint>,
 }
 
@@ -450,6 +507,7 @@ const BUILDING_HEADER_LEN_V2: usize = 6;
 const BUILDING_VERTEX_LEN: usize = 4;
 
 impl StaticBuildings {
+    /// Decode a msgType=5 buildings frame (wire version 1 or 2).
     pub fn decode(b: &[u8]) -> Result<Self, BinaryError> {
         if b.len() < STATIC_BUILDINGS_HEADER_LEN {
             return Err(BinaryError::TooShort {
@@ -588,13 +646,19 @@ fn check_msg_type_any(b: &[u8], expected: u8, allowed: &[u8]) -> Result<u8, Bina
 /// Dispatch on byte 0 (`msgType`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum BinaryMsg {
+    /// msgType=1 frame snapshot.
     Frame(FrameSnapshot),
+    /// msgType=2 fields grid.
     Fields(Fields),
+    /// msgType=3 traffic overlay.
     Traffic(Traffic),
+    /// msgType=4 static mask.
     Mask(StaticMask),
+    /// msgType=5 building footprints.
     Buildings(StaticBuildings),
 }
 
+/// Decode any binary hot-path frame by dispatching on byte 0 (`msgType`).
 pub fn decode_binary(b: &[u8]) -> Result<BinaryMsg, BinaryError> {
     let msg_type = u8_at(b, 0)?;
     match msg_type {

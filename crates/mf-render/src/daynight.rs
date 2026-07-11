@@ -19,9 +19,14 @@ use bevy::pbr::{
 };
 use bevy::prelude::*;
 
-use mf_state::{LatestUi, QualityTier, Theme};
+use mf_state::{AttractLighting, LatestUi, QualityTier, Theme};
 
 use crate::palette;
+
+/// Attract-mode golden hour (local solar time). Low sun → long shadows on
+/// Medium+; warm twilight tint on clear/ambient/sun color. Chosen so
+/// `night_factor` sits in the dusk band without extinguishing shadows.
+const ATTRACT_GOLDEN_HOUR: f32 = 19.0;
 
 /// Exponential chase rate for displayed hour → sim target. Settles ~95% in
 /// ~0.35s, bridging the ~0.5s UiState gap without lagging dusk/dawn.
@@ -139,6 +144,7 @@ fn compute_day_night_system(
     ui: Res<LatestUi>,
     quality: Res<QualityTier>,
     theme: Res<Theme>,
+    attract: Res<AttractLighting>,
     mut state: ResMut<DayNightState>,
 ) {
     // Dark/Purple ARE the night rig promoted to a standing theme (issue
@@ -150,6 +156,15 @@ fn compute_day_night_system(
     if *theme != Theme::Light {
         state.target_hour = 0.0;
         state.target_night_factor = 1.0;
+        return;
+    }
+    // Title-screen attract diorama: lock golden hour regardless of sim
+    // clock (and ahead of Potato's fixed-noon path) so the backdrop stays
+    // warm/moody while the city sim races at 30× behind the menu.
+    if attract.active {
+        let (hour, night) = attract_golden_hour_targets();
+        state.target_hour = hour;
+        state.target_night_factor = night;
         return;
     }
     if !quality.knobs().day_night_enabled {
@@ -179,6 +194,15 @@ fn compute_day_night_system(
     let elevation = (((hour - 6.0) / 12.0) * PI).sin();
     state.target_hour = hour;
     state.target_night_factor = (-elevation * 1.2).clamp(0.0, 1.0);
+}
+
+/// Pure golden-hour targets for attract mode. Exposed to unit tests so the
+/// dusk-band / shadow-on invariants don't drift silently.
+fn attract_golden_hour_targets() -> (f32, f32) {
+    let hour = ATTRACT_GOLDEN_HOUR;
+    let elevation = (((hour - 6.0) / 12.0) * PI).sin();
+    let night = (-elevation * 1.2).clamp(0.0, 1.0);
+    (hour, night)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -229,14 +253,20 @@ pub(crate) fn apply_day_night_system(
         state.applied_night_bucket = Some(night_bucket);
         let day_color = palette::sky_day();
         let night_color = palette::sky_night();
-        // Warm the clear color slightly through twilight so dusk isn't a
-        // straight white→navy lerp (pairs with atmosphere's golden fog).
+        // Warm the clear color through twilight AND low-sun golden hour so
+        // dusk/dawn aren't a straight white→navy lerp (pairs with atmosphere).
         let twilight = {
             let t = 1.0 - ((n - 0.5).abs() * 2.0);
             t.clamp(0.0, 1.0).powf(1.2)
         };
-        let dusk = Color::srgb(0.92, 0.72, 0.55);
-        clear_color.0 = day_color.mix(&dusk, twilight * 0.35).mix(&night_color, n);
+        let golden = {
+            let low_sun = (1.0 - (state.sun_elevation / 0.35).clamp(0.0, 1.0)).clamp(0.0, 1.0);
+            let not_deep_night = (1.0 - ((n - 0.55).max(0.0) / 0.45)).clamp(0.0, 1.0);
+            low_sun * not_deep_night
+        };
+        let warm = twilight.max(golden);
+        let dusk = Color::srgb(1.0, 0.72, 0.48);
+        clear_color.0 = day_color.mix(&dusk, warm * 0.55).mix(&night_color, n);
         // Distance fog (Potato/Low, quality sweep in lib.rs) must track the
         // clear color exactly - including this same twilight/night lerp and
         // the active theme - or the horizon shows a hard seam where fogged
@@ -246,9 +276,9 @@ pub(crate) fn apply_day_night_system(
             fog.color = clear_color.0;
         }
 
-        // Cool ambient at night, warm kiss at twilight.
+        // Cool ambient at night, warm kiss at golden hour / twilight.
         ambient.color = Color::WHITE
-            .mix(&Color::srgb(1.0, 0.88, 0.75), twilight * 0.25)
+            .mix(&Color::srgb(1.0, 0.82, 0.62), warm * 0.40)
             .mix(&Color::srgb(0.70, 0.78, 1.0), n * 0.45);
         ambient.brightness = 550.0 * (1.0 - n * 0.85);
     }
@@ -287,11 +317,18 @@ pub(crate) fn apply_day_night_system(
             1.0
         };
         light.illuminance = day_lux * night_dim;
+        let twilight = {
+            let t = 1.0 - ((n - 0.5).abs() * 2.0);
+            t.clamp(0.0, 1.0).powf(1.2)
+        };
+        let golden = {
+            let low_sun = (1.0 - (elev / 0.35).clamp(0.0, 1.0)).clamp(0.0, 1.0);
+            let not_deep_night = (1.0 - ((n - 0.55).max(0.0) / 0.45)).clamp(0.0, 1.0);
+            low_sun * not_deep_night
+        };
+        let warm = twilight.max(golden);
         light.color = Color::srgb(1.0, 0.96, 0.88)
-            .mix(&Color::srgb(1.0, 0.78, 0.55), {
-                let t = 1.0 - ((n - 0.5).abs() * 2.0);
-                t.clamp(0.0, 1.0).powf(1.2) * 0.45
-            })
+            .mix(&Color::srgb(1.0, 0.70, 0.42), warm * 0.70)
             .mix(&Color::srgb(0.55, 0.65, 0.9), n);
         light.shadows_enabled = shadows_ok;
         light.shadow_depth_bias = depth_bias;
@@ -491,5 +528,20 @@ mod tests {
     #[allow(clippy::assertions_on_constants)]
     fn shadow_hysteresis_band_is_ordered() {
         assert!(SHADOW_ON_NIGHT < SHADOW_OFF_NIGHT);
+    }
+
+    #[test]
+    fn attract_golden_hour_is_in_dusk_band_with_shadows_still_on() {
+        let (hour, night) = attract_golden_hour_targets();
+        assert!((hour - ATTRACT_GOLDEN_HOUR).abs() < 1e-6);
+        // Warm twilight kiss without extinguishing Medium+ shadows.
+        assert!(
+            (0.15..0.55).contains(&night),
+            "expected dusk-band night_factor, got {night}"
+        );
+        assert!(
+            night < SHADOW_ON_NIGHT,
+            "golden hour must keep shadows latched on (night={night})"
+        );
     }
 }

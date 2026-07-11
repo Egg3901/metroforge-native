@@ -752,7 +752,7 @@ fn ui_state_omitted_optional_fields_default_not_panic() {
     assert!(ui.hour_of_day.is_none());
     assert!(ui.demand_factor.is_none());
     assert!(ui.districts.is_empty());
-    assert!(ui.overcrowded_routes.is_empty());
+    assert!(ui.overcrowded_routes.is_none());
 }
 
 // ---------------------------------------------------------------------------
