@@ -6,7 +6,7 @@
 //!
 //! Resources: [`CurrentCity`], [`LatestFields`], [`LatestUi`],
 //! [`LatestFrame`], [`QualityTier`], [`SubwayView`], [`HeightAt`],
-//! [`RevealState`], [`LatestDemand`], [`OverlayState`].
+//! [`RevealState`], [`LatestDemand`], [`OverlayState`], [`WeatherEffects`].
 
 pub mod city;
 pub mod demand;
@@ -20,6 +20,7 @@ pub mod reveal;
 pub mod subway;
 pub mod theme;
 pub mod ui;
+pub mod weather;
 
 pub use city::CurrentCity;
 pub use demand::LatestDemand;
@@ -33,3 +34,4 @@ pub use reveal::RevealState;
 pub use subway::{SubwayView, SUBWAY_TRANSITION_SECS};
 pub use theme::Theme;
 pub use ui::LatestUi;
+pub use weather::WeatherEffects;

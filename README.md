@@ -129,10 +129,12 @@ draw distance in NYC.
 | vehicle mesh | quad billboard | low-poly box | box | chamfered box |
 | terrain subdivision | coarsest | coarse | full | full |
 | day/night cycle | off (fixed noon) | on | on | on |
+| weather (fog/clouds) | off | off | on (toggleable) | on (toggleable) |
 
 Unlit rendering plus flat vertex colors and zero textures is the whole art style, not
 just the cheap fallback, so Potato still looks like MetroForge. Higher tiers only add
-shadows, MSAA, emissive glow, and chamfered vehicle meshes on top.
+shadows, MSAA, emissive glow, scrolling volumetric fog/clouds (Medium+, toggleable in
+Settings), and chamfered vehicle meshes on top.
 
 ## Architecture
 

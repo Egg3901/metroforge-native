@@ -1,9 +1,9 @@
 //! Persistent client config (spec §3.4 `config.rs`): a `config.toml` under
-//! the OS config dir (`directories::ProjectDirs("com","ahousedivided",
-//! "MetroForge")`), holding a quality-tier override and a theme override
-//! (issue #32). Auto-detection (spec §4) is used whenever no quality
-//! override is set; `Theme::Light` is used whenever no theme override is
-//! set. Either override always wins over its default.
+//! the OS config dir (`directories::ProjectDirs("com","[REDACTED]",
+//! "MetroForge")`), holding a quality-tier override, a theme override
+//! (issue #32), and the weather-effects toggle. Auto-detection (spec §4) is
+//! used whenever no quality override is set; `Theme::Light` is used whenever
+//! no theme override is set. Either override always wins over its default.
 
 use bevy::prelude::*;
 use mf_state::{QualityTier, Theme};
@@ -74,26 +74,58 @@ impl From<Theme> for ConfigTheme {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     quality_override: Option<ConfigQuality>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     theme_override: Option<ConfigTheme>,
+    /// Scrolling fog/cloud weather. Defaults to on when absent so existing
+    /// config.toml files keep the new Medium+ atmosphere without an edit.
+    #[serde(default = "default_weather_effects")]
+    weather_effects: bool,
 }
 
-/// Loaded/persisted client config. A Bevy `Resource` so `hud.rs`'s quality
-/// and theme selectors can read/write it directly.
-#[derive(Resource, Debug, Clone, Default)]
+fn default_weather_effects() -> bool {
+    true
+}
+
+impl Default for ConfigFile {
+    fn default() -> Self {
+        ConfigFile {
+            quality_override: None,
+            theme_override: None,
+            weather_effects: true,
+        }
+    }
+}
+
+/// Loaded/persisted client config. A Bevy `Resource` so `hud.rs`'s quality,
+/// theme, and weather selectors can read/write it directly.
+#[derive(Resource, Debug, Clone)]
 pub struct MfConfig {
     pub quality_override: Option<QualityTier>,
     pub theme_override: Option<Theme>,
+    /// Player preference for atmospheric weather (fog/cloud). Still gated
+    /// by quality tier at render time.
+    pub weather_effects: bool,
     path: Option<PathBuf>,
+}
+
+impl Default for MfConfig {
+    fn default() -> Self {
+        MfConfig {
+            quality_override: None,
+            theme_override: None,
+            weather_effects: true,
+            path: None,
+        }
+    }
 }
 
 impl MfConfig {
     fn config_path() -> Option<PathBuf> {
-        directories::ProjectDirs::from("com", "ahousedivided", "MetroForge")
+        directories::ProjectDirs::from("com", "[REDACTED]", "MetroForge")
             .map(|dirs| dirs.config_dir().join("config.toml"))
     }
 
@@ -117,9 +149,14 @@ impl MfConfig {
             .as_ref()
             .and_then(|f| f.theme_override)
             .map(Theme::from);
+        let weather_effects = parsed
+            .as_ref()
+            .map(|f| f.weather_effects)
+            .unwrap_or(true);
         MfConfig {
             quality_override,
             theme_override,
+            weather_effects,
             path: Some(path),
         }
     }
@@ -136,6 +173,7 @@ impl MfConfig {
         let file = ConfigFile {
             quality_override: self.quality_override.map(ConfigQuality::from),
             theme_override: self.theme_override.map(ConfigTheme::from),
+            weather_effects: self.weather_effects,
         };
         let toml_str = toml::to_string_pretty(&file)?;
         std::fs::write(path, toml_str)?;
@@ -155,6 +193,13 @@ impl MfConfig {
             tracing::warn!("mf-game: failed to persist config.toml: {e}");
         }
     }
+
+    pub fn set_weather_effects(&mut self, enabled: bool) {
+        self.weather_effects = enabled;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -166,6 +211,7 @@ mod tests {
         let file = ConfigFile {
             quality_override: Some(ConfigQuality::High),
             theme_override: None,
+            weather_effects: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("high"));
@@ -174,15 +220,37 @@ mod tests {
     }
 
     #[test]
-    fn missing_override_serializes_to_empty_document() {
+    fn missing_override_serializes_weather_default() {
         let file = ConfigFile {
             quality_override: None,
             theme_override: None,
+            weather_effects: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         let back: ConfigFile = toml::from_str(&s).unwrap();
         assert_eq!(back.quality_override, None);
         assert_eq!(back.theme_override, None);
+        assert!(back.weather_effects);
+    }
+
+    #[test]
+    fn legacy_config_without_weather_defaults_on() {
+        let back: ConfigFile = toml::from_str("quality_override = \"medium\"\n").unwrap();
+        assert!(back.weather_effects);
+        assert_eq!(back.quality_override, Some(ConfigQuality::Medium));
+    }
+
+    #[test]
+    fn weather_effects_roundtrips_off() {
+        let file = ConfigFile {
+            quality_override: None,
+            theme_override: None,
+            weather_effects: false,
+        };
+        let s = toml::to_string_pretty(&file).unwrap();
+        assert!(s.contains("false"));
+        let back: ConfigFile = toml::from_str(&s).unwrap();
+        assert!(!back.weather_effects);
     }
 
     #[test]
@@ -190,6 +258,7 @@ mod tests {
         let file = ConfigFile {
             quality_override: None,
             theme_override: Some(ConfigTheme::Purple),
+            weather_effects: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("purple"));
