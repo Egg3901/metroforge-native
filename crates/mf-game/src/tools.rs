@@ -91,7 +91,7 @@ const ROAD_SNAP_RADIUS_M: f32 = 45.0;
 const STATION_MIN_SEPARATION_M: f32 = STATION_GHOST_RADIUS_M * 2.0;
 /// Valid-placement ghost tint (green): the cell is buildable.
 fn valid_green() -> Color {
-    hex_color(0x34, 0xc7, 0x59)
+    Color::srgb_u8(0x34, 0xc7, 0x59)
 }
 /// Subtle snap-guide gray: drawn from the raw grid cell to the road frontage
 /// point the ghost snapped to, so the player can see WHY the ghost jumped.
