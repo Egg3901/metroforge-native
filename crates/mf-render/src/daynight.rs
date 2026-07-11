@@ -19,7 +19,7 @@ use bevy::pbr::{
 };
 use bevy::prelude::*;
 
-use mf_state::{LatestUi, QualityTier, Theme};
+use mf_state::{EffectiveKnobs, LatestUi, Theme};
 
 use crate::palette;
 
@@ -141,7 +141,7 @@ fn spawn_sun_system(mut commands: Commands) {
 
 fn compute_day_night_system(
     ui: Res<LatestUi>,
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     theme: Res<Theme>,
     mut state: ResMut<DayNightState>,
 ) {
@@ -156,7 +156,7 @@ fn compute_day_night_system(
         state.target_night_factor = 1.0;
         return;
     }
-    if !quality.knobs().day_night_enabled {
+    if !effective.0.day_night_enabled {
         state.target_hour = 12.0;
         state.target_night_factor = 0.0;
         return;
@@ -187,7 +187,7 @@ pub(crate) fn apply_day_night_system(
     mut state: ResMut<DayNightState>,
     mut clear_color: ResMut<ClearColor>,
     mut ambient: ResMut<AmbientLight>,
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     theme: Res<Theme>,
     mut suns: Query<(&mut DirectionalLight, &mut Transform), With<Sun>>,
     mut fogs: Query<&mut DistanceFog, With<Camera3d>>,
@@ -218,7 +218,7 @@ pub(crate) fn apply_day_night_system(
 
     let night_bucket = (state.night_factor * 255.0).round() as u8;
     let hour_bucket = (state.hour / 24.0 * 1024.0).round() as u16;
-    let quality_or_theme_changed = quality.is_changed() || theme.is_changed();
+    let quality_or_theme_changed = effective.is_changed() || theme.is_changed();
     let night_dirty = state.applied_night_bucket != Some(night_bucket) || quality_or_theme_changed;
     let hour_dirty = state.applied_hour_bucket != Some(hour_bucket) || quality_or_theme_changed;
     if !night_dirty && !hour_dirty {
@@ -256,7 +256,7 @@ pub(crate) fn apply_day_night_system(
 
     state.applied_hour_bucket = Some(hour_bucket);
 
-    let knobs = quality.knobs();
+    let knobs = effective.0;
     // Hysteresis: turn shadows off deep into night, turn back on only after
     // climbing back toward dusk — avoids flicker at the threshold.
     if state.shadows_latched_on {
@@ -303,12 +303,12 @@ pub(crate) fn apply_day_night_system(
 /// Retune cascade near/far bounds from camera height so a dolly-in gets
 /// denser near-cascade texels and a city overview still covers the skyline.
 fn adapt_shadow_cascades_system(
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     mut state: ResMut<DayNightState>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
     mut suns: Query<&mut CascadeShadowConfig, With<Sun>>,
 ) {
-    let knobs = quality.knobs();
+    let knobs = effective.0;
     if knobs.shadow_map_size.is_none() {
         return;
     }
@@ -318,12 +318,12 @@ fn adapt_shadow_cascades_system(
         .map(|t| t.translation().y.max(120.0))
         .unwrap_or(2_000.0);
     let height_bucket = (height / 64.0).round() as u16;
-    if state.applied_cam_height_bucket == Some(height_bucket) && !quality.is_changed() {
+    if state.applied_cam_height_bucket == Some(height_bucket) && !effective.is_changed() {
         return;
     }
     state.applied_cam_height_bucket = Some(height_bucket);
 
-    let num_cascades = if matches!(*quality, QualityTier::High) {
+    let num_cascades = if knobs.shadow_map_size == Some(4096) {
         4
     } else {
         3
@@ -351,11 +351,11 @@ fn adapt_shadow_cascades_system(
 /// set it explicitly so a future camera spawn path can't silently fall back
 /// to Hardware2x2 and reintroduce jagged cascade edges.
 fn ensure_shadow_filtering_system(
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     mut commands: Commands,
     cameras: Query<(Entity, Option<&ShadowFilteringMethod>), With<Camera3d>>,
 ) {
-    if quality.knobs().shadow_map_size.is_none() {
+    if effective.0.shadow_map_size.is_none() {
         return;
     }
     for (entity, method) in &cameras {

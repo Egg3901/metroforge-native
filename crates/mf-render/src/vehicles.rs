@@ -12,7 +12,7 @@
 //! runs every render frame (60+ Hz), and `Assets<T>::get_mut` unconditionally
 //! marks an asset dirty for GPU re-extract/re-upload regardless of whether
 //! the write actually changed anything. The whole system early-outs unless
-//! `LatestFrame` or `QualityTier` changed since last render frame, and even
+//! `LatestFrame` or `EffectiveKnobs` changed since last render frame, and even
 //! within a changed frame each slot's material is only touched when its
 //! (color, quantized brightness, unlit) triple actually differs from what's
 //! already applied there.
@@ -41,7 +41,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use mf_protocol::TransitMode;
-use mf_state::{HeightAt, LatestFrame, LatestUi, QualityTier};
+use mf_state::{EffectiveKnobs, HeightAt, LatestFrame, LatestUi};
 
 use crate::palette;
 
@@ -109,7 +109,7 @@ fn update_vehicles_system(
     frame: Res<LatestFrame>,
     ui: Res<LatestUi>,
     height_at: Res<HeightAt>,
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     theme: Res<mf_state::Theme>,
     overlay: Res<mf_state::OverlayState>,
     mut pool: ResMut<VehiclePool>,
@@ -127,18 +127,18 @@ fn update_vehicles_system(
     >,
 ) {
     // `LatestFrame` arrives at the sim's ~20Hz tick while this system runs
-    // every render frame (60+ Hz); `QualityTier` / `Theme` / overlay change
+    // every render frame (60+ Hz); `EffectiveKnobs` / `Theme` / overlay change
     // independently and flip paint. None changing means nothing about a
     // vehicle's position, mesh choice or paint could possibly be different
     // from what's already applied, so skip the whole pass.
     let frame_changed = frame.is_changed();
-    if !frame_changed && !quality.is_changed() && !theme.is_changed() && !overlay.is_changed() {
+    if !frame_changed && !effective.is_changed() && !theme.is_changed() && !overlay.is_changed() {
         return;
     }
     let Some(f) = &frame.0 else {
         return;
     };
-    let unlit = quality.knobs().unlit_material;
+    let unlit = effective.0.unlit_material;
     // Theme switches change `vivid_route_color` for the same color_idx —
     // drop the paint cache so vehicles pick up the new palette immediately.
     if theme.is_changed() {

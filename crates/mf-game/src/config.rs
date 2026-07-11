@@ -1,12 +1,17 @@
 //! Persistent client config (spec §3.4 `config.rs`): a `config.toml` under
 //! the OS config dir (`directories::ProjectDirs("com","[REDACTED]",
 //! "MetroForge")`), holding a quality-tier override, a theme override
-//! (issue #32), and the weather-effects toggle. Auto-detection (spec §4) is
-//! used whenever no quality override is set; `Theme::Light` is used whenever
-//! no theme override is set. Either override always wins over its default.
+//! (issue #32), weather/graphics deltas, and HUD prefs. Auto-detection
+//! (spec §4) is used whenever no quality override is set; `Theme::Light` is
+//! used whenever no theme override is set. Either override always wins over
+//! its default.
+//!
+//! Advanced graphics controls persist as **deltas** under `[graphics]`:
+//! omitted keys mean "use the selected preset". Old config.toml files
+//! without `[graphics]` keep parsing via serde defaults.
 
 use bevy::prelude::*;
-use mf_state::{QualityTier, Theme};
+use mf_state::{QualityOverrides, QualityTier, ShadowQuality, Theme};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -74,6 +79,84 @@ impl From<Theme> for ConfigTheme {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ConfigShadowQuality {
+    Off,
+    Medium,
+    High,
+}
+
+impl From<ConfigShadowQuality> for ShadowQuality {
+    fn from(s: ConfigShadowQuality) -> Self {
+        match s {
+            ConfigShadowQuality::Off => ShadowQuality::Off,
+            ConfigShadowQuality::Medium => ShadowQuality::Medium,
+            ConfigShadowQuality::High => ShadowQuality::High,
+        }
+    }
+}
+
+impl From<ShadowQuality> for ConfigShadowQuality {
+    fn from(s: ShadowQuality) -> Self {
+        match s {
+            ShadowQuality::Off => ConfigShadowQuality::Off,
+            ShadowQuality::Medium => ConfigShadowQuality::Medium,
+            ShadowQuality::High => ConfigShadowQuality::High,
+        }
+    }
+}
+
+/// Persisted Advanced graphics deltas. Every field is optional so old
+/// configs and "use preset" both serialize as omitted keys.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct GraphicsOverridesFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shadows: Option<ConfigShadowQuality>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    draw_distance_m: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trees: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fog: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    volumetric_clouds: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    outlines: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vsync: Option<bool>,
+}
+
+impl GraphicsOverridesFile {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn to_overrides(&self) -> QualityOverrides {
+        QualityOverrides {
+            shadows: self.shadows.map(ShadowQuality::from),
+            draw_distance_m: self.draw_distance_m,
+            trees: self.trees,
+            fog: self.fog,
+            volumetric_clouds: self.volumetric_clouds,
+            outlines: self.outlines,
+            vsync: self.vsync,
+        }
+    }
+
+    fn from_overrides(o: &QualityOverrides) -> Self {
+        GraphicsOverridesFile {
+            shadows: o.shadows.map(ConfigShadowQuality::from),
+            draw_distance_m: o.draw_distance_m,
+            trees: o.trees,
+            fog: o.fog,
+            volumetric_clouds: o.volumetric_clouds,
+            outlines: o.outlines,
+            vsync: o.vsync,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -89,8 +172,16 @@ struct ConfigFile {
     tutorial_completed: bool,
     /// Scrolling fog/cloud weather. Defaults to on when absent so existing
     /// config.toml files keep the new Medium+ atmosphere without an edit.
+    /// Still honored when `[graphics].volumetric_clouds` is unset; an
+    /// explicit volumetric_clouds delta wins.
     #[serde(default = "default_weather_effects")]
     weather_effects: bool,
+    /// Advanced graphics deltas on top of the selected quality preset.
+    #[serde(default, skip_serializing_if = "GraphicsOverridesFile::is_empty")]
+    graphics: GraphicsOverridesFile,
+    /// On-screen FPS / frame-time counter. Off by default; omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    show_fps: bool,
 }
 
 fn default_weather_effects() -> bool {
@@ -104,12 +195,14 @@ impl Default for ConfigFile {
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
+            graphics: GraphicsOverridesFile::default(),
+            show_fps: false,
         }
     }
 }
 
 /// Loaded/persisted client config. A Bevy `Resource` so `hud.rs`'s quality,
-/// theme, and weather selectors can read/write it directly.
+/// theme, and graphics selectors can read/write it directly.
 #[derive(Resource, Debug, Clone)]
 pub struct MfConfig {
     pub quality_override: Option<QualityTier>,
@@ -119,8 +212,12 @@ pub struct MfConfig {
     /// flow; the "Replay tutorial" setting clears it back to `false`.
     pub tutorial_completed: bool,
     /// Player preference for atmospheric weather (fog/cloud). Still gated
-    /// by quality tier at render time.
+    /// by quality tier / graphics overrides at render time.
     pub weather_effects: bool,
+    /// Advanced graphics deltas (mirrors `[graphics]` in config.toml).
+    pub graphics: QualityOverrides,
+    /// On-screen FPS counter toggle.
+    pub show_fps: bool,
     path: Option<PathBuf>,
 }
 
@@ -131,6 +228,8 @@ impl Default for MfConfig {
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
+            graphics: QualityOverrides::default(),
+            show_fps: false,
             path: None,
         }
     }
@@ -170,11 +269,18 @@ impl MfConfig {
             .as_ref()
             .map(|f| f.weather_effects)
             .unwrap_or(true);
+        let graphics = parsed
+            .as_ref()
+            .map(|f| f.graphics.to_overrides())
+            .unwrap_or_default();
+        let show_fps = parsed.as_ref().map(|f| f.show_fps).unwrap_or(false);
         MfConfig {
             quality_override,
             theme_override,
             tutorial_completed,
             weather_effects,
+            graphics,
+            show_fps,
             path: Some(path),
         }
     }
@@ -193,6 +299,8 @@ impl MfConfig {
             theme_override: self.theme_override.map(ConfigTheme::from),
             tutorial_completed: self.tutorial_completed,
             weather_effects: self.weather_effects,
+            graphics: GraphicsOverridesFile::from_overrides(&self.graphics),
+            show_fps: self.show_fps,
         };
         let toml_str = toml::to_string_pretty(&file)?;
         std::fs::write(path, toml_str)?;
@@ -229,6 +337,20 @@ impl MfConfig {
             tracing::warn!("mf-game: failed to persist config.toml: {e}");
         }
     }
+
+    pub fn set_graphics_overrides(&mut self, graphics: QualityOverrides) {
+        self.graphics = graphics;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
+
+    pub fn set_show_fps(&mut self, show: bool) {
+        self.show_fps = show;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -242,6 +364,8 @@ mod tests {
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
+            graphics: GraphicsOverridesFile::default(),
+            show_fps: false,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("high"));
@@ -256,12 +380,16 @@ mod tests {
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
+            graphics: GraphicsOverridesFile::default(),
+            show_fps: false,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         let back: ConfigFile = toml::from_str(&s).unwrap();
         assert_eq!(back.quality_override, None);
         assert_eq!(back.theme_override, None);
         assert!(back.weather_effects);
+        assert!(back.graphics.is_empty());
+        assert!(!back.show_fps);
     }
 
     #[test]
@@ -269,6 +397,8 @@ mod tests {
         let back: ConfigFile = toml::from_str("quality_override = \"medium\"\n").unwrap();
         assert!(back.weather_effects);
         assert_eq!(back.quality_override, Some(ConfigQuality::Medium));
+        assert!(back.graphics.is_empty());
+        assert!(!back.show_fps);
     }
 
     #[test]
@@ -278,6 +408,8 @@ mod tests {
             theme_override: None,
             tutorial_completed: false,
             weather_effects: false,
+            graphics: GraphicsOverridesFile::default(),
+            show_fps: false,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("false"));
@@ -292,6 +424,8 @@ mod tests {
             theme_override: Some(ConfigTheme::Purple),
             tutorial_completed: false,
             weather_effects: true,
+            graphics: GraphicsOverridesFile::default(),
+            show_fps: false,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("purple"));
@@ -306,6 +440,8 @@ mod tests {
             theme_override: None,
             tutorial_completed: true,
             weather_effects: true,
+            graphics: GraphicsOverridesFile::default(),
+            show_fps: false,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("tutorial_completed"));
@@ -330,5 +466,65 @@ mod tests {
             let back: Theme = cfg.into();
             assert_eq!(theme, back);
         }
+    }
+
+    #[test]
+    fn graphics_overrides_roundtrip_as_deltas() {
+        let file = ConfigFile {
+            quality_override: Some(ConfigQuality::Medium),
+            theme_override: None,
+            tutorial_completed: false,
+            weather_effects: true,
+            graphics: GraphicsOverridesFile {
+                shadows: Some(ConfigShadowQuality::Off),
+                draw_distance_m: Some(8_000.0),
+                trees: Some(false),
+                fog: Some(true),
+                volumetric_clouds: Some(false),
+                outlines: Some(true),
+                vsync: Some(false),
+            },
+            show_fps: true,
+        };
+        let s = toml::to_string_pretty(&file).unwrap();
+        assert!(s.contains("[graphics]"));
+        assert!(s.contains("show_fps"));
+        let back: ConfigFile = toml::from_str(&s).unwrap();
+        assert_eq!(back.graphics.shadows, Some(ConfigShadowQuality::Off));
+        assert_eq!(back.graphics.draw_distance_m, Some(8_000.0));
+        assert_eq!(back.graphics.trees, Some(false));
+        assert_eq!(back.graphics.fog, Some(true));
+        assert_eq!(back.graphics.volumetric_clouds, Some(false));
+        assert_eq!(back.graphics.outlines, Some(true));
+        assert_eq!(back.graphics.vsync, Some(false));
+        assert!(back.show_fps);
+        let overrides = back.graphics.to_overrides();
+        assert_eq!(overrides.shadows, Some(ShadowQuality::Off));
+        assert_eq!(overrides.draw_distance_m, Some(8_000.0));
+    }
+
+    #[test]
+    fn empty_graphics_section_omitted_on_serialize() {
+        let file = ConfigFile::default();
+        let s = toml::to_string_pretty(&file).unwrap();
+        assert!(!s.contains("[graphics]"));
+        assert!(!s.contains("show_fps"));
+    }
+
+    #[test]
+    fn legacy_config_parses_without_graphics_keys() {
+        let toml = r#"
+quality_override = "low"
+theme_override = "dark"
+weather_effects = false
+tutorial_completed = true
+"#;
+        let back: ConfigFile = toml::from_str(toml).unwrap();
+        assert_eq!(back.quality_override, Some(ConfigQuality::Low));
+        assert_eq!(back.theme_override, Some(ConfigTheme::Dark));
+        assert!(!back.weather_effects);
+        assert!(back.tutorial_completed);
+        assert!(back.graphics.is_empty());
+        assert!(!back.show_fps);
     }
 }

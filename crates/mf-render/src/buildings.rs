@@ -38,7 +38,7 @@
 use bevy::prelude::*;
 
 use mf_protocol::BuildingFootprint;
-use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, RevealState, Theme};
+use mf_state::{CurrentCity, EffectiveKnobs, HeightAt, LatestFields, RevealState, Theme};
 
 use crate::mesh_utils::{append_cuboid_cel, append_prism, hash01, polygon_area, MeshBuffers};
 use crate::palette;
@@ -288,7 +288,7 @@ fn build_buildings_system(
     city: Res<CurrentCity>,
     fields: Res<LatestFields>,
     height_at: Res<HeightAt>,
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     theme: Res<Theme>,
     day_night: Res<crate::daynight::DayNightState>,
     mut state: ResMut<BuildingsState>,
@@ -692,7 +692,7 @@ fn build_buildings_system(
         }
     }
 
-    let unlit = quality.knobs().unlit_material;
+    let unlit = effective.0.unlit_material;
     // Night-dim only applies on unlit tiers (see `apply_night_dim_system`);
     // bake the *current* dim in at creation time so a mid-night rebuild
     // doesn't flash back to flat white until the next dim pass happens to
@@ -770,7 +770,7 @@ fn build_buildings_system(
 
 /// Per-tier building draw distance (spec §4: 3/6/12km/unlimited).
 fn draw_distance_system(
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     chunks: Query<(Entity, &BuildingChunk)>,
     cameras: Query<&Transform, With<Camera3d>>,
     mut visibility: Query<&mut Visibility>,
@@ -779,7 +779,7 @@ fn draw_distance_system(
         return;
     };
     let cam_xz = Vec2::new(cam.translation.x, cam.translation.z);
-    let max_dist = quality.knobs().building_draw_distance_m;
+    let max_dist = effective.0.building_draw_distance_m;
     for (entity, chunk) in &chunks {
         let Ok(mut vis) = visibility.get_mut(entity) else {
             continue;
@@ -797,18 +797,18 @@ fn draw_distance_system(
 }
 
 fn apply_quality_to_buildings_material_system(
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     state: Res<BuildingsState>,
     mut materials: ResMut<Assets<BuildingMaterial>>,
 ) {
-    if !quality.is_changed() {
+    if !effective.is_changed() {
         return;
     }
     let Some(handle) = &state.material else {
         return;
     };
     if let Some(mat) = materials.get_mut(handle) {
-        mat.base.unlit = quality.knobs().unlit_material;
+        mat.base.unlit = effective.0.unlit_material;
     }
 }
 
@@ -827,12 +827,12 @@ fn quantize_night_factor(v: f32) -> i32 {
 /// light's illuminance drops (`daynight.rs`), and stacking both would
 /// over-darken.
 fn apply_night_dim_system(
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     day_night: Res<crate::daynight::DayNightState>,
     mut state: ResMut<BuildingsState>,
     mut materials: ResMut<Assets<BuildingMaterial>>,
 ) {
-    if !quality.knobs().unlit_material {
+    if !effective.0.unlit_material {
         return;
     }
     let Some(handle) = state.material.clone() else {

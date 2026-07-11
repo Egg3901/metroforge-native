@@ -17,7 +17,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use std::f32::consts::TAU;
 
-use mf_state::{CurrentCity, QualityTier, SubwayView, WeatherEffects};
+use mf_state::{CurrentCity, EffectiveKnobs, SubwayView, WeatherEffects};
 
 use crate::daynight::{DayNightState, Sun};
 use crate::palette;
@@ -299,7 +299,7 @@ fn twilight_factor(night: f32) -> f32 {
 
 #[allow(clippy::too_many_arguments)]
 fn sync_atmosphere_system(
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     weather: Res<WeatherEffects>,
     day_night: Res<DayNightState>,
     subway: Res<SubwayView>,
@@ -316,7 +316,7 @@ fn sync_atmosphere_system(
     )>,
     camera_xforms: Query<&GlobalTransform, With<Camera3d>>,
 ) {
-    let knobs = quality.knobs();
+    let knobs = effective.0;
     let active = knobs.atmosphere_enabled
         && weather.enabled
         && subway.t < 0.45
@@ -411,7 +411,7 @@ fn sync_atmosphere_system(
         ambient_intensity: 0.06 + n * 0.08 + twilight * 0.04,
         step_count: steps,
         // Jitter softens banding; pairs well even without TAA.
-        jitter: if matches!(*quality, QualityTier::High) {
+        jitter: if knobs.atmosphere_fog_steps >= 56 {
             0.45
         } else {
             0.30
@@ -456,11 +456,11 @@ fn sync_atmosphere_system(
 fn scroll_atmosphere_fog_system(
     time: Res<Time>,
     weather: Res<WeatherEffects>,
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     wind: Res<AtmosphereWind>,
     mut volumes: Query<(&AtmosphereLayer, &mut FogVolume)>,
 ) {
-    if !quality.knobs().atmosphere_enabled || !weather.enabled {
+    if !effective.0.atmosphere_enabled || !weather.enabled {
         return;
     }
     let dt = time.delta_secs();

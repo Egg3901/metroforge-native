@@ -13,7 +13,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use bevy::prelude::*;
 
 use mf_protocol::{TransitMode, UiState};
-use mf_state::{HeightAt, LatestUi, QualityTier, Theme};
+use mf_state::{EffectiveKnobs, HeightAt, LatestUi, Theme};
 
 use crate::mesh_utils::{
     append_ribbon, arc_length_table, offset_polyline, point_along, MeshBuffers,
@@ -125,7 +125,7 @@ fn transit_update_system(
     mut commands: Commands,
     ui: Res<LatestUi>,
     height_at: Res<HeightAt>,
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     theme: Res<Theme>,
     mut state: ResMut<TransitState>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -134,18 +134,18 @@ fn transit_update_system(
 ) {
     // Theme/quality changes recolor stations, tracks, and stripes — force a
     // structural rebuild even when UiState is unchanged (issue #32 gap).
-    if !ui.is_changed() && !theme.is_changed() && !quality.is_changed() {
+    if !ui.is_changed() && !theme.is_changed() && !effective.is_changed() {
         return;
     }
     let Some(u) = &ui.0 else {
         return;
     };
 
-    let densify_step = quality.knobs().ribbon_densify_step_m;
+    let densify_step = effective.0.ribbon_densify_step_m;
     let mut sig = signature_of(u) ^ (u64::from(densify_step.to_bits()) << 1);
     // Fold theme + unlit into the gate so Settings switches repaint transit.
     sig ^= (*theme as u64) << 48;
-    if quality.knobs().unlit_material {
+    if effective.0.unlit_material {
         sig ^= 1 << 47;
     }
     if state.signature != Some(sig) {
@@ -154,7 +154,7 @@ fn transit_update_system(
             &mut commands,
             u,
             &height_at,
-            &quality,
+            effective.0.unlit_material,
             &mut state,
             &mut meshes,
             &mut materials,
@@ -163,7 +163,7 @@ fn transit_update_system(
             &mut commands,
             u,
             &height_at,
-            &quality,
+            effective.0.unlit_material,
             densify_step,
             &mut state,
             &mut meshes,
@@ -187,7 +187,7 @@ fn rebuild_stations(
     commands: &mut Commands,
     ui: &UiState,
     height_at: &HeightAt,
-    quality: &QualityTier,
+    unlit: bool,
     state: &mut TransitState,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
@@ -195,7 +195,6 @@ fn rebuild_stations(
     for e in state.station_entities.drain(..) {
         commands.entity(e).despawn();
     }
-    let unlit = quality.knobs().unlit_material;
     let body_mesh = meshes.add(
         Cylinder::new(STATION_RADIUS, STATION_HEIGHT)
             .mesh()
@@ -308,7 +307,7 @@ fn rebuild_tracks(
     commands: &mut Commands,
     ui: &UiState,
     height_at: &HeightAt,
-    quality: &QualityTier,
+    unlit: bool,
     densify_step: f32,
     state: &mut TransitState,
     meshes: &mut Assets<Mesh>,
@@ -317,7 +316,6 @@ fn rebuild_tracks(
     for e in state.track_entities.drain(..) {
         commands.entity(e).despawn();
     }
-    let unlit = quality.knobs().unlit_material;
     // Group by mode+grade so each combination gets one merged mesh/material
     // (small, fixed set: 4 modes x 3 grades).
     let mut groups: HashMap<(TransitMode, String), MeshBuffers> = HashMap::new();

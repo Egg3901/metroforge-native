@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 
-use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, Theme};
+use mf_state::{CurrentCity, EffectiveKnobs, HeightAt, LatestFields, Theme};
 
 use crate::mesh_utils::MeshBuffers;
 use crate::palette;
@@ -124,7 +124,7 @@ fn build_terrain_system(
     mut commands: Commands,
     city: Res<CurrentCity>,
     fields: Res<LatestFields>,
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     theme: Res<Theme>,
     mut state: ResMut<TerrainState>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -137,7 +137,7 @@ fn build_terrain_system(
     let Some(f) = &fields.0 else {
         return;
     };
-    let divisor = quality.knobs().terrain_subdiv_divisor.max(1);
+    let divisor = effective.0.terrain_subdiv_divisor.max(1);
     let key = (f.version, divisor, *theme);
     if state.key == Some(key) {
         return;
@@ -277,7 +277,7 @@ fn build_terrain_system(
     }
     let mesh = meshes.add(buf.build());
 
-    let unlit = quality.knobs().unlit_material;
+    let unlit = effective.0.unlit_material;
     // Grid quads verified CCW-from-+Y below (fixed to match) — single-sided,
     // back-face-culled is correct for a ground plane only ever seen from
     // above. (An A/B-diffed brightness regression in the subway+Potato
@@ -542,17 +542,17 @@ fn grade_terrain(
 /// that's the full-rebuild path above), just flip the existing material's
 /// `unlit` flag rather than rebuilding the whole ground mesh.
 fn apply_quality_to_terrain_material_system(
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     state: Res<TerrainState>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    if !quality.is_changed() {
+    if !effective.is_changed() {
         return;
     }
     let Some(handle) = &state.material else {
         return;
     };
     if let Some(mat) = materials.get_mut(handle) {
-        mat.unlit = quality.knobs().unlit_material;
+        mat.unlit = effective.0.unlit_material;
     }
 }

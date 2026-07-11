@@ -186,6 +186,7 @@ fn boot_system(
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     let config = MfConfig::load();
+    commands.insert_resource(config.graphics);
     commands.insert_resource(mf_state::WeatherEffects {
         enabled: config.weather_effects,
     });

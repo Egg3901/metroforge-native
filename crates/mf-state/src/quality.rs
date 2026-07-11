@@ -2,6 +2,11 @@
 //! `mf-state` stays a light dependency for `mf-render`: the knob table
 //! returns plain data, and `mf-game`/`mf-render` translate it into actual
 //! `PresentMode`/`Msaa`/shadow-map settings where those types live.
+//!
+//! Player-facing Advanced graphics controls persist as [`QualityOverrides`]
+//! deltas on top of the selected preset. Render systems read
+//! [`EffectiveKnobs`] (preset merged with overrides), which updates live
+//! whenever the tier or any override changes.
 
 use bevy_ecs::prelude::*;
 
@@ -24,6 +29,41 @@ pub enum GpuDeviceKind {
     Integrated,
     Cpu,
     Other,
+}
+
+/// Player-facing shadow quality (maps to [`QualityKnobs::shadow_map_size`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ShadowQuality {
+    Off,
+    #[default]
+    Medium,
+    High,
+}
+
+impl ShadowQuality {
+    pub fn label(self) -> &'static str {
+        match self {
+            ShadowQuality::Off => "Off",
+            ShadowQuality::Medium => "Medium",
+            ShadowQuality::High => "High",
+        }
+    }
+
+    pub fn from_map_size(size: Option<u32>) -> Self {
+        match size {
+            None => ShadowQuality::Off,
+            Some(s) if s >= 4096 => ShadowQuality::High,
+            Some(_) => ShadowQuality::Medium,
+        }
+    }
+
+    pub fn map_size(self) -> Option<u32> {
+        match self {
+            ShadowQuality::Off => None,
+            ShadowQuality::Medium => Some(2048),
+            ShadowQuality::High => Some(4096),
+        }
+    }
 }
 
 /// One row of the spec §4 knob table, as plain data.
@@ -80,6 +120,156 @@ pub struct QualityKnobs {
     /// Raymarch step count for [`bevy::pbr::VolumetricFog`] when atmosphere
     /// is active. Higher = less banding, more GPU.
     pub atmosphere_fog_steps: u32,
+    /// Cel-shading building outlines (dense-center chunk). High preset only;
+    /// Advanced settings can override.
+    pub outlines_enabled: bool,
+}
+
+/// Per-knob deltas on top of the active [`QualityTier`] preset. Every field
+/// is `None` when the player has not overridden that control ("use preset").
+/// Persisted under `[graphics]` in `config.toml` by `mf-game`.
+#[derive(Debug, Clone, Copy, PartialEq, Resource, Default)]
+pub struct QualityOverrides {
+    pub shadows: Option<ShadowQuality>,
+    /// Building (and matching tree) draw distance in meters. `Some(m)` with
+    /// `m >= `[`DRAW_DISTANCE_UNLIMITED_M`] forces unlimited (`None` on the
+    /// knob). `None` on this field means "use the preset".
+    pub draw_distance_m: Option<f32>,
+    pub trees: Option<bool>,
+    pub fog: Option<bool>,
+    pub volumetric_clouds: Option<bool>,
+    pub outlines: Option<bool>,
+    pub vsync: Option<bool>,
+}
+
+/// Slider / preset sentinel: at or above this meters value, draw distance
+/// is treated as unlimited.
+pub const DRAW_DISTANCE_UNLIMITED_M: f32 = 20_000.0;
+/// Inclusive lower bound for the Advanced draw-distance slider.
+pub const DRAW_DISTANCE_MIN_M: f32 = 2_000.0;
+
+impl QualityOverrides {
+    pub fn is_empty(self) -> bool {
+        self == Self::default()
+    }
+
+    /// Clear every delta so effective knobs match the preset exactly.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// GPU auto-detect result latched at boot so the Settings "Auto" option can
+/// re-apply detection without re-querying the adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Resource)]
+pub struct DetectedQuality(pub QualityTier);
+
+impl Default for DetectedQuality {
+    fn default() -> Self {
+        DetectedQuality(QualityTier::Medium)
+    }
+}
+
+/// Preset knobs merged with [`QualityOverrides`]. Render / game systems that
+/// care about live graphics settings should read this (not
+/// `QualityTier::knobs()` alone) so Advanced overrides apply without a
+/// restart.
+#[derive(Debug, Clone, Copy, PartialEq, Resource)]
+pub struct EffectiveKnobs(pub QualityKnobs);
+
+impl Default for EffectiveKnobs {
+    fn default() -> Self {
+        EffectiveKnobs(QualityTier::Medium.knobs())
+    }
+}
+
+impl EffectiveKnobs {
+    pub fn get(&self) -> &QualityKnobs {
+        &self.0
+    }
+}
+
+/// Merge a preset row with player deltas. Volumetric clouds forced on also
+/// ensure a minimum shadow map (atmosphere requires shadows); fog forced on
+/// synthesizes start/end from the effective draw distance when the preset
+/// had no fog.
+pub fn merge_knobs(base: QualityKnobs, overrides: &QualityOverrides) -> QualityKnobs {
+    let mut k = base;
+
+    if let Some(shadows) = overrides.shadows {
+        k.shadow_map_size = shadows.map_size();
+    }
+
+    if let Some(meters) = overrides.draw_distance_m {
+        if meters >= DRAW_DISTANCE_UNLIMITED_M {
+            k.building_draw_distance_m = None;
+            k.tree_draw_distance_m = None;
+        } else {
+            let m = meters.max(DRAW_DISTANCE_MIN_M);
+            k.building_draw_distance_m = Some(m);
+            k.tree_draw_distance_m = Some(m);
+        }
+    }
+
+    if let Some(trees) = overrides.trees {
+        k.tree_enabled = trees;
+    }
+
+    if let Some(fog_on) = overrides.fog {
+        if fog_on {
+            k.fog = Some(k.fog.unwrap_or_else(|| synthesize_fog_range(k.building_draw_distance_m)));
+        } else {
+            k.fog = None;
+        }
+    }
+
+    if let Some(clouds) = overrides.volumetric_clouds {
+        k.atmosphere_enabled = clouds;
+        if clouds {
+            // Volumetric fog needs shadow maps; bump to Medium if still off.
+            if k.shadow_map_size.is_none() {
+                k.shadow_map_size = ShadowQuality::Medium.map_size();
+            }
+            if k.atmosphere_fog_steps == 0 {
+                k.atmosphere_fog_steps = 32;
+            }
+        }
+    }
+
+    if let Some(outlines) = overrides.outlines {
+        k.outlines_enabled = outlines;
+    }
+
+    if let Some(vsync) = overrides.vsync {
+        k.vsync = vsync;
+    }
+
+    k
+}
+
+fn synthesize_fog_range(building_draw: Option<f32>) -> (f32, f32) {
+    // Mirror Potato/Low intent: end sits inside the cull distance when one
+    // exists; otherwise use a generous Medium-like haze band.
+    let end = building_draw
+        .map(|d| (d * 0.85).max(DRAW_DISTANCE_MIN_M))
+        .unwrap_or(10_000.0);
+    let start = (end * 0.45).min(end - 100.0).max(500.0);
+    (start, end)
+}
+
+/// Recompute [`EffectiveKnobs`] whenever the preset or overrides change.
+pub fn sync_effective_knobs_system(
+    tier: Res<QualityTier>,
+    overrides: Res<QualityOverrides>,
+    mut effective: ResMut<EffectiveKnobs>,
+) {
+    if !(tier.is_changed() || overrides.is_changed() || effective.is_added()) {
+        return;
+    }
+    let merged = merge_knobs(tier.knobs(), &overrides);
+    if effective.0 != merged {
+        effective.0 = merged;
+    }
 }
 
 impl QualityTier {
@@ -115,6 +305,7 @@ impl QualityTier {
                 fog: Some((1_200.0, 2_600.0)),
                 atmosphere_enabled: false,
                 atmosphere_fog_steps: 0,
+                outlines_enabled: false,
             },
             QualityTier::Low => QualityKnobs {
                 vsync: true,
@@ -133,6 +324,7 @@ impl QualityTier {
                 fog: Some((3_000.0, 5_500.0)),
                 atmosphere_enabled: false,
                 atmosphere_fog_steps: 0,
+                outlines_enabled: false,
             },
             QualityTier::Medium => QualityKnobs {
                 vsync: true,
@@ -151,6 +343,7 @@ impl QualityTier {
                 fog: None,
                 atmosphere_enabled: true,
                 atmosphere_fog_steps: 32,
+                outlines_enabled: false,
             },
             QualityTier::High => QualityKnobs {
                 vsync: true,
@@ -167,8 +360,14 @@ impl QualityTier {
                 fog: None,
                 atmosphere_enabled: true,
                 atmosphere_fog_steps: 56,
+                outlines_enabled: true,
             },
         }
+    }
+
+    /// Effective knobs for this preset with the given overrides applied.
+    pub fn effective_knobs(self, overrides: &QualityOverrides) -> QualityKnobs {
+        merge_knobs(self.knobs(), overrides)
     }
 }
 
@@ -189,6 +388,23 @@ pub fn detect(adapter_name: &str, kind: GpuDeviceKind) -> QualityTier {
         GpuDeviceKind::Discrete => QualityTier::High,
         GpuDeviceKind::Integrated => QualityTier::Low,
         GpuDeviceKind::Cpu | GpuDeviceKind::Other => QualityTier::Medium,
+    }
+}
+
+/// Recommend a preset from a 10s benchmark's average and 1%-low frame times
+/// (milliseconds). Thresholds are intentionally conservative so a borderline
+/// GPU lands on the next-lower tier rather than a slideshow.
+pub fn recommend_tier_from_frame_times(avg_ms: f32, low_1pct_ms: f32) -> QualityTier {
+    // Prefer the worse of avg / 1% low so hitching pulls the recommendation down.
+    let budget = avg_ms.max(low_1pct_ms * 0.85);
+    if budget <= 10.0 {
+        QualityTier::High
+    } else if budget <= 14.5 {
+        QualityTier::Medium
+    } else if budget <= 22.0 {
+        QualityTier::Low
+    } else {
+        QualityTier::Potato
     }
 }
 
@@ -258,6 +474,8 @@ mod tests {
             QualityTier::High.knobs().atmosphere_fog_steps
                 > QualityTier::Medium.knobs().atmosphere_fog_steps
         );
+        assert!(!QualityTier::Medium.knobs().outlines_enabled);
+        assert!(QualityTier::High.knobs().outlines_enabled);
     }
 
     /// Fog `end_m` must sit strictly inside `building_draw_distance_m`
@@ -289,5 +507,59 @@ mod tests {
         assert!(QualityTier::High.knobs().fog.is_none());
         assert!(QualityTier::Potato.knobs().fog.is_some());
         assert!(QualityTier::Low.knobs().fog.is_some());
+    }
+
+    #[test]
+    fn overrides_are_deltas_on_preset() {
+        let mut o = QualityOverrides::default();
+        assert!(o.is_empty());
+        o.trees = Some(true);
+        o.vsync = Some(true);
+        let potato = QualityTier::Potato.effective_knobs(&o);
+        assert!(potato.tree_enabled);
+        assert!(potato.vsync);
+        // Untouched knobs stay on the Potato preset.
+        assert!(potato.unlit_material);
+        assert_eq!(potato.shadow_map_size, None);
+    }
+
+    #[test]
+    fn volumetric_clouds_override_enables_shadows() {
+        let mut o = QualityOverrides::default();
+        o.volumetric_clouds = Some(true);
+        let k = QualityTier::Potato.effective_knobs(&o);
+        assert!(k.atmosphere_enabled);
+        assert!(k.shadow_map_size.is_some());
+        assert!(k.atmosphere_fog_steps > 0);
+    }
+
+    #[test]
+    fn draw_distance_unlimited_sentinel() {
+        let mut o = QualityOverrides::default();
+        o.draw_distance_m = Some(DRAW_DISTANCE_UNLIMITED_M);
+        let k = QualityTier::Low.effective_knobs(&o);
+        assert!(k.building_draw_distance_m.is_none());
+        assert!(k.tree_draw_distance_m.is_none());
+    }
+
+    #[test]
+    fn fog_override_off_clears_preset_fog() {
+        let mut o = QualityOverrides::default();
+        o.fog = Some(false);
+        assert!(QualityTier::Potato.effective_knobs(&o).fog.is_none());
+    }
+
+    #[test]
+    fn recommend_tier_thresholds() {
+        assert_eq!(recommend_tier_from_frame_times(8.0, 9.0), QualityTier::High);
+        assert_eq!(
+            recommend_tier_from_frame_times(12.0, 13.0),
+            QualityTier::Medium
+        );
+        assert_eq!(recommend_tier_from_frame_times(18.0, 20.0), QualityTier::Low);
+        assert_eq!(
+            recommend_tier_from_frame_times(30.0, 40.0),
+            QualityTier::Potato
+        );
     }
 }

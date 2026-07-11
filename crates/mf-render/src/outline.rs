@@ -28,9 +28,9 @@
 //! of city size.
 //!
 //! ## Quality gate
-//! Only active on [`QualityTier::High`] (spec: ON for high, OFF for
-//! potato). Every other tier despawns any existing outline entity so the
-//! cost is exactly zero off-tier, not just visually hidden.
+//! Only active when [`EffectiveKnobs::outlines_enabled`] is set (High
+//! preset / Advanced override). Otherwise despawns any existing outline
+//! entity so the cost is exactly zero when off, not just visually hidden.
 
 use bevy::pbr::{
     Material, MaterialPipeline, MaterialPipelineKey, NotShadowCaster, NotShadowReceiver,
@@ -42,7 +42,7 @@ use bevy::render::render_resource::{
 };
 
 use bevy::asset::{load_internal_asset, weak_handle};
-use mf_state::QualityTier;
+use mf_state::EffectiveKnobs;
 
 use crate::buildings::{BuildingChunk, BuildingsDenseCenter};
 
@@ -124,14 +124,14 @@ struct OutlineState {
 }
 
 fn maintain_outline_system(
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     dense: Res<BuildingsDenseCenter>,
     chunks: Query<(Entity, &BuildingChunk, &Mesh3d)>,
     mut state: ResMut<OutlineState>,
     mut commands: Commands,
     mut materials: ResMut<Assets<OutlineMaterial>>,
 ) {
-    if *quality != QualityTier::High {
+    if !effective.0.outlines_enabled {
         if let Some(e) = state.entity.take() {
             commands.entity(e).try_despawn();
         }

@@ -29,7 +29,11 @@ pub use frame::LatestFrame;
 pub use height::HeightAt;
 pub use overlay::{OverlayMode, OverlayState};
 pub use plugin::MfStatePlugin;
-pub use quality::{detect as detect_quality_tier, GpuDeviceKind, QualityKnobs, QualityTier};
+pub use quality::{
+    detect as detect_quality_tier, merge_knobs, recommend_tier_from_frame_times,
+    sync_effective_knobs_system, DetectedQuality, EffectiveKnobs, GpuDeviceKind, QualityKnobs,
+    QualityOverrides, QualityTier, ShadowQuality, DRAW_DISTANCE_MIN_M, DRAW_DISTANCE_UNLIMITED_M,
+};
 pub use reveal::RevealState;
 pub use subway::{SubwayView, SUBWAY_TRANSITION_SECS};
 pub use theme::Theme;

@@ -12,7 +12,9 @@ use crate::fields::LatestFields;
 use crate::frame::LatestFrame;
 use crate::height::HeightAt;
 use crate::overlay::OverlayState;
-use crate::quality::QualityTier;
+use crate::quality::{
+    sync_effective_knobs_system, DetectedQuality, EffectiveKnobs, QualityOverrides, QualityTier,
+};
 use crate::reveal::RevealState;
 use crate::subway::SubwayView;
 use crate::theme::Theme;
@@ -28,6 +30,9 @@ impl Plugin for MfStatePlugin {
             .init_resource::<LatestUi>()
             .init_resource::<LatestFrame>()
             .init_resource::<QualityTier>()
+            .init_resource::<QualityOverrides>()
+            .init_resource::<EffectiveKnobs>()
+            .init_resource::<DetectedQuality>()
             .init_resource::<Theme>()
             .init_resource::<SubwayView>()
             .init_resource::<HeightAt>()
@@ -39,7 +44,14 @@ impl Plugin for MfStatePlugin {
             // hood), so it's safe whether or not `MfNetPlugin` was added
             // first; declared explicitly here since `mf-state` reads it.
             .add_event::<SimEvent>()
-            .add_systems(Update, apply_sim_events_system.after(NetSet::Drain));
+            .add_systems(
+                Update,
+                (
+                    apply_sim_events_system.after(NetSet::Drain),
+                    // Before any render consumer reads knobs this frame.
+                    sync_effective_knobs_system,
+                ),
+            );
     }
 }
 
