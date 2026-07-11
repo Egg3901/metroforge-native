@@ -249,6 +249,20 @@ pub struct UiDistrict {
     pub jobs: f64,
 }
 
+/// Mirrors the sidecar's `LifetimeLedger` (`core/types.ts`): cumulative
+/// money flows since game start, accumulated as each sim-day closes.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct UiLifetimeLedger {
+    pub fares: f64,
+    pub subsidy: f64,
+    pub operations: f64,
+    pub maintenance: f64,
+    pub interest: f64,
+    /// Number of days accumulated into the totals above.
+    pub days: f64,
+}
+
 /// `UiState` — metroforge/src/host/protocol.ts:46-78. Sent at 2 Hz; the
 /// native wire envelope for `t:"ui"` carries this struct directly as `p`
 /// (spec §1.1: `ui {...UiState}`).
@@ -293,15 +307,23 @@ pub struct UiState {
     /// Sim-depth (PR #31): farebox recovery ratio (fares / operating cost).
     #[serde(default)]
     pub farebox_recovery: Option<f64>,
-    /// Sim-depth (PR #31): cumulative lifetime earnings across the game.
+    /// Sim-depth (PR #31): cumulative lifetime ledger across the game.
+    /// The sidecar emits an object (`uiExtras.ts` / `LifetimeLedger` in
+    /// `core/types.ts`), NOT a scalar - mistyping this as `f64` made every
+    /// `ui` envelope fail to decode once the first sim-day closed (the
+    /// v0.5.1 release-gate blocker).
     #[serde(default)]
-    pub lifetime: Option<f64>,
+    pub lifetime: Option<UiLifetimeLedger>,
     /// Sim-depth (PR #31): catchment districts.
     #[serde(default)]
     pub districts: Vec<UiDistrict>,
-    /// Sim-depth (PR #31): ids of routes flagged as overcrowded.
+    /// Sim-depth (PR #31): COUNT of routes currently over capacity. The
+    /// sidecar emits a scalar (`routes.filter(crowding > 1).length`), not a
+    /// list of ids - mistyping this as `Vec` broke `ui` decoding from tick
+    /// 0 (the v0.5.1 release-gate blocker). Which routes are crowded comes
+    /// from per-route `live_crowding` instead.
     #[serde(default)]
-    pub overcrowded_routes: Vec<i64>,
+    pub overcrowded_routes: Option<u32>,
 }
 
 impl UiState {

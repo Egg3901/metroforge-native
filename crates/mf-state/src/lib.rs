@@ -6,8 +6,10 @@
 //!
 //! Resources: [`CurrentCity`], [`LatestFields`], [`LatestUi`],
 //! [`LatestFrame`], [`QualityTier`], [`SubwayView`], [`HeightAt`],
-//! [`RevealState`], [`LatestDemand`], [`OverlayState`], [`WeatherEffects`].
+//! [`RevealState`], [`LatestDemand`], [`OverlayState`], [`RouteFocus`],
+//! [`WeatherEffects`], [`AttractLighting`].
 
+pub mod attract;
 pub mod city;
 pub mod demand;
 pub mod fields;
@@ -17,11 +19,13 @@ pub mod overlay;
 pub mod plugin;
 pub mod quality;
 pub mod reveal;
+pub mod route_focus;
 pub mod subway;
 pub mod theme;
 pub mod ui;
 pub mod weather;
 
+pub use attract::AttractLighting;
 pub use city::CurrentCity;
 pub use demand::LatestDemand;
 pub use fields::LatestFields;
@@ -31,6 +35,7 @@ pub use overlay::{OverlayMode, OverlayState};
 pub use plugin::MfStatePlugin;
 pub use quality::{detect as detect_quality_tier, GpuDeviceKind, QualityKnobs, QualityTier};
 pub use reveal::RevealState;
+pub use route_focus::RouteFocus;
 pub use subway::{SubwayView, SUBWAY_TRANSITION_SECS};
 pub use theme::Theme;
 pub use ui::LatestUi;

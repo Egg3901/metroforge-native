@@ -244,14 +244,17 @@ client                                   sidecar
 - The sidecar always sends its `hello` first, unprompted, immediately on connect.
 - The client validates `protocolVersion === 1` and aborts the connection attempt on
   mismatch rather than trying to negotiate.
-- The client pings every 5 seconds. This exists specifically to keep a genuinely
-  idle-but-healthy connection (e.g. sitting at `MainMenu` before `init`, where the
-  sidecar has no game running yet and sends nothing on its own) inside the liveness
-  window below: without it, an idle menu screen would spuriously look dead.
-- **Liveness:** no inbound traffic (of any kind, including pongs) for 10 seconds and
-  the client declares the sim dead. `mf-net`'s reconnect policy then respawns the
-  sidecar and reconnects with backoff starting at 500 ms, doubling up to a 4 s cap,
-  for up to 5 attempts, before surfacing a fatal error.
+- **Liveness:** no inbound traffic (of any kind, including pongs) for **5 seconds**
+  and the client declares the sim dead. Process exit is detected immediately via
+  `Child::try_wait` and distinguished from websocket silence in
+  `SidecarDeathReason`. `mf-net`'s reconnect policy then respawns the sidecar and
+  reconnects with backoff starting at 500 ms, doubling up to a 4 s cap, for up to
+  **3 attempts**. Mid-game, recovery re-handshakes, restores from the latest
+  autosave (or re-inits the current city), and resumes `InGame` under a
+  "Reconnecting to simulation" overlay — it does not bounce to MainMenu. After 3
+  failures the client shows a diagnostics screen (log tail + copy button).
+- The client pings every **2.5 seconds** (half the silence window) so an idle menu
+  screen does not spuriously look dead.
 - **Clean shutdown:** the client sends `shutdown`; the sidecar stops its tick loop,
   replies `bye`, closes the socket, and exits with code 0. `SidecarProcess::drop` is
   the backstop: if the child doesn't exit within a reasonable window, it is killed
