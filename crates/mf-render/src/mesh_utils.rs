@@ -809,6 +809,114 @@ pub fn hash01(x: i32, y: i32) -> f32 {
     ((h ^ (h >> 16)) as u32) as f32 / 4_294_967_296.0
 }
 
+/// Parapet rim height above the roof deck (meters).
+const PARAPET_H: f32 = 0.85;
+/// Inset of the parapet wall from the roof edge so it reads as a thin rim
+/// rather than thickening the whole mass.
+const PARAPET_INSET: f32 = 0.35;
+/// Minimum footprint area (m²) before an AC box is considered.
+const AC_MIN_AREA: f32 = 380.0;
+
+/// Rooftop variation generated at mesh-build time: a parapet edge line on
+/// every flat roof, plus occasional AC-box massing on larger roofs. Kept
+/// deliberately cheap (one quad per ring edge for the parapet; at most two
+/// small cuboids for AC) so the buildings rebuild path stays within ~20% of
+/// its prior mesh-generation cost. `seed` is the same per-building hash key
+/// used for brightness jitter.
+pub fn append_rooftop_detail(
+    buf: &mut MeshBuffers,
+    ring: &[Vec2],
+    roof_y: f32,
+    area: f32,
+    seed: (i32, i32),
+    parapet_color: Color,
+    ac_color: Color,
+) {
+    if ring.len() < 3 {
+        return;
+    }
+    append_parapet(buf, ring, roof_y, parapet_color);
+    append_ac_boxes(buf, ring, roof_y, area, seed, ac_color);
+}
+
+fn append_parapet(buf: &mut MeshBuffers, ring: &[Vec2], roof_y: f32, color: Color) {
+    // Same winding normalize as `append_prism` so the outward-normal formula
+    // `(dx, dz) -> (-dz, dx)` matches the wall convention.
+    let normalized: Vec<Vec2> = if signed_area2(ring) < 0.0 {
+        ring.to_vec()
+    } else {
+        ring.iter().rev().copied().collect()
+    };
+    let n = normalized.len();
+    let centroid = normalized.iter().fold(Vec2::ZERO, |a, p| a + *p) / n as f32;
+    let y0 = roof_y;
+    let y1 = roof_y + PARAPET_H;
+    for i in 0..n {
+        let a = normalized[i];
+        let b = normalized[(i + 1) % n];
+        let dir = (b - a).normalize_or_zero();
+        if dir == Vec2::ZERO {
+            continue;
+        }
+        let outward = Vec2::new(-dir.y, dir.x);
+        // Pull endpoints toward centroid so the rim sits just inside the edge.
+        let ai = a.lerp(centroid, PARAPET_INSET / a.distance(centroid).max(1.0));
+        let bi = b.lerp(centroid, PARAPET_INSET / b.distance(centroid).max(1.0));
+        let normal = Vec3::new(outward.x, 0.0, outward.y);
+        buf.push_flat_quad(
+            Vec3::new(ai.x, y0, ai.y),
+            Vec3::new(bi.x, y0, bi.y),
+            Vec3::new(bi.x, y1, bi.y),
+            Vec3::new(ai.x, y1, ai.y),
+            normal,
+            color,
+        );
+    }
+}
+
+fn append_ac_boxes(
+    buf: &mut MeshBuffers,
+    ring: &[Vec2],
+    roof_y: f32,
+    area: f32,
+    seed: (i32, i32),
+    color: Color,
+) {
+    if area < AC_MIN_AREA {
+        return;
+    }
+    // Occasional: ~35% of large roofs get equipment, so average mesh growth
+    // across the city stays well under the ~20% rebuild budget.
+    let roll = hash01(seed.0.wrapping_mul(19) + 5, seed.1.wrapping_mul(23) + 9);
+    if roll > 0.35 {
+        return;
+    }
+    let n = ring.len();
+    let centroid = ring.iter().fold(Vec2::ZERO, |a, p| a + *p) / n as f32;
+    let box_count = if area > 1_200.0 && roll < 0.12 { 2 } else { 1 };
+    for i in 0..box_count {
+        let j = hash01(
+            seed.0.wrapping_add(i as i32 * 31),
+            seed.1.wrapping_add(i as i32 * 17),
+        );
+        let k = hash01(
+            seed.0.wrapping_add(i as i32 * 47 + 3),
+            seed.1.wrapping_add(i as i32 * 11 + 1),
+        );
+        // Offset from centroid, kept well inside the roof so boxes don't
+        // hang off irregular footprints.
+        let reach = (area.sqrt() * 0.12).clamp(2.0, 10.0);
+        let ox = (j - 0.5) * 2.0 * reach;
+        let oz = (k - 0.5) * 2.0 * reach;
+        let c = Vec2::new(centroid.x + ox, centroid.y + oz);
+        let hx = 1.2 + j * 1.8;
+        let hz = 1.0 + k * 1.4;
+        let h = 1.4 + j * 1.2;
+        // Tiny cel-less cuboid on the roof deck (top + 4 sides; no bottom).
+        append_cuboid(buf, c, roof_y, hx, hz, h, color, color, color);
+    }
+}
+
 #[cfg(test)]
 mod ear_clip_tests {
     use super::*;
@@ -1035,5 +1143,37 @@ mod ear_clip_tests {
                 "unexpected wall/cap vertex Y {y}"
             );
         }
+    }
+
+    #[test]
+    fn append_rooftop_detail_adds_parapet_quads() {
+        let ring = [
+            Vec2::new(-5.0, -5.0),
+            Vec2::new(-5.0, 5.0),
+            Vec2::new(5.0, 5.0),
+            Vec2::new(5.0, -5.0),
+        ];
+        let mut buf = MeshBuffers::new();
+        let white = Color::WHITE;
+        // Area 100 < AC_MIN_AREA: parapet only (4 quads = 16 verts).
+        append_rooftop_detail(&mut buf, &ring, 20.0, 100.0, (1, 2), white, white);
+        assert_eq!(buf.vertex_count(), 4 * 4);
+        assert_eq!(buf.index_count(), 4 * 6);
+    }
+
+    #[test]
+    fn append_rooftop_detail_skips_degenerate_ring() {
+        let mut buf = MeshBuffers::new();
+        let white = Color::WHITE;
+        append_rooftop_detail(
+            &mut buf,
+            &[Vec2::ZERO, Vec2::X],
+            10.0,
+            500.0,
+            (0, 0),
+            white,
+            white,
+        );
+        assert!(buf.is_empty());
     }
 }
