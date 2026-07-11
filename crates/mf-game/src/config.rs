@@ -115,6 +115,15 @@ struct ConfigFile {
     /// `weather_effects` above.
     #[serde(default = "default_minimap_open")]
     minimap_open: bool,
+    /// Master output gain in `[0, 1]`. Defaults to 1.0 for legacy configs
+    /// that predate the audio settings row.
+    #[serde(default = "default_master_volume")]
+    master_volume: f32,
+    /// When true, all procedural SFX and ambience are silent. Omitted from
+    /// TOML when false (fresh-install default), same pattern as
+    /// `tutorial_completed`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    mute: bool,
 }
 
 fn default_weather_effects() -> bool {
@@ -127,6 +136,10 @@ fn default_autosave_interval_days() -> u32 {
 
 fn default_minimap_open() -> bool {
     true
+}
+
+fn default_master_volume() -> f32 {
+    1.0
 }
 
 impl Default for ConfigFile {
@@ -143,6 +156,8 @@ impl Default for ConfigFile {
             window_y: None,
             autosave_interval_days: default_autosave_interval_days(),
             minimap_open: true,
+            master_volume: default_master_volume(),
+            mute: false,
         }
     }
 }
@@ -177,6 +192,10 @@ pub struct MfConfig {
     /// (verified unclaimed by grep before wiring it up, same convention
     /// `map_mode.rs`'s module doc uses for `M`).
     pub minimap_open: bool,
+    /// Master output gain in `[0, 1]` for procedural SFX + ambience.
+    pub master_volume: f32,
+    /// When true, all audio is silent regardless of `master_volume`.
+    pub mute: bool,
     path: Option<PathBuf>,
 }
 
@@ -194,6 +213,8 @@ impl Default for MfConfig {
             window_y: None,
             autosave_interval_days: crate::saves::DEFAULT_AUTOSAVE_INTERVAL_DAYS,
             minimap_open: true,
+            master_volume: 1.0,
+            mute: false,
             path: None,
         }
     }
@@ -229,6 +250,8 @@ impl MfConfig {
             window_y: file.window_y,
             autosave_interval_days: file.autosave_interval_days,
             minimap_open: file.minimap_open,
+            master_volume: file.master_volume.clamp(0.0, 1.0),
+            mute: file.mute,
             path: Some(path),
         }
     }
@@ -254,6 +277,8 @@ impl MfConfig {
             window_y: self.window_y,
             autosave_interval_days: self.autosave_interval_days,
             minimap_open: self.minimap_open,
+            master_volume: self.master_volume.clamp(0.0, 1.0),
+            mute: self.mute,
         };
         let toml_str = toml::to_string_pretty(&file)?;
         std::fs::write(path, toml_str)?;
@@ -313,6 +338,23 @@ impl MfConfig {
             tracing::warn!("mf-game: failed to persist config.toml: {e}");
         }
     }
+
+    /// Persist master volume in `[0, 1]` (Settings slider).
+    pub fn set_master_volume(&mut self, volume: f32) {
+        self.master_volume = volume.clamp(0.0, 1.0);
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
+
+    /// Persist mute (Settings checkbox). When muted, procedural SFX and
+    /// ambience are silent regardless of `master_volume`.
+    pub fn set_mute(&mut self, mute: bool) {
+        self.mute = mute;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -332,6 +374,8 @@ mod tests {
             window_y: None,
             autosave_interval_days: 10,
             minimap_open: true,
+            master_volume: 1.0,
+            mute: false,
         }
     }
 
@@ -363,6 +407,8 @@ mod tests {
         assert!(!back.borderless_fullscreen);
         assert_eq!(back.window_width, None);
         assert_eq!(back.autosave_interval_days, 10);
+        assert!((back.master_volume - 1.0).abs() < f32::EPSILON);
+        assert!(!back.mute);
     }
 
     #[test]
@@ -452,5 +498,28 @@ mod tests {
 
         let legacy: ConfigFile = toml::from_str("weather_effects = false\n").unwrap();
         assert_eq!(legacy.autosave_interval_days, 10);
+    }
+
+    #[test]
+    fn master_volume_and_mute_roundtrip_and_default() {
+        let file = ConfigFile {
+            master_volume: 0.35,
+            mute: true,
+            ..sample_file()
+        };
+        let s = toml::to_string_pretty(&file).unwrap();
+        assert!(s.contains("master_volume"), "serialized:\n{s}");
+        assert!(s.contains("mute"), "serialized:\n{s}");
+        let back: ConfigFile = toml::from_str(&s).unwrap();
+        assert!((back.master_volume - 0.35).abs() < 1e-5);
+        assert!(back.mute);
+
+        let legacy: ConfigFile = toml::from_str("weather_effects = false\n").unwrap();
+        assert!((legacy.master_volume - 1.0).abs() < f32::EPSILON);
+        assert!(!legacy.mute);
+
+        let unmuted = sample_file();
+        let s2 = toml::to_string_pretty(&unmuted).unwrap();
+        assert!(!s2.contains("mute"));
     }
 }

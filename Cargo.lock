@@ -3237,6 +3237,7 @@ dependencies = [
  "anyhow",
  "bevy",
  "bevy_egui",
+ "cpal",
  "directories",
  "embed-resource",
  "mf-net",

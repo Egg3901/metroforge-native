@@ -1459,6 +1459,30 @@ fn settings_screen_ui(
                                 .color(muted_text()),
                         );
 
+                        ui.add_space(14.0);
+                        field_label(ui, "Audio");
+                        let mut mute = settings.config.mute;
+                        if ui.checkbox(&mut mute, "Mute").changed() {
+                            settings.config.set_mute(mute);
+                            if !mute {
+                                sfx.write(PlaySfx(Sfx::Confirm));
+                            }
+                        }
+                        ui.add_enabled_ui(!settings.config.mute, |ui| {
+                            let mut volume = settings.config.master_volume;
+                            let slider = ui.add(
+                                egui::Slider::new(&mut volume, 0.0..=1.0)
+                                    .text("Master volume")
+                                    .show_value(true),
+                            );
+                            if slider.changed() {
+                                settings.config.set_master_volume(volume);
+                            }
+                            if slider.drag_stopped() && !settings.config.mute {
+                                sfx.write(PlaySfx(Sfx::Confirm));
+                            }
+                        });
+
                         ui.add_space(28.0);
                         let replay = ui.add_sized(
                             [220.0, 36.0],

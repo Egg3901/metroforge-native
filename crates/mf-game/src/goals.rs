@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::audio::{PlaySfx, Sfx};
 use crate::hud::ToastLog;
 use crate::state::{AppState, PendingInit};
 use mf_protocol::ToastTone;
@@ -263,6 +264,7 @@ fn goals_eval_system(
     ui_state: Res<LatestUi>,
     mut goals: ResMut<GoalsState>,
     mut toasts: ResMut<ToastLog>,
+    mut sfx: EventWriter<PlaySfx>,
 ) {
     let Some(state) = &ui_state.0 else { return };
     let newly = newly_completed(GOAL_DEFS, state, &goals.completed);
@@ -273,6 +275,7 @@ fn goals_eval_system(
         goals.completed.insert(id);
         let title = goal_def(id).title;
         toasts.push(format!("Goal complete: {title}"), ToastTone::Good);
+        sfx.write(PlaySfx(Sfx::GoalComplete));
     }
     goals.save();
 }
