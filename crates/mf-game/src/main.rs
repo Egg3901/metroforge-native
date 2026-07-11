@@ -17,6 +17,7 @@ mod input;
 mod map_mode;
 mod overlays;
 mod panels;
+mod perf;
 mod promo;
 mod quality_boot;
 mod report_ui;
@@ -93,15 +94,18 @@ fn main() {
             promo::MfPromoPlugin,
             tutorial::MfTutorialPlugin,
             goals::MfGoalsPlugin,
+            perf::MfPerfPlugin,
         ));
-    // MF_PERF_LOG=1: log frame-time diagnostics (avg/FPS) once per second.
-    // Costs nothing when unset; gives players and CI a zero-setup way to
-    // capture before/after numbers for performance work.
-    if std::env::var_os("MF_PERF_LOG").is_some() {
+    // MF_PERF / MF_PERF_LOG: Bevy diagnostic plugins + spans. MF_PERF also
+    // drives the 60s sample-then-exit harness in `perf.rs`.
+    if std::env::var_os("MF_PERF").is_some() || std::env::var_os("MF_PERF_LOG").is_some() {
         app.add_plugins((
             bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
+            bevy::diagnostic::EntityCountDiagnosticsPlugin::default(),
             bevy::diagnostic::LogDiagnosticsPlugin::default(),
         ));
+        // Keep a longer frame-time history so MF_PERF percentiles are stable.
+        app.insert_resource(perf::EguiPerfTimer::default());
     }
     app.run();
 }

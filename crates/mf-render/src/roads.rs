@@ -103,6 +103,7 @@ fn build_roads_system(
     mut materials: ResMut<Assets<StandardMaterial>>,
     quality: Res<QualityTier>,
     theme: Res<Theme>,
+    mut counters: ResMut<crate::perf::PerfCounters>,
 ) {
     let Some(city_json) = &city.static_city else {
         return;
@@ -127,6 +128,8 @@ fn build_roads_system(
     if state.signature == Some(signature) {
         return;
     }
+    let _span = tracing::info_span!("roads_rebuild").entered();
+    let _timer = crate::perf::PerfSpan::start(&mut counters.roads_rebuild_us);
     state.signature = Some(signature);
 
     for e in state.entities.drain(..) {
@@ -315,27 +318,44 @@ fn road_lod_system(
     state: Res<RoadsState>,
     cameras: Query<&Transform, With<Camera3d>>,
     mut visibility: Query<&mut Visibility>,
+    mut counters: ResMut<crate::perf::PerfCounters>,
 ) {
+    let _span = tracing::info_span!("road_lod").entered();
+    let _timer = crate::perf::PerfSpan::start(&mut counters.road_lod_us);
     let Ok(cam_transform) = cameras.single() else {
         return;
     };
     let y = cam_transform.translation.y;
     if let Some(entity) = state.local_entity {
         if let Ok(mut vis) = visibility.get_mut(entity) {
-            *vis = if y > LOCAL_ROAD_LOD_HEIGHT {
+            let next = if y > LOCAL_ROAD_LOD_HEIGHT {
                 Visibility::Hidden
             } else {
                 Visibility::Visible
             };
+            if *vis == next {
+                counters.visibility_skips = counters.visibility_skips.saturating_add(1);
+            } else {
+                counters.visibility_mutations =
+                    counters.visibility_mutations.saturating_add(1);
+            }
+            *vis = next;
         }
     }
     if let Some(entity) = state.collector_entity {
         if let Ok(mut vis) = visibility.get_mut(entity) {
-            *vis = if y > COLLECTOR_ROAD_LOD_HEIGHT {
+            let next = if y > COLLECTOR_ROAD_LOD_HEIGHT {
                 Visibility::Hidden
             } else {
                 Visibility::Visible
             };
+            if *vis == next {
+                counters.visibility_skips = counters.visibility_skips.saturating_add(1);
+            } else {
+                counters.visibility_mutations =
+                    counters.visibility_mutations.saturating_add(1);
+            }
+            *vis = next;
         }
     }
 }

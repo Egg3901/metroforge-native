@@ -295,6 +295,7 @@ fn build_buildings_system(
     mut dense_center: ResMut<BuildingsDenseCenter>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<BuildingMaterial>>,
+    mut counters: ResMut<crate::perf::PerfCounters>,
 ) {
     let Some(city_json) = &city.static_city else {
         return;
@@ -309,6 +310,8 @@ fn build_buildings_system(
     {
         return;
     }
+    let _span = tracing::info_span!("buildings_rebuild").entered();
+    let _timer = crate::perf::PerfSpan::start(&mut counters.buildings_rebuild_us);
     state.version = Some(new_version);
     state.buildings_count = new_buildings_count;
     state.theme = Some(*theme);
@@ -774,7 +777,10 @@ fn draw_distance_system(
     chunks: Query<(Entity, &BuildingChunk)>,
     cameras: Query<&Transform, With<Camera3d>>,
     mut visibility: Query<&mut Visibility>,
+    mut counters: ResMut<crate::perf::PerfCounters>,
 ) {
+    let _span = tracing::info_span!("building_draw_distance").entered();
+    let _timer = crate::perf::PerfSpan::start(&mut counters.building_draw_distance_us);
     let Ok(cam) = cameras.single() else {
         return;
     };
@@ -788,11 +794,18 @@ fn draw_distance_system(
             None => true,
             Some(limit) => cam_xz.distance(chunk.center) <= limit,
         };
-        *vis = if visible {
+        let next = if visible {
             Visibility::Visible
         } else {
             Visibility::Hidden
         };
+        if *vis == next {
+            counters.visibility_skips = counters.visibility_skips.saturating_add(1);
+        } else {
+            counters.visibility_mutations =
+                counters.visibility_mutations.saturating_add(1);
+        }
+        *vis = next;
     }
 }
 

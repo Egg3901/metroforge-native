@@ -131,7 +131,10 @@ fn transit_update_system(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut ring_query: Query<(&mut StationRing, &MeshMaterial3d<StandardMaterial>)>,
+    mut counters: ResMut<crate::perf::PerfCounters>,
 ) {
+    let _span = tracing::info_span!("transit_update").entered();
+    let _timer = crate::perf::PerfSpan::start(&mut counters.transit_update_us);
     // Theme/quality changes recolor stations, tracks, and stripes — force a
     // structural rebuild even when UiState is unchanged (issue #32 gap).
     if !ui.is_changed() && !theme.is_changed() && !quality.is_changed() {

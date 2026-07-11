@@ -1250,7 +1250,9 @@ fn in_game_hud_system(
     mut goals_panel: ResMut<GoalsPanelOpen>,
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
+    mut egui_timer: Option<ResMut<crate::perf::EguiPerfTimer>>,
 ) -> Result {
+    let t0 = egui_timer.as_ref().map(|_| std::time::Instant::now());
     let ctx = contexts.ctx_mut()?;
 
     // Art-direction §8: off-white panel, near-black text, consistent
@@ -1409,6 +1411,9 @@ fn in_game_hud_system(
                 });
             }
         });
+    if let (Some(t0), Some(timer)) = (t0, egui_timer.as_mut()) {
+        timer.0 = timer.0.saturating_add(t0.elapsed().as_micros() as u64);
+    }
     Ok(())
 }
 
