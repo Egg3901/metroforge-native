@@ -8,6 +8,7 @@ description = "3D renderer (spec §3.3): terrain/roads/buildings/transit/vehicle
 [dependencies]
 mf-state = { workspace = true }
 mf-protocol = { workspace = true }
+tracing = { workspace = true }
 
 [dependencies.bevy]
 workspace = true

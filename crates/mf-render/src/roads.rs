@@ -6,11 +6,13 @@
 //! medium/high tier.
 
 use bevy::prelude::*;
+use bevy::render::mesh::MeshAabb;
 
 use mf_state::{CurrentCity, HeightAt, QualityTier, Theme};
 
 use crate::mesh_utils::{append_ribbon, MeshBuffers};
 use crate::palette;
+use crate::RenderCacheStats;
 
 /// Road surface lift above ground. The spec said 0.5, but at overview zoom
 /// on near-flat terrain a 0.5m offset loses the depth fight against the
@@ -68,9 +70,19 @@ struct RoadsState {
     /// Densify step bits so a quality-tier change rebuilds at the new
     /// ribbon resolution.
     signature: Option<(u32, usize, usize, Theme, u32)>,
-    entities: Vec<Entity>,
+    /// Class entity ids (arterial/collector/local) — reused across rebuilds.
+    class_entities: [Option<Entity>; 3],
+    edge_entity: Option<Entity>,
     local_entity: Option<Entity>,
     collector_entity: Option<Entity>,
+    /// Long-lived mesh assets reused via [`MeshBuffers::apply_to_mesh`].
+    class_meshes: [Option<Handle<Mesh>>; 3],
+    edge_mesh: Option<Handle<Mesh>>,
+    class_materials: [Option<Handle<StandardMaterial>>; 3],
+    edge_material: Option<Handle<StandardMaterial>>,
+    /// Scratch buffers kept across rebuilds so vertex Vecs retain capacity.
+    scratch_class: [MeshBuffers; 3],
+    scratch_edge: MeshBuffers,
     /// Tracked so `road_lod_system` can hide the arterial mesh once the
     /// camera climbs above the active tier's fog `end` — above that height the
     /// whole network is fully fogged to the sky color anyway, so hiding it is
@@ -109,6 +121,8 @@ fn build_roads_system(
     mut materials: ResMut<Assets<StandardMaterial>>,
     quality: Res<QualityTier>,
     theme: Res<Theme>,
+    mut stats: ResMut<RenderCacheStats>,
+    counters: Res<crate::perf::PerfCounters>,
 ) {
     let Some(city_json) = &city.static_city else {
         return;
@@ -133,23 +147,18 @@ fn build_roads_system(
     if state.signature == Some(signature) {
         return;
     }
+    let _span = tracing::info_span!("roads_rebuild").entered();
+    let _timer = crate::perf::PerfSpan::start(&counters.roads_rebuild_us);
     state.signature = Some(signature);
-
-    for e in state.entities.drain(..) {
-        commands.entity(e).despawn();
-    }
-    state.local_entity = None;
-    state.collector_entity = None;
-    state.arterial_entity = None;
 
     let road_scale = city_json.road_scale as f32;
     let road_color = palette::road();
     let unlit = quality.knobs().unlit_material;
 
-    let mut by_class: [MeshBuffers; 3] =
-        [MeshBuffers::new(), MeshBuffers::new(), MeshBuffers::new()];
-    // index 0 = arterial, 1 = collector, 2 = local
-    let mut edge_buf = MeshBuffers::new();
+    for buf in &mut state.scratch_class {
+        buf.clear();
+    }
+    state.scratch_edge.clear();
 
     for road in &city_json.roads {
         let pts: Vec<Vec2> = road
@@ -178,7 +187,7 @@ fn build_roads_system(
             }
         };
         append_ribbon(
-            &mut by_class[idx],
+            &mut state.scratch_class[idx],
             &pts,
             ROAD_Y_OFFSET,
             width,
@@ -187,7 +196,7 @@ fn build_roads_system(
         );
         if idx == 0 {
             append_ribbon(
-                &mut edge_buf,
+                &mut state.scratch_edge,
                 &pts,
                 ROAD_Y_OFFSET + 0.05,
                 width + 2.0,
@@ -198,120 +207,183 @@ fn build_roads_system(
     }
 
     let names = ["arterial", "collector", "local"];
-    for (i, buf) in by_class.into_iter().enumerate() {
-        if buf.is_empty() {
+    state.local_entity = None;
+    state.collector_entity = None;
+
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..3 {
+        if state.scratch_class[i].is_empty() {
+            if let Some(e) = state.class_entities[i].take() {
+                commands.entity(e).despawn();
+            }
+            state.class_meshes[i] = None;
+            state.class_materials[i] = None;
             continue;
         }
-        let mesh = meshes.add(buf.build());
-        // `Blend`, not `Opaque`: this surface renders at alpha 1.0 except
-        // during the subway-view fade (`subway.rs`'s
-        // `fade_road_and_stripe_alpha_system`, which lowers alpha toward
-        // `FADED_ALPHA`). An earlier version of this fix created this
-        // `Opaque` and had `subway.rs` flip it to `Blend` only while
-        // actually translucent, to skip the transparent pass (no depth
-        // write, per-entity sort, guaranteed overdraw) for the overwhelming
-        // majority of opaque-alpha frames. That broke rendering in
-        // practice — verified via headless screenshot A/B diffing, not just
-        // suspected — regardless of whether the mode was flipped by
-        // mutating the existing material asset in place or by swapping in a
-        // freshly-added material and reassigning the entity's
-        // `MeshMaterial3d` handle (which should force Bevy to re-queue the
-        // entity into the correct render phase, and didn't fix it either):
-        // both left the road/stripe geometry either invisible or wrongly
-        // blended once subway view settled. Root cause not fully isolated
-        // within this fix's scope; staying `Blend` unconditionally here
-        // (this crate's second blanket-material decision, `roads.rs`
-        // rebuild_routes's normal stripe in `transit.rs` is the other one)
-        // is the correctness-first fallback so the rendered scene doesn't
-        // change.
-        //
-        // `cull_mode`/`double_sided` are fixed below (Part 2 of issue #5):
-        // `append_ribbon`'s winding is verified CCW-from-+Y (mesh_utils.rs),
-        // making single-sided/back-face-culled correct for a ribbon only
-        // ever seen from above. This alone wasn't enough during
-        // verification — A/B screenshot diffing turned up a brightness
-        // regression in the subway+Potato combination, root-caused to
-        // `unlit` going stale (baked in once at build time, never updated
-        // on a runtime tier change, unlike buildings.rs/terrain.rs) so roads
-        // stayed on the LIT path after switching to Potato; combined with
-        // `double_sided`'s back-face normal flip, the "corrected" winding
-        // changed which normal direction actually receives direct light,
-        // visibly brightening the surface. `apply_quality_to_roads_material_
-        // system` below fixes that root cause (keeps `unlit` in sync with
-        // the tier, like buildings/terrain already do), which is what makes
-        // single-siding safe here.
-        // Color at the MATERIAL level, not vertex colors: vertex colors do
-        // not reach the shader for alpha-blended StandardMaterials in this
-        // Bevy 0.16 setup (terrain's vertex colors work fine - it is
-        // Opaque), which is why roads rendered white-on-white for so long
-        // ("streets barely read", the oldest item in the render backlog).
-        // A single-color ribbon never needed per-vertex color anyway.
-        let material = materials.add(StandardMaterial {
-            base_color: road_color,
-            unlit,
-            alpha_mode: AlphaMode::Blend,
-            // Fully matte: with the ribbon winding fixed and single-siding
-            // on, these surfaces now receive direct sun for the first time,
-            // and the default reflectance (4% F0) paints a specular sheen
-            // that blows near-black asphalt out to white at high sun angles.
-            perceptual_roughness: 1.0,
-            reflectance: 0.0,
-            ..default()
-        });
-        let mut entity_commands = commands.spawn((
-            Mesh3d(mesh),
-            MeshMaterial3d(material),
-            Transform::IDENTITY,
-            Visibility::default(),
-            RoadSurface,
-            RoadClassSurface,
-            Name::new(format!("roads-{}", names[i])),
-        ));
-        if names[i] == "local" {
-            entity_commands.insert(LocalRoadMarker);
-            state.local_entity = Some(entity_commands.id());
-        } else if names[i] == "collector" {
-            entity_commands.insert(CollectorRoadMarker);
-            state.collector_entity = Some(entity_commands.id());
-        } else if names[i] == "arterial" {
-            state.arterial_entity = Some(entity_commands.id());
+        let mesh_handle = state.class_meshes[i]
+            .get_or_insert_with(|| {
+                meshes.add(Mesh::new(
+                    bevy::render::mesh::PrimitiveTopology::TriangleList,
+                    bevy::render::render_asset::RenderAssetUsages::default(),
+                ))
+            })
+            .clone();
+        let aabb = {
+            let mesh = meshes.get_mut(&mesh_handle).expect("road class mesh");
+            state.scratch_class[i].apply_to_mesh(mesh);
+            mesh.compute_aabb().unwrap_or_default()
+        };
+        let material_handle = state.class_materials[i]
+            .get_or_insert_with(|| {
+                materials.add(StandardMaterial {
+                    base_color: road_color,
+                    unlit,
+                    alpha_mode: AlphaMode::Blend,
+                    perceptual_roughness: 1.0,
+                    reflectance: 0.0,
+                    ..default()
+                })
+            })
+            .clone();
+        if let Some(mat) = materials.get_mut(&material_handle) {
+            mat.base_color = road_color;
+            mat.unlit = unlit;
         }
-        state.entities.push(entity_commands.id());
+        let entity = if let Some(e) = state.class_entities[i] {
+            if let Ok(mut commands_e) = commands.get_entity(e) {
+                commands_e.insert((
+                    Mesh3d(mesh_handle.clone()),
+                    MeshMaterial3d(material_handle.clone()),
+                    aabb,
+                    Visibility::Visible,
+                ));
+                e
+            } else {
+                let mut entity_commands = commands.spawn((
+                    Mesh3d(mesh_handle.clone()),
+                    MeshMaterial3d(material_handle.clone()),
+                    Transform::IDENTITY,
+                    Visibility::default(),
+                    aabb,
+                    RoadSurface,
+                    RoadClassSurface,
+                    Name::new(format!("roads-{}", names[i])),
+                ));
+                if names[i] == "local" {
+                    entity_commands.insert(LocalRoadMarker);
+                } else if names[i] == "collector" {
+                    entity_commands.insert(CollectorRoadMarker);
+                }
+                let id = entity_commands.id();
+                state.class_entities[i] = Some(id);
+                id
+            }
+        } else {
+            let mut entity_commands = commands.spawn((
+                Mesh3d(mesh_handle),
+                MeshMaterial3d(material_handle),
+                Transform::IDENTITY,
+                Visibility::default(),
+                aabb,
+                RoadSurface,
+                RoadClassSurface,
+                Name::new(format!("roads-{}", names[i])),
+            ));
+            if names[i] == "local" {
+                entity_commands.insert(LocalRoadMarker);
+            } else if names[i] == "collector" {
+                entity_commands.insert(CollectorRoadMarker);
+            }
+            let id = entity_commands.id();
+            state.class_entities[i] = Some(id);
+            id
+        };
+        if names[i] == "local" {
+            state.local_entity = Some(entity);
+        } else if names[i] == "collector" {
+            state.collector_entity = Some(entity);
+        } else if names[i] == "arterial" {
+            state.arterial_entity = Some(entity);
+        }
     }
 
     // Arterial hairline edge, medium/high tier only (art-direction §1).
-    if !unlit && !edge_buf.is_empty() {
-        let mesh = meshes.add(edge_buf.build());
-        // `Blend` for the same reason as the class materials above.
-        // `double_sided`/`cull_mode` stay as-is (unlike the class materials):
-        // this one is *always* lit by design (`unlit: false` hardcoded, not
-        // tier-driven — it only exists on medium/high tier to begin with),
-        // so there's no stale-`unlit` root cause to fix here the way there
-        // was for the class materials, and it wasn't independently
-        // re-verified as single-siding-safe under the always-lit path. Low
-        // stakes either way: a 1-3m hairline accent, not the road fill.
-        let material = materials.add(StandardMaterial {
-            // Same transparent-pass vertex-color caveat as the class
-            // materials above: color the material directly.
-            base_color: palette::road_edge(),
-            unlit: false,
-            alpha_mode: AlphaMode::Blend,
-            perceptual_roughness: 1.0,
-            reflectance: 0.0,
-            ..default()
-        });
-        let e = commands
-            .spawn((
-                Mesh3d(mesh),
-                MeshMaterial3d(material),
-                Transform::IDENTITY,
-                Visibility::default(),
-                RoadSurface,
-                Name::new("roads-arterial-edge"),
-            ))
-            .id();
-        state.entities.push(e);
+    if !unlit && !state.scratch_edge.is_empty() {
+        let mesh_handle = state
+            .edge_mesh
+            .get_or_insert_with(|| {
+                meshes.add(Mesh::new(
+                    bevy::render::mesh::PrimitiveTopology::TriangleList,
+                    bevy::render::render_asset::RenderAssetUsages::default(),
+                ))
+            })
+            .clone();
+        let aabb = {
+            let mesh = meshes.get_mut(&mesh_handle).expect("road edge mesh");
+            state.scratch_edge.apply_to_mesh(mesh);
+            mesh.compute_aabb().unwrap_or_default()
+        };
+        let material_handle = state
+            .edge_material
+            .get_or_insert_with(|| {
+                materials.add(StandardMaterial {
+                    base_color: palette::road_edge(),
+                    unlit: false,
+                    alpha_mode: AlphaMode::Blend,
+                    perceptual_roughness: 1.0,
+                    reflectance: 0.0,
+                    ..default()
+                })
+            })
+            .clone();
+        if let Some(mat) = materials.get_mut(&material_handle) {
+            mat.base_color = palette::road_edge();
+        }
+        if let Some(e) = state.edge_entity {
+            if let Ok(mut commands_e) = commands.get_entity(e) {
+                commands_e.insert((
+                    Mesh3d(mesh_handle),
+                    MeshMaterial3d(material_handle),
+                    aabb,
+                    Visibility::Visible,
+                ));
+            } else {
+                state.edge_entity = Some(
+                    commands
+                        .spawn((
+                            Mesh3d(mesh_handle),
+                            MeshMaterial3d(material_handle),
+                            Transform::IDENTITY,
+                            Visibility::default(),
+                            aabb,
+                            RoadSurface,
+                            Name::new("roads-arterial-edge"),
+                        ))
+                        .id(),
+                );
+            }
+        } else {
+            state.edge_entity = Some(
+                commands
+                    .spawn((
+                        Mesh3d(mesh_handle),
+                        MeshMaterial3d(material_handle),
+                        Transform::IDENTITY,
+                        Visibility::default(),
+                        aabb,
+                        RoadSurface,
+                        Name::new("roads-arterial-edge"),
+                    ))
+                    .id(),
+            );
+        }
+    } else if let Some(e) = state.edge_entity.take() {
+        commands.entity(e).despawn();
+        state.edge_mesh = None;
+        state.edge_material = None;
     }
+    stats.road_entities = state.class_entities.iter().filter(|e| e.is_some()).count()
+        + usize::from(state.edge_entity.is_some());
 }
 
 /// Hide local/collector road meshes once the camera climbs above their LOD
@@ -325,7 +397,10 @@ fn road_lod_system(
     quality: Res<QualityTier>,
     cameras: Query<&Transform, With<Camera3d>>,
     mut visibility: Query<&mut Visibility>,
+    counters: Res<crate::perf::PerfCounters>,
 ) {
+    let _span = tracing::info_span!("road_lod").entered();
+    let _timer = crate::perf::PerfSpan::start(&counters.road_lod_us);
     let Ok(cam_transform) = cameras.single() else {
         return;
     };
@@ -346,6 +421,9 @@ fn road_lod_system(
         e.min(COLLECTOR_ROAD_LOD_HEIGHT)
     });
 
+    // Gate the write through `set_visibility_if_changed` (perf pass): Bevy's
+    // change detection fires on every `DerefMut` of `Visibility`, so writing
+    // it unconditionally each frame would dirty the render world needlessly.
     let set_vis =
         |entity: Option<Entity>, hide_above: Option<f32>, vis: &mut Query<&mut Visibility>| {
             let Some(entity) = entity else {
@@ -354,10 +432,11 @@ fn road_lod_system(
             let Ok(mut v) = vis.get_mut(entity) else {
                 return;
             };
-            *v = match hide_above {
+            let next = match hide_above {
                 Some(h) if y > h => Visibility::Hidden,
                 _ => Visibility::Visible,
             };
+            crate::perf::set_visibility_if_changed(&mut v, next, Some(&counters));
         };
 
     set_vis(state.local_entity, Some(local_hide), &mut visibility);

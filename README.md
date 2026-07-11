@@ -28,22 +28,28 @@ font license. No separate runtime to install.
 1. Download `metroforge-<version>-windows-x64-setup.exe` from
    [GitHub Releases](https://github.com/Egg3901/metroforge-native/releases).
 2. Run the installer (Program Files, Start Menu shortcuts, Add/Remove Programs entry).
-3. If SmartScreen blocks it: click "More info", then "Run anyway".
-4. The game launches.
+3. Releases are not Authenticode-signed, so Windows Defender SmartScreen will usually
+   warn on first run: click **More info**, then **Run anyway**.
+4. The game launches. A second launch focuses the existing window instead of starting
+   another copy (and another sidecar).
 
-Alternatively, download the `.zip` archive, extract it, and run `metroforge.exe`.
+Alternatively, download the `.zip` archive, extract it, and run `metroforge.exe`
+(same SmartScreen prompt on first run).
+
+Config and saves live under `%AppData%\Roaming\<org>\MetroForge\` (crash reports under
+`%LocalAppData%\…\MetroForge\crash-reports\`). Explorer → Properties on `metroforge.exe`
+shows the embedded version and icon.
 
 ### macOS
 
 1. Download the `.dmg` file from
    [GitHub Releases](https://github.com/Egg3901/metroforge-native/releases).
 2. Open the DMG and drag `MetroForge` to Applications.
-3. First launch: right-click the app and select "Open" (not double-click).
-4. If Gatekeeper blocks it: open System Settings, go to Privacy and Security, find
-   the blocked message near the bottom, and click "Open Anyway" to confirm.
+3. Releases are ad-hoc signed (not Developer ID / notarized). On first launch,
+   **right-click** the app and select **Open** (a plain double-click is blocked).
+4. If Gatekeeper still blocks it: open System Settings → Privacy & Security, find the
+   blocked-app message near the bottom, and click **Open Anyway**, then confirm.
 5. The game launches.
-
-Alternatively, download the `.zip` archive, extract it, and run the executable.
 
 ### Linux
 

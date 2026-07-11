@@ -9,7 +9,9 @@ use bevy_ecs::prelude::*;
 /// each frame to advance `t` — `mf-game`'s `input.rs` only flips `active`.
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
 pub struct SubwayView {
+    /// Target the player last chose (`true` = subway view).
     pub active: bool,
+    /// Eased progress toward `active` (0 = normal, 1 = fully subway).
     pub t: f32,
 }
 
@@ -26,6 +28,7 @@ impl Default for SubwayView {
 pub const SUBWAY_TRANSITION_SECS: f32 = 0.4;
 
 impl SubwayView {
+    /// Flip the subway-view target; progress still eases via [`Self::step`].
     pub fn toggle(&mut self) {
         self.active = !self.active;
     }

@@ -40,6 +40,7 @@ bevy = { version = "0.16", default-features = false, features = [
     "multi_threaded",
     "png",
     "tonemapping_luts",
+    "wayland",
     "x11",
 ] }
 # mf-net/mf-state only need ECS + the Plugin/App scaffolding (Resource/Event

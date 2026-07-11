@@ -19,9 +19,14 @@ use bevy::pbr::{
 };
 use bevy::prelude::*;
 
-use mf_state::{LatestUi, QualityTier, Theme};
+use mf_state::{AttractLighting, LatestUi, QualityTier, Theme};
 
 use crate::palette;
+
+/// Attract-mode golden hour (local solar time). Low sun → long shadows on
+/// Medium+; warm twilight tint on clear/ambient/sun color. Chosen so
+/// `night_factor` sits in the dusk band without extinguishing shadows.
+const ATTRACT_GOLDEN_HOUR: f32 = 19.0;
 
 /// Exponential chase rate for displayed hour → sim target. Settles ~95% in
 /// ~0.35s, bridging the ~0.5s UiState gap without lagging dusk/dawn.
@@ -139,6 +144,7 @@ fn compute_day_night_system(
     ui: Res<LatestUi>,
     quality: Res<QualityTier>,
     theme: Res<Theme>,
+    attract: Res<AttractLighting>,
     mut state: ResMut<DayNightState>,
 ) {
     // Dark/Purple ARE the night rig promoted to a standing theme (issue
@@ -150,6 +156,15 @@ fn compute_day_night_system(
     if *theme != Theme::Light {
         state.target_hour = 0.0;
         state.target_night_factor = 1.0;
+        return;
+    }
+    // Title-screen attract diorama: lock golden hour regardless of sim
+    // clock (and ahead of Potato's fixed-noon path) so the backdrop stays
+    // warm/moody while the city sim races at 30× behind the menu.
+    if attract.active {
+        let (hour, night) = attract_golden_hour_targets();
+        state.target_hour = hour;
+        state.target_night_factor = night;
         return;
     }
     if !quality.knobs().day_night_enabled {
@@ -181,6 +196,15 @@ fn compute_day_night_system(
     state.target_night_factor = (-elevation * 1.2).clamp(0.0, 1.0);
 }
 
+/// Pure golden-hour targets for attract mode. Exposed to unit tests so the
+/// dusk-band / shadow-on invariants don't drift silently.
+fn attract_golden_hour_targets() -> (f32, f32) {
+    let hour = ATTRACT_GOLDEN_HOUR;
+    let elevation = (((hour - 6.0) / 12.0) * PI).sin();
+    let night = (-elevation * 1.2).clamp(0.0, 1.0);
+    (hour, night)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_day_night_system(
     time: Res<Time>,
@@ -195,9 +219,8 @@ pub(crate) fn apply_day_night_system(
     let dt = time.delta_secs();
     // Ease displayed hour toward the sim target along the shortest wrap
     // around midnight so a 23.9 → 0.1 step doesn't spin the long way.
-    let hour_delta = shortest_hour_delta(state.hour, state.target_hour);
     let hour_t = 1.0 - (-HOUR_SMOOTH_RATE * dt).exp();
-    state.hour = (state.hour + hour_delta * hour_t).rem_euclid(24.0);
+    state.hour = advance_hour(state.hour, state.target_hour, hour_t);
     state.night_factor += (state.target_night_factor - state.night_factor) * hour_t;
 
     let azimuth = (state.hour / 24.0) * std::f32::consts::TAU;
@@ -216,8 +239,8 @@ pub(crate) fn apply_day_night_system(
     state.sun_direction = sun_dir;
     state.sun_elevation = elev_sin.max(0.0).clamp(0.0, 1.0);
 
-    let night_bucket = (state.night_factor * 255.0).round() as u8;
-    let hour_bucket = (state.hour / 24.0 * 1024.0).round() as u16;
+    let night_bucket = quantize_night_bucket(state.night_factor);
+    let hour_bucket = quantize_hour_bucket(state.hour);
     let quality_or_theme_changed = quality.is_changed() || theme.is_changed();
     let night_dirty = state.applied_night_bucket != Some(night_bucket) || quality_or_theme_changed;
     let hour_dirty = state.applied_hour_bucket != Some(hour_bucket) || quality_or_theme_changed;
@@ -230,14 +253,20 @@ pub(crate) fn apply_day_night_system(
         state.applied_night_bucket = Some(night_bucket);
         let day_color = palette::sky_day();
         let night_color = palette::sky_night();
-        // Warm the clear color slightly through twilight so dusk isn't a
-        // straight white→navy lerp (pairs with atmosphere's golden fog).
+        // Warm the clear color through twilight AND low-sun golden hour so
+        // dusk/dawn aren't a straight white→navy lerp (pairs with atmosphere).
         let twilight = {
             let t = 1.0 - ((n - 0.5).abs() * 2.0);
             t.clamp(0.0, 1.0).powf(1.2)
         };
-        let dusk = Color::srgb(0.92, 0.72, 0.55);
-        clear_color.0 = day_color.mix(&dusk, twilight * 0.35).mix(&night_color, n);
+        let golden = {
+            let low_sun = (1.0 - (state.sun_elevation / 0.35).clamp(0.0, 1.0)).clamp(0.0, 1.0);
+            let not_deep_night = (1.0 - ((n - 0.55).max(0.0) / 0.45)).clamp(0.0, 1.0);
+            low_sun * not_deep_night
+        };
+        let warm = twilight.max(golden);
+        let dusk = Color::srgb(1.0, 0.72, 0.48);
+        clear_color.0 = day_color.mix(&dusk, warm * 0.55).mix(&night_color, n);
         // Distance fog (Potato/Low, quality sweep in lib.rs) must track the
         // clear color exactly - including this same twilight/night lerp and
         // the active theme - or the horizon shows a hard seam where fogged
@@ -247,9 +276,9 @@ pub(crate) fn apply_day_night_system(
             fog.color = clear_color.0;
         }
 
-        // Cool ambient at night, warm kiss at twilight.
+        // Cool ambient at night, warm kiss at golden hour / twilight.
         ambient.color = Color::WHITE
-            .mix(&Color::srgb(1.0, 0.88, 0.75), twilight * 0.25)
+            .mix(&Color::srgb(1.0, 0.82, 0.62), warm * 0.40)
             .mix(&Color::srgb(0.70, 0.78, 1.0), n * 0.45);
         ambient.brightness = 550.0 * (1.0 - n * 0.85);
     }
@@ -288,11 +317,18 @@ pub(crate) fn apply_day_night_system(
             1.0
         };
         light.illuminance = day_lux * night_dim;
+        let twilight = {
+            let t = 1.0 - ((n - 0.5).abs() * 2.0);
+            t.clamp(0.0, 1.0).powf(1.2)
+        };
+        let golden = {
+            let low_sun = (1.0 - (elev / 0.35).clamp(0.0, 1.0)).clamp(0.0, 1.0);
+            let not_deep_night = (1.0 - ((n - 0.55).max(0.0) / 0.45)).clamp(0.0, 1.0);
+            low_sun * not_deep_night
+        };
+        let warm = twilight.max(golden);
         light.color = Color::srgb(1.0, 0.96, 0.88)
-            .mix(&Color::srgb(1.0, 0.78, 0.55), {
-                let t = 1.0 - ((n - 0.5).abs() * 2.0);
-                t.clamp(0.0, 1.0).powf(1.2) * 0.45
-            })
+            .mix(&Color::srgb(1.0, 0.70, 0.42), warm * 0.70)
             .mix(&Color::srgb(0.55, 0.65, 0.9), n);
         light.shadows_enabled = shadows_ok;
         light.shadow_depth_bias = depth_bias;
@@ -380,6 +416,24 @@ fn shortest_hour_delta(from: f32, to: f32) -> f32 {
     d
 }
 
+/// One smoothing step of displayed hour toward `target`, wrapping into
+/// `[0, 24)`. `t` is the exponential blend factor in `[0, 1]`.
+fn advance_hour(hour: f32, target: f32, t: f32) -> f32 {
+    let hour_delta = shortest_hour_delta(hour, target);
+    (hour + hour_delta * t).rem_euclid(24.0)
+}
+
+/// Night-factor dirty bucket: 256 levels across `[0, 1]`.
+fn quantize_night_bucket(night_factor: f32) -> u8 {
+    (night_factor.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Hour dirty bucket: 1024 levels across a day (~1.4 simulated minutes).
+fn quantize_hour_bucket(hour: f32) -> u16 {
+    let wrapped = hour.rem_euclid(24.0);
+    (wrapped / 24.0 * 1024.0).round() as u16 % 1024
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,8 +447,101 @@ mod tests {
     }
 
     #[test]
+    fn shortest_hour_delta_is_antisymmetric() {
+        // For every pair, delta(a,b) == -delta(b,a) — the property that
+        // keeps dusk→dawn and dawn→dusk smoothing from picking opposite
+        // directions inconsistently.
+        for &(a, b) in &[
+            (0.0, 0.0),
+            (23.5, 0.5),
+            (0.5, 23.5),
+            (6.0, 18.0),
+            (18.0, 6.0),
+            (1.0, 13.0),
+            (12.0, 0.0),
+            (0.0, 12.0),
+            (23.9, 0.1),
+        ] {
+            let ab = shortest_hour_delta(a, b);
+            let ba = shortest_hour_delta(b, a);
+            assert!(
+                (ab + ba).abs() < 1e-4,
+                "delta({a},{b})={ab} is not antisymmetric of {ba}"
+            );
+            assert!(ab.abs() <= 12.0 + 1e-4, "delta longer than half-day: {ab}");
+        }
+    }
+
+    #[test]
+    fn advance_hour_wraps_into_day_and_takes_short_path() {
+        // 23.9 → 0.1 must step forward (~+0.2), never the long way back.
+        let stepped = advance_hour(23.9, 0.1, 1.0);
+        assert!((stepped - 0.1).abs() < 1e-4, "got {stepped}");
+        // Partial step stays in [0, 24).
+        let partial = advance_hour(23.9, 0.1, 0.5);
+        assert!((0.0..24.0).contains(&partial), "got {partial}");
+        assert!(
+            !(0.1..=23.9).contains(&partial),
+            "should move toward midnight wrap, got {partial}"
+        );
+    }
+
+    #[test]
+    fn advance_hour_identity_when_already_at_target() {
+        for h in [0.0, 6.0, 12.0, 18.0, 23.999] {
+            let out = advance_hour(h, h, 0.5);
+            assert!((out - h.rem_euclid(24.0)).abs() < 1e-4, "h={h} out={out}");
+        }
+    }
+
+    #[test]
+    fn night_bucket_quantization_is_stable_near_boundaries() {
+        assert_eq!(quantize_night_bucket(0.0), 0);
+        assert_eq!(quantize_night_bucket(1.0), 255);
+        assert_eq!(quantize_night_bucket(0.5), 128);
+        // Probe the interior of bucket 128: values whose `*255` lands in
+        // (127.5, 128.5) must all quantize identically. 0.5 itself sits
+        // exactly on the 127.5 half-up boundary, so nudge from the center.
+        let center = 128.0 / 255.0;
+        let base = quantize_night_bucket(center);
+        assert_eq!(base, 128);
+        let half_bucket = 0.4 / 255.0;
+        assert_eq!(quantize_night_bucket(center + half_bucket), base);
+        assert_eq!(quantize_night_bucket(center - half_bucket), base);
+    }
+
+    #[test]
+    fn hour_bucket_quantization_wraps_and_is_stable() {
+        assert_eq!(quantize_hour_bucket(0.0), 0);
+        assert_eq!(quantize_hour_bucket(12.0), 512);
+        // Exactly 24.0 wraps to the same bucket as 0.0.
+        assert_eq!(quantize_hour_bucket(24.0), quantize_hour_bucket(0.0));
+        assert_eq!(quantize_hour_bucket(-0.001), quantize_hour_bucket(23.999));
+        // Stability: a sub-bucket nudge must not change the bucket.
+        let noon = quantize_hour_bucket(12.0);
+        let step = 24.0 / 1024.0;
+        assert_eq!(quantize_hour_bucket(12.0 + step * 0.2), noon);
+        assert_eq!(quantize_hour_bucket(12.0 - step * 0.2), noon);
+    }
+
+    #[test]
     #[allow(clippy::assertions_on_constants)]
     fn shadow_hysteresis_band_is_ordered() {
         assert!(SHADOW_ON_NIGHT < SHADOW_OFF_NIGHT);
+    }
+
+    #[test]
+    fn attract_golden_hour_is_in_dusk_band_with_shadows_still_on() {
+        let (hour, night) = attract_golden_hour_targets();
+        assert!((hour - ATTRACT_GOLDEN_HOUR).abs() < 1e-6);
+        // Warm twilight kiss without extinguishing Medium+ shadows.
+        assert!(
+            (0.15..0.55).contains(&night),
+            "expected dusk-band night_factor, got {night}"
+        );
+        assert!(
+            night < SHADOW_ON_NIGHT,
+            "golden hour must keep shadows latched on (night={night})"
+        );
     }
 }

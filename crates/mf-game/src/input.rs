@@ -62,11 +62,13 @@ fn pause_toggle_system(
     if !tool.route_draft.is_empty() {
         tool.route_draft.clear();
         tool.last_cost_quote = None;
+        tool.editing_route_id = None;
         sfx.write(PlaySfx(Sfx::Cancel));
         return;
     }
     if tool.active != ActiveTool::None {
         tool.active = ActiveTool::None;
+        tool.editing_route_id = None;
         return;
     }
     if toggle_pause(&mut pause, &ui_state, link.as_deref()) {
