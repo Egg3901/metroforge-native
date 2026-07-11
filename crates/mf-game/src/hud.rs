@@ -5,12 +5,13 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy::app::AppExit;
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 use mf_net::{NetStatus, ReconnectState, SimEvent, SimLink};
 use mf_protocol::envelope::FromSimJson;
 use mf_protocol::{Difficulty, FromSimMsg, ToSim, ToastTone};
-use mf_state::{LatestUi, QualityTier, SubwayView, Theme};
+use mf_state::{LatestUi, QualityTier, SubwayView, Theme, WeatherEffects};
 
 use crate::audio::{PlaySfx, Sfx};
 use crate::campaign::{self, CampaignProgress};
@@ -288,6 +289,17 @@ fn theme_options(
             sfx.write(PlaySfx(Sfx::Confirm));
         }
     }
+}
+
+/// Bundles the Settings-screen resources so callers stay under Bevy's
+/// 16-param system limit (adding weather alone pushed `main_menu_hud_system`
+/// over).
+#[derive(SystemParam)]
+struct SettingsControls<'w> {
+    quality: ResMut<'w, QualityTier>,
+    theme: ResMut<'w, Theme>,
+    weather: ResMut<'w, WeatherEffects>,
+    config: ResMut<'w, MfConfig>,
 }
 
 /// ConnectingSim previously registered NO ui system at all, so a player whose
@@ -612,9 +624,7 @@ fn main_menu_hud_system(
     hello: Res<SimHello>,
     progress: Res<CampaignProgress>,
     pending: ResMut<PendingInit>,
-    quality: ResMut<QualityTier>,
-    theme: ResMut<Theme>,
-    config: ResMut<MfConfig>,
+    settings: SettingsControls,
     save_manager: ResMut<SaveManager>,
     toasts: ResMut<ToastLog>,
     state: Res<State<AppState>>,
@@ -643,7 +653,7 @@ fn main_menu_hud_system(
         )?,
         MenuScreen::Settings => {
             let mut screen = screen;
-            if settings_screen_ui(contexts, quality, theme, config, sfx, hovered)? {
+            if settings_screen_ui(contexts, settings, sfx, hovered)? {
                 *screen = MenuScreen::Title;
             }
         }
@@ -1072,9 +1082,7 @@ fn city_select_screen_ui(
 /// (true == Back was clicked this frame).
 fn settings_screen_ui(
     mut contexts: EguiContexts,
-    mut quality: ResMut<QualityTier>,
-    mut theme: ResMut<Theme>,
-    mut config: ResMut<MfConfig>,
+    mut settings: SettingsControls,
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
 ) -> Result<bool> {
@@ -1116,20 +1124,47 @@ fn settings_screen_ui(
 
                         field_label(ui, "Quality");
                         egui::ComboBox::from_id_salt("settings_quality")
-                            .selected_text(quality.label())
+                            .selected_text(settings.quality.label())
                             .width(300.0)
                             .show_ui(ui, |ui| {
-                                quality_options(ui, &mut quality, &mut config, &mut sfx)
+                                quality_options(
+                                    ui,
+                                    &mut settings.quality,
+                                    &mut settings.config,
+                                    &mut sfx,
+                                )
                             });
 
                         ui.add_space(14.0);
                         field_label(ui, "Theme");
                         egui::ComboBox::from_id_salt("settings_theme")
-                            .selected_text(theme.label())
+                            .selected_text(settings.theme.label())
                             .width(300.0)
                             .show_ui(ui, |ui| {
-                                theme_options(ui, &mut theme, &mut config, &mut sfx)
+                                theme_options(
+                                    ui,
+                                    &mut settings.theme,
+                                    &mut settings.config,
+                                    &mut sfx,
+                                )
                             });
+
+                        ui.add_space(14.0);
+                        field_label(ui, "Weather");
+                        let tier_allows = settings.quality.knobs().atmosphere_enabled;
+                        ui.add_enabled_ui(tier_allows, |ui| {
+                            let mut enabled = settings.weather.enabled;
+                            let label = if tier_allows {
+                                "Fog & clouds"
+                            } else {
+                                "Fog & clouds (Medium+)"
+                            };
+                            if ui.checkbox(&mut enabled, label).changed() {
+                                settings.weather.enabled = enabled;
+                                settings.config.set_weather_effects(enabled);
+                                sfx.write(PlaySfx(Sfx::Confirm));
+                            }
+                        });
 
                         ui.add_space(28.0);
                         let back = ui.add_sized(
@@ -1369,9 +1404,7 @@ fn pause_overlay_system(
     mut pause: ResMut<PauseState>,
     ui_state: Res<LatestUi>,
     link: Option<Res<SimLink>>,
-    quality: ResMut<QualityTier>,
-    theme: ResMut<Theme>,
-    config: ResMut<MfConfig>,
+    settings: SettingsControls,
     mut save_manager: ResMut<SaveManager>,
     mut toasts: ResMut<ToastLog>,
     pending: Res<PendingInit>,
@@ -1386,10 +1419,10 @@ fn pause_overlay_system(
     }
     // Owner ask: Settings must be reachable "from the in-game pause menu",
     // not just the title screen. Reuses `settings_screen_ui` verbatim
-    // (same quality/theme controls, same widget layout) rather than a
+    // (same quality/theme/weather controls, same widget layout) rather than a
     // second copy of the ComboBoxes bolted onto the pause panel.
     if *pause_settings_open {
-        if settings_screen_ui(contexts, quality, theme, config, sfx, hovered)? {
+        if settings_screen_ui(contexts, settings, sfx, hovered)? {
             *pause_settings_open = false;
         }
         return Ok(());

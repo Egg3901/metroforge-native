@@ -6,9 +6,11 @@
 //!
 //! Layers, in bake/update order (see [`MfRenderSet`]):
 //! terrain -> roads/buildings/transit (static, cached by version/structural
-//! signature) -> vehicles/agents/daynight/subway (dynamic, every frame).
+//! signature) -> vehicles/agents/daynight/atmosphere/subway (dynamic, every
+//! frame).
 
 mod agents;
+mod atmosphere;
 mod buildings;
 mod daynight;
 mod mesh_utils;
@@ -69,6 +71,7 @@ impl Plugin for MfRenderPlugin {
             vehicles::MfVehiclesPlugin,
             agents::MfAgentsPlugin,
             daynight::MfDayNightPlugin,
+            atmosphere::MfAtmospherePlugin,
             subway::MfSubwayPlugin,
             outline::MfOutlinePlugin,
         ))

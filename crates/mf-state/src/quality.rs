@@ -63,6 +63,15 @@ pub struct QualityKnobs {
     pub tree_enabled: bool,
     /// Tree-chunk draw distance in meters; `None` means unlimited.
     pub tree_draw_distance_m: Option<f32>,
+    /// When `true`, scrolling volumetric fog/cloud + distance haze are
+    /// eligible (Medium/High). Potato/Low keep this off — volumetric fog
+    /// needs shadow maps, which those tiers disable. The player can still
+    /// turn the effect off via [`crate::WeatherEffects`] even when this is
+    /// `true`.
+    pub atmosphere_enabled: bool,
+    /// Raymarch step count for [`bevy::pbr::VolumetricFog`] when atmosphere
+    /// is active. Higher = less banding, more GPU.
+    pub atmosphere_fog_steps: u32,
 }
 
 impl QualityTier {
@@ -92,6 +101,8 @@ impl QualityTier {
                 ribbon_densify_step_m: 48.0,
                 tree_enabled: false,
                 tree_draw_distance_m: Some(3_000.0),
+                atmosphere_enabled: false,
+                atmosphere_fog_steps: 0,
             },
             QualityTier::Low => QualityKnobs {
                 vsync: true,
@@ -105,6 +116,8 @@ impl QualityTier {
                 ribbon_densify_step_m: 36.0,
                 tree_enabled: true,
                 tree_draw_distance_m: Some(6_000.0),
+                atmosphere_enabled: false,
+                atmosphere_fog_steps: 0,
             },
             QualityTier::Medium => QualityKnobs {
                 vsync: true,
@@ -118,6 +131,8 @@ impl QualityTier {
                 ribbon_densify_step_m: 24.0,
                 tree_enabled: true,
                 tree_draw_distance_m: Some(12_000.0),
+                atmosphere_enabled: true,
+                atmosphere_fog_steps: 32,
             },
             QualityTier::High => QualityKnobs {
                 vsync: true,
@@ -131,6 +146,8 @@ impl QualityTier {
                 ribbon_densify_step_m: 24.0,
                 tree_enabled: true,
                 tree_draw_distance_m: None,
+                atmosphere_enabled: true,
+                atmosphere_fog_steps: 56,
             },
         }
     }
@@ -213,6 +230,14 @@ mod tests {
         assert!(
             QualityTier::Potato.knobs().ribbon_densify_step_m
                 > QualityTier::High.knobs().ribbon_densify_step_m
+        );
+        assert!(!QualityTier::Potato.knobs().atmosphere_enabled);
+        assert!(!QualityTier::Low.knobs().atmosphere_enabled);
+        assert!(QualityTier::Medium.knobs().atmosphere_enabled);
+        assert!(QualityTier::High.knobs().atmosphere_enabled);
+        assert!(
+            QualityTier::High.knobs().atmosphere_fog_steps
+                > QualityTier::Medium.knobs().atmosphere_fog_steps
         );
     }
 }
