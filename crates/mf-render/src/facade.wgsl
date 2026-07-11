@@ -154,7 +154,7 @@ fn fragment(
 
     let facade_enabled = reveal_uniform.facade.y;
     if facade_enabled > 0.5 {
-        let cam = view.world_position.xyz;
+        let cam = view.world_position;
         let dist = distance(in.world_position.xyz, cam);
         let full_w = 1.0 - smoothstep(
             LOD_FULL_M - LOD_FULL_FADE_M,

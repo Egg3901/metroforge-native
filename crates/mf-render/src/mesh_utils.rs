@@ -895,13 +895,10 @@ fn append_ac_boxes(
     let centroid = ring.iter().fold(Vec2::ZERO, |a, p| a + *p) / n as f32;
     let box_count = if area > 1_200.0 && roll < 0.12 { 2 } else { 1 };
     for i in 0..box_count {
-        let j = hash01(
-            seed.0.wrapping_add(i as i32 * 31),
-            seed.1.wrapping_add(i as i32 * 17),
-        );
+        let j = hash01(seed.0.wrapping_add(i * 31), seed.1.wrapping_add(i * 17));
         let k = hash01(
-            seed.0.wrapping_add(i as i32 * 47 + 3),
-            seed.1.wrapping_add(i as i32 * 11 + 1),
+            seed.0.wrapping_add(i * 47 + 3),
+            seed.1.wrapping_add(i * 11 + 1),
         );
         // Offset from centroid, kept well inside the roof so boxes don't
         // hang off irregular footprints.
