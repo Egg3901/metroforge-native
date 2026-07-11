@@ -57,6 +57,29 @@ use crate::buildings::{BuildingChunk, BuildingsDenseCenter};
 /// camera distances without visibly fattening silhouettes up close.
 const OUTLINE_PUSH_M: f32 = 0.9;
 
+/// Camera-distance fade band for the outline (issue: "black scribble clump").
+///
+/// The dense-center chunk is ONE merged mesh of hundreds of packed buildings.
+/// Inverted-hull pushes every face out `OUTLINE_PUSH_M`, including the roof
+/// caps. Up close you view the core from the side, so the pushed roof caps
+/// hide behind taller fronts and only the silhouette rim shows -- the intended
+/// crisp hairline. But at the far autostart camera (`zoom_to_fit` =
+/// worldSize * 0.75 = ~9km on NYC) you look down across the whole core and
+/// every pushed-up black roof cap tiles together into one solid black blanket
+/// -- the "black scribble clump".
+///
+/// The packed sub-pixel buildings mean there is no "thin" intermediate at
+/// this distance: any nonzero push tiles the per-building black slivers into a
+/// solid fill (measured -- even a 16% push still blobs). So the fix scales the
+/// push down over the fade band AND despawns-by-hiding the entity past `FAR`,
+/// which is the sanctioned trade (outlines are a close-range readability aid;
+/// at a 9km overview a crisp edge was never going to survive anyway). Below
+/// `NEAR` (all gameplay / editing distances and the verify harness' 1.4km hero
+/// shot) the outline is at full strength.
+const OUTLINE_FADE_NEAR_M: f32 = 3_000.0;
+/// Beyond this camera distance the outline is fully hidden (push already ~0).
+const OUTLINE_FADE_FAR_M: f32 = 5_500.0;
+
 const OUTLINE_SHADER_HANDLE: Handle<Shader> = weak_handle!("9f1d4b6a-1c3e-4f7a-8b2d-5e6f7a8b9c0d");
 
 pub struct MfOutlinePlugin;
@@ -73,7 +96,11 @@ impl Plugin for MfOutlinePlugin {
             .init_resource::<OutlineState>()
             .add_systems(
                 Update,
-                maintain_outline_system.in_set(crate::MfRenderSet::Dynamic),
+                (
+                    maintain_outline_system,
+                    outline_distance_fade_system.after(maintain_outline_system),
+                )
+                    .in_set(crate::MfRenderSet::Dynamic),
             );
     }
 }
@@ -126,6 +153,12 @@ impl Material for OutlineMaterial {
 struct OutlineState {
     entity: Option<Entity>,
     source_mesh: Option<AssetId<Mesh>>,
+    /// Handle to the live outline material so `outline_distance_fade_system`
+    /// can drive its push distance toward zero as the camera dollies out.
+    material: Option<Handle<OutlineMaterial>>,
+    /// World-space center of the dense-center chunk the outline copies, used
+    /// as the camera-distance anchor for the fade.
+    center: Vec3,
 }
 
 fn maintain_outline_system(
@@ -141,6 +174,7 @@ fn maintain_outline_system(
             commands.entity(e).try_despawn();
         }
         state.source_mesh = None;
+        state.material = None;
         return;
     }
 
@@ -150,9 +184,10 @@ fn maintain_outline_system(
             .distance_squared(target)
             .total_cmp(&b.center.distance_squared(target))
     });
-    let Some((_source_entity, _chunk, mesh3d)) = nearest else {
+    let Some((_source_entity, chunk, mesh3d)) = nearest else {
         return;
     };
+    state.center = Vec3::new(chunk.center.x, 0.0, chunk.center.y);
 
     if state.source_mesh == Some(mesh3d.0.id()) {
         return;
@@ -168,8 +203,9 @@ fn maintain_outline_system(
     let entity = commands
         .spawn((
             Mesh3d(mesh3d.0.clone()),
-            MeshMaterial3d(material),
+            MeshMaterial3d(material.clone()),
             Transform::IDENTITY,
+            Visibility::Visible,
             NotShadowCaster,
             NotShadowReceiver,
             Name::new("building-outline-dense-center"),
@@ -177,4 +213,60 @@ fn maintain_outline_system(
         .id();
     state.entity = Some(entity);
     state.source_mesh = Some(mesh3d.0.id());
+    state.material = Some(material);
+}
+
+/// Scales the outline push toward zero as the camera dollies out and hides the
+/// entity past [`OUTLINE_FADE_FAR_M`], so the dense-center slivers never merge
+/// into a solid black blob at far (autostart `zoom_to_fit`) distances. Up close
+/// the push is at full [`OUTLINE_PUSH_M`] strength so edges stay crisp. See the
+/// fade-band constants for the full rationale.
+fn outline_distance_fade_system(
+    state: Res<OutlineState>,
+    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    mut materials: ResMut<Assets<OutlineMaterial>>,
+    mut vis: Query<&mut Visibility>,
+) {
+    let Some(entity) = state.entity else {
+        return;
+    };
+    // Nearest camera to the outline anchor (there is normally exactly one 3D
+    // camera; min picks sanely if a promo/photo camera coexists).
+    let Some(cam_dist) = cameras
+        .iter()
+        .map(|t| t.translation().distance(state.center))
+        .min_by(f32::total_cmp)
+    else {
+        return;
+    };
+
+    // 0 at/below NEAR, 1 at/above FAR, smooth in between.
+    let t = ((cam_dist - OUTLINE_FADE_NEAR_M) / (OUTLINE_FADE_FAR_M - OUTLINE_FADE_NEAR_M))
+        .clamp(0.0, 1.0);
+    let fade = 1.0 - t * t * (3.0 - 2.0 * t); // 1.0 -> 0.0 via smoothstep
+
+    if let Some(handle) = &state.material {
+        let push = OUTLINE_PUSH_M * fade;
+        // Only touch the asset (and trigger a GPU re-upload) when the push
+        // actually moves — a static camera must not re-upload every frame.
+        let needs_write = materials
+            .get(handle)
+            .is_some_and(|m| (m.params.x - push).abs() > 1e-4);
+        if needs_write {
+            if let Some(mat) = materials.get_mut(handle) {
+                mat.params.x = push;
+            }
+        }
+    }
+
+    if let Ok(mut v) = vis.get_mut(entity) {
+        let want = if cam_dist >= OUTLINE_FADE_FAR_M {
+            Visibility::Hidden
+        } else {
+            Visibility::Visible
+        };
+        if *v != want {
+            *v = want;
+        }
+    }
 }
