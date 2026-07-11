@@ -512,6 +512,14 @@ mod windows_job {
 
     pub struct JobHandle(HANDLE);
 
+    // SAFETY: a Job Object HANDLE is a kernel object reference with no
+    // thread affinity; Win32 allows using it from any thread. We only
+    // close it (Drop) and never alias interior state. Required because
+    // SimLink (a Bevy Resource) holds the handle so the job lives as long
+    // as the sim link.
+    unsafe impl Send for JobHandle {}
+    unsafe impl Sync for JobHandle {}
+
     impl Drop for JobHandle {
         fn drop(&mut self) {
             // Closing the last handle to a kill-on-close job terminates
