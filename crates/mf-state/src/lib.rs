@@ -40,6 +40,7 @@ pub mod route_focus;
 pub mod subway;
 /// Visual theme selection (Light/Dark/Purple).
 pub mod theme;
+pub mod traffic;
 /// Latest 2 Hz `UiState`.
 pub mod ui;
 /// Player weather-effects Settings toggle.
@@ -63,5 +64,6 @@ pub use reveal::RevealState;
 pub use route_focus::RouteFocus;
 pub use subway::{SubwayView, SUBWAY_TRANSITION_SECS};
 pub use theme::Theme;
+pub use traffic::LatestTraffic;
 pub use ui::LatestUi;
 pub use weather::WeatherEffects;

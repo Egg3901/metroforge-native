@@ -21,6 +21,7 @@ use crate::reveal::RevealState;
 use crate::route_focus::RouteFocus;
 use crate::subway::SubwayView;
 use crate::theme::Theme;
+use crate::traffic::LatestTraffic;
 use crate::ui::LatestUi;
 use crate::weather::WeatherEffects;
 
@@ -43,6 +44,7 @@ impl Plugin for MfStatePlugin {
             .init_resource::<HeightAt>()
             .init_resource::<RevealState>()
             .init_resource::<LatestDemand>()
+            .init_resource::<LatestTraffic>()
             .init_resource::<OverlayState>()
             .init_resource::<RouteFocus>()
             .init_resource::<WeatherEffects>()
@@ -90,6 +92,7 @@ fn apply_sim_events_system(
     mut ui: ResMut<LatestUi>,
     mut frame: ResMut<LatestFrame>,
     mut demand: ResMut<LatestDemand>,
+    mut traffic: ResMut<LatestTraffic>,
 ) {
     for SimEvent(msg) in events.read() {
         match msg {
@@ -117,6 +120,9 @@ fn apply_sim_events_system(
             }
             FromSimMsg::Json(FromSimJson::Demand(d)) => {
                 demand.0 = Some(d.clone());
+            }
+            FromSimMsg::Traffic(t) => {
+                traffic.0 = Some(t.clone());
             }
             // Other JSON messages (hello/commandResult/trackCost/saved/
             // replay/toast/pong/bye) and the Traffic binary frame are

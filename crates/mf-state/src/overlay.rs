@@ -20,6 +20,9 @@ pub enum OverlayMode {
     /// assignment engine found underserved by the CURRENT network — "trips
     /// being lost to cars right now".
     Unserved,
+    /// The sim's own traffic frame (`LatestTraffic`, msgType=3): road
+    /// congestion painted onto the street network itself (not a heatmap).
+    Traffic,
 }
 
 impl OverlayMode {
@@ -28,7 +31,8 @@ impl OverlayMode {
         match self {
             OverlayMode::Off => OverlayMode::Demand,
             OverlayMode::Demand => OverlayMode::Unserved,
-            OverlayMode::Unserved => OverlayMode::Off,
+            OverlayMode::Unserved => OverlayMode::Traffic,
+            OverlayMode::Traffic => OverlayMode::Off,
         }
     }
 }
@@ -56,13 +60,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cycle_wraps_off_demand_unserved_off() {
+    fn cycle_wraps_off_demand_unserved_traffic_off() {
         let mut overlay = OverlayState::default();
         assert_eq!(overlay.mode, OverlayMode::Off);
         overlay.cycle();
         assert_eq!(overlay.mode, OverlayMode::Demand);
         overlay.cycle();
         assert_eq!(overlay.mode, OverlayMode::Unserved);
+        overlay.cycle();
+        assert_eq!(overlay.mode, OverlayMode::Traffic);
         overlay.cycle();
         assert_eq!(overlay.mode, OverlayMode::Off);
     }
