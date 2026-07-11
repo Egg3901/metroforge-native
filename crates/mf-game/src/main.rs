@@ -30,6 +30,7 @@ mod quality_boot;
 mod report_ui;
 mod reveal_input;
 mod saves;
+mod sidecar_kill_test;
 mod single_instance;
 mod soak;
 mod state;
@@ -98,6 +99,7 @@ fn main() {
             MfCrashPlugin,
             saves::MfSavesPlugin,
             verify::MfVerifyPlugin,
+            sidecar_kill_test::MfSidecarKillTestPlugin,
             MfQualityBootPlugin,
             MfThemeBootPlugin,
             audio::MfAudioPlugin,

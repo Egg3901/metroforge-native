@@ -1,18 +1,26 @@
 //! App state machine (spec §3.4): `Boot -> ConnectingSim -> MainMenu ->
-//! Loading -> InGame`. `mf-net`/`mf-state` don't know about these states —
-//! this module is the only place that maps `mf_net::NetStatus` /
-//! `mf_state` readiness onto them.
+//! Loading -> InGame`, plus `SimError` for exhausted sidecar reconnects.
+//! Mid-game sidecar death stays in `InGame` with a reconnect overlay,
+//! re-handshakes, and restores from the latest autosave (or re-inits the
+//! current city) without bouncing to the main menu.
+//!
+//! `mf-net`/`mf-state` don't know about these states — this module is the
+//! only place that maps `mf_net::NetStatus` / `mf_state` readiness onto them.
 
 use bevy::app::AppExit;
 use bevy::prelude::*;
-use mf_net::{NetStatus, ReconnectState, SimEvent, SimLink};
+use mf_net::{
+    NetStatus, ReconnectPhase, ReconnectState, ResumePolicy, SidecarDeathReason, SimEvent, SimLink,
+    MAX_ATTEMPTS,
+};
 use mf_protocol::envelope::FromSimJson;
-use mf_protocol::{HelloInfo, InitPayload, SetSpeedPayload, ToSim};
+use mf_protocol::{HelloInfo, InitPayload, LoadSavePayload, SetSpeedPayload, ToSim};
 use mf_state::{CurrentCity, LatestFields, LatestUi};
 
 use crate::attract::AttractState;
 use crate::config::MfConfig;
 use crate::crash::SafeMode;
+use crate::saves::SaveManager;
 
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AppState {
@@ -22,6 +30,9 @@ pub enum AppState {
     MainMenu,
     Loading,
     InGame,
+    /// Exhausted sidecar reconnect attempts — friendly diagnostics screen,
+    /// never a silent freeze.
+    SimError,
 }
 
 /// Which screen `hud.rs`'s `AppState::MainMenu` systems are showing right
@@ -134,11 +145,16 @@ impl Plugin for MfGameStatePlugin {
             .init_resource::<MenuScreen>()
             .add_systems(OnEnter(AppState::Boot), boot_system)
             .add_systems(OnEnter(AppState::MainMenu), reset_menu_screen_system)
-            .add_systems(OnExit(AppState::InGame), clear_pause_on_exit_ingame)
+            .add_systems(OnEnter(AppState::InGame), on_enter_ingame_system)
+            .add_systems(OnExit(AppState::InGame), on_exit_ingame_system)
             .add_systems(Update, net_status_watchdog)
             .add_systems(
                 Update,
                 connecting_sim_system.run_if(in_state(AppState::ConnectingSim)),
+            )
+            .add_systems(
+                Update,
+                ingame_reconnect_system.run_if(in_state(AppState::InGame)),
             )
             .add_systems(OnEnter(AppState::Loading), send_init_system)
             .add_systems(
@@ -153,11 +169,9 @@ impl Plugin for MfGameStatePlugin {
     }
 }
 
-/// Re-entering `MainMenu` (fresh boot, or the fatal-reconnect watchdog
-/// dropping back here from mid-game) must always start at `Title` — never
-/// resume wherever the player happened to leave the menu screen state
-/// last time, since that could strand a returning player on a stale
-/// `CitySelect`/`Settings` screen with no visible way back to Play.
+/// Re-entering `MainMenu` (fresh boot, or returning from `SimError`) must
+/// always start at `Title` — never resume wherever the player happened to
+/// leave the menu screen state last time.
 fn reset_menu_screen_system(mut screen: ResMut<MenuScreen>) {
     *screen = menu_screen_override().unwrap_or(MenuScreen::Title);
 }
@@ -182,7 +196,7 @@ fn menu_screen_override() -> Option<MenuScreen> {
 
 /// Boot: load config, spawn the sidecar + connect, then move on to
 /// `ConnectingSim`. On failure, seed `ReconnectState` so `mf-net`'s own
-/// reconnect system (backoff 500ms->4s, 5 attempts) picks up the retry
+/// reconnect system (backoff 500ms->4s, 3 attempts) picks up the retry
 /// instead of duplicating that policy here.
 fn boot_system(
     mut commands: Commands,
@@ -208,27 +222,43 @@ fn boot_system(
         }
         Err(e) => {
             tracing::warn!("mf-game: initial sidecar spawn failed, deferring to reconnect: {e}");
-            reconnect.status = NetStatus::Reconnecting { attempt: 1 };
+            reconnect.status = NetStatus::Reconnecting {
+                attempt: 0,
+                reason: SidecarDeathReason::ProcessExited { code: None },
+                phase: ReconnectPhase::Respawning,
+            };
         }
     }
     next_state.set(AppState::ConnectingSim);
 }
 
-/// From any state: if `mf-net` gives up (5 failed reconnect attempts), fall
-/// back to `MainMenu` per spec ("v1 restarts at MainMenu") so the player at
-/// least sees a menu (a toast/HUD banner surfaces the fatal error — see
-/// `hud.rs`), rather than a black screen.
+fn on_enter_ingame_system(mut reconnect: ResMut<ReconnectState>) {
+    // From here on, a sidecar death must resume in place — not bounce to
+    // MainMenu after a successful respawn.
+    reconnect.resume_policy = ResumePolicy::InGameSession;
+}
+
+fn on_exit_ingame_system(mut pause: ResMut<PauseState>, mut reconnect: ResMut<ReconnectState>) {
+    pause.active = false;
+    // Default back to menu policy; SimError entry happens via watchdog in
+    // the same frame and does not need InGameSession anymore.
+    reconnect.resume_policy = ResumePolicy::ToMenu;
+}
+
+/// Fatal reconnect → `SimError` (diagnostics screen). Never silently freeze,
+/// and never dump a mid-game player back to MainMenu on sidecar death.
 fn net_status_watchdog(
     reconnect: Res<ReconnectState>,
     state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
-    if matches!(reconnect.status, NetStatus::Fatal(_))
-        && *state.get() != AppState::MainMenu
-        && *state.get() != AppState::Boot
-    {
-        next_state.set(AppState::MainMenu);
+    if !matches!(reconnect.status, NetStatus::Fatal(_)) {
+        return;
     }
+    if matches!(*state.get(), AppState::SimError | AppState::Boot) {
+        return;
+    }
+    next_state.set(AppState::SimError);
 }
 
 /// ConnectingSim: send our hello, then wait for the sidecar's hello in
@@ -274,6 +304,125 @@ fn connecting_sim_system(
     }
 }
 
+/// Mid-game sidecar recovery: while `NetStatus::Reconnecting` is in
+/// Handshaking/Reloading, re-exchange hello, stage autosave (or re-init the
+/// current city), and call [`ReconnectState::mark_recovered`] once the
+/// readiness gate passes — without leaving `InGame`.
+#[allow(clippy::too_many_arguments)]
+fn ingame_reconnect_system(
+    mut events: EventReader<SimEvent>,
+    link: Option<Res<SimLink>>,
+    mut reconnect: ResMut<ReconnectState>,
+    mut hello: ResMut<SimHello>,
+    mut saves: ResMut<SaveManager>,
+    pending: Res<PendingInit>,
+    mut city: ResMut<CurrentCity>,
+    mut fields: ResMut<LatestFields>,
+    mut ui: ResMut<LatestUi>,
+    mut hello_sent: Local<bool>,
+    mut load_staged: Local<bool>,
+) {
+    let NetStatus::Reconnecting { phase, attempt, .. } = reconnect.status.clone() else {
+        *hello_sent = false;
+        *load_staged = false;
+        return;
+    };
+
+    match phase {
+        ReconnectPhase::Respawning => {
+            *hello_sent = false;
+            *load_staged = false;
+        }
+        ReconnectPhase::Handshaking => {
+            if link.as_ref().map(|l| l.is_added()).unwrap_or(false) {
+                *hello_sent = false;
+                *load_staged = false;
+            }
+            if !*hello_sent {
+                if let Some(link) = &link {
+                    let _ = link
+                        .transport
+                        .send(ToSim::Hello(mf_protocol::ClientHelloPayload {
+                            client_protocol_version: mf_protocol::PROTOCOL_VERSION,
+                        }));
+                    *hello_sent = true;
+                    tracing::info!(
+                        "mf-game: reconnect hello sent (attempt {attempt}/{MAX_ATTEMPTS})"
+                    );
+                }
+            }
+            for SimEvent(msg) in events.read() {
+                let mf_protocol::FromSimMsg::Json(FromSimJson::Hello(info)) = msg else {
+                    continue;
+                };
+                if info.protocol_version != mf_protocol::PROTOCOL_VERSION {
+                    tracing::error!(
+                        "mf-game: reconnect hello version mismatch ({} != {})",
+                        info.protocol_version,
+                        mf_protocol::PROTOCOL_VERSION
+                    );
+                    continue;
+                }
+                hello.0 = Some(info.clone());
+                // Clear stale readiness so we don't mark recovered on
+                // pre-crash city/fields/ui still sitting in resources.
+                *city = CurrentCity::default();
+                fields.0 = None;
+                ui.0 = None;
+                if !*load_staged {
+                    stage_session_restore(&mut saves, &pending, link.as_deref());
+                    *load_staged = true;
+                }
+                reconnect.mark_reloading();
+            }
+        }
+        ReconnectPhase::Reloading => {
+            if !*load_staged {
+                if let Some(link) = &link {
+                    stage_session_restore(&mut saves, &pending, Some(link));
+                    *load_staged = true;
+                }
+            }
+            if city.masks_complete() && fields.0.is_some() && ui.0.is_some() {
+                tracing::info!("mf-game: in-game session restored after sidecar reconnect");
+                reconnect.mark_recovered();
+                *hello_sent = false;
+                *load_staged = false;
+            }
+        }
+    }
+}
+
+/// Prefer the autosave slot; if none exists yet (crash before the first
+/// 10-day autosave), re-init the current city so the player still lands
+/// back in-world rather than at the menu.
+fn stage_session_restore(saves: &mut SaveManager, pending: &PendingInit, link: Option<&SimLink>) {
+    let Some(link) = link else {
+        tracing::warn!("mf-game: reconnect has no SimLink to restore session");
+        return;
+    };
+    // Mid-game reconnect never races an OnEnter(Loading) Init, so LoadSave
+    // can go on the wire immediately (unlike the menu Continue path).
+    if let Some(sim_json) = saves.take_autosave_json_for_reconnect() {
+        tracing::info!("mf-game: reconnect restoring from autosave");
+        let _ = link
+            .transport
+            .send(ToSim::LoadSave(LoadSavePayload { json: sim_json }));
+        return;
+    }
+    tracing::info!(
+        "mf-game: reconnect re-initing city '{}' (no autosave)",
+        pending.preset_key
+    );
+    let _ = link.transport.send(ToSim::Init(InitPayload {
+        seed: rand_seed(),
+        difficulty: pending.difficulty,
+        size: None,
+        preset_key: Some(pending.preset_key.clone()),
+        rules: None,
+    }));
+}
+
 /// OnEnter(Loading): send `init` for whatever `MainMenu` chose.
 ///
 /// `attract: Option<ResMut<AttractState>>` (not a hard `Res`/`ResMut`, same
@@ -286,15 +435,12 @@ fn send_init_system(
     link: Option<Res<SimLink>>,
     pending: Res<PendingInit>,
     attract: Option<ResMut<AttractState>>,
-    saves: Option<Res<crate::saves::SaveManager>>,
+    saves: Option<Res<SaveManager>>,
 ) {
     // A staged slot load supersedes a fresh init entirely: LoadSave carries
     // the whole sim state, so the fresh city this would build is thrown
     // away the same frame (and briefly wastes sidecar work).
-    if saves
-        .as_deref()
-        .is_some_and(crate::saves::SaveManager::has_pending_load)
-    {
+    if saves.as_deref().is_some_and(SaveManager::has_pending_load) {
         return;
     }
     let Some(link) = link else {
@@ -405,15 +551,6 @@ fn loading_gate_system(
     if city.masks_complete() && fields.0.is_some() && ui.0.is_some() {
         next_state.set(AppState::InGame);
     }
-}
-
-/// Leaving `InGame` any way other than through the pause overlay itself
-/// (the fatal-reconnect watchdog dropping back to `MainMenu` is the only
-/// path today) must not leave a stale `active: true` behind — otherwise a
-/// fresh `InGame` session after reconnecting would boot straight into a
-/// pause overlay nobody asked for.
-fn clear_pause_on_exit_ingame(mut pause: ResMut<PauseState>) {
-    pause.active = false;
 }
 
 /// Graceful quit (spec §3.4): on `AppExit`, tell the sim to shut down;
