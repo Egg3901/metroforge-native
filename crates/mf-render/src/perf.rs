@@ -79,22 +79,32 @@ impl Drop for PerfSpan<'_> {
 /// Write `Visibility` only when the value actually changes — avoids dirtying
 /// Bevy change detection (and the visibility propagation pass) every frame
 /// when LOD state is stable.
+///
+/// Set `MF_PERF_FORCE_VIS_WRITE=1` to always assign (baseline A/B for the
+/// harness); counters still record whether the write was redundant.
 #[inline]
 pub fn set_visibility_if_changed(
     vis: &mut Visibility,
     next: Visibility,
     counters: Option<&PerfCounters>,
 ) {
-    if *vis == next {
+    let redundant = *vis == next;
+    if redundant {
         if let Some(c) = counters {
             c.visibility_skips.fetch_add(1, Ordering::Relaxed);
         }
-        return;
-    }
-    *vis = next;
-    if let Some(c) = counters {
+        if !force_vis_write() {
+            return;
+        }
+    } else if let Some(c) = counters {
         c.visibility_mutations.fetch_add(1, Ordering::Relaxed);
     }
+    *vis = next;
+}
+
+fn force_vis_write() -> bool {
+    static FORCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FORCE.get_or_init(|| std::env::var_os("MF_PERF_FORCE_VIS_WRITE").is_some())
 }
 
 pub struct MfPerfCountersPlugin;
@@ -102,5 +112,22 @@ pub struct MfPerfCountersPlugin;
 impl Plugin for MfPerfCountersPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PerfCounters>();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_visibility_skips_redundant_writes() {
+        let counters = PerfCounters::default();
+        let mut vis = Visibility::Visible;
+        set_visibility_if_changed(&mut vis, Visibility::Visible, Some(&counters));
+        assert_eq!(counters.visibility_skips.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.visibility_mutations.load(Ordering::Relaxed), 0);
+        set_visibility_if_changed(&mut vis, Visibility::Hidden, Some(&counters));
+        assert_eq!(vis, Visibility::Hidden);
+        assert_eq!(counters.visibility_mutations.load(Ordering::Relaxed), 1);
     }
 }

@@ -44,8 +44,8 @@ const MAX_WAIT_FRAMES: u64 = 1_800;
 /// orders of magnitude slower than a real GPU — budgets are intentionally
 /// loose so `MF_PERF_ASSERT=1` is usable as a smoke gate, not a hardware
 /// FPS target. Tighten on a GPU runner later.
-const DEFAULT_BUDGET_FRAME_MS_P95: f64 = 500.0;
-const DEFAULT_BUDGET_DRAW_CALLS_P95: f64 = 2_000.0;
+const DEFAULT_BUDGET_FRAME_MS_P95: f64 = 100.0;
+const DEFAULT_BUDGET_DRAW_CALLS_P95: f64 = 500.0;
 
 pub struct MfPerfPlugin;
 
@@ -78,6 +78,7 @@ struct PerfHarness {
     sample_secs: u64,
     frame_ms: Vec<f64>,
     draw_calls: Vec<u32>,
+    mesh_entities: Vec<u32>,
     entities: Vec<u32>,
     meshes: Vec<u32>,
     materials: Vec<u32>,
@@ -99,6 +100,7 @@ impl Default for PerfHarness {
             sample_secs,
             frame_ms: Vec::with_capacity(4_096),
             draw_calls: Vec::with_capacity(4_096),
+            mesh_entities: Vec::with_capacity(4_096),
             entities: Vec::with_capacity(4_096),
             meshes: Vec::with_capacity(4_096),
             materials: Vec::with_capacity(4_096),
@@ -232,13 +234,15 @@ fn perf_harness_system(
         }
         Stage::Sampling => {
             let frame_ms = time.delta_secs_f64() * 1_000.0;
+            // Bevy 0.16 stores FRAME_TIME already in milliseconds
+            // (`delta_secs * 1000` in FrameTimeDiagnosticsPlugin).
             let frame_ms = diagnostics
                 .get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)
-                .and_then(|d| d.average())
-                .map(|s| s * 1_000.0)
+                .and_then(|d| d.value())
                 .unwrap_or(frame_ms);
 
             let draw_calls = visible_meshes.iter().filter(|v| v.get()).count() as u32;
+            let total_mesh_entities = visible_meshes.iter().count() as u32;
             let entities = diagnostics
                 .get(&EntityCountDiagnosticsPlugin::ENTITY_COUNT)
                 .and_then(|d| d.value())
@@ -248,6 +252,7 @@ fn perf_harness_system(
 
             harness.frame_ms.push(frame_ms);
             harness.draw_calls.push(draw_calls);
+            harness.mesh_entities.push(total_mesh_entities);
             harness.entities.push(entities);
             harness.meshes.push(mesh_count);
             harness.materials.push(material_count);
@@ -344,6 +349,7 @@ fn finish_and_exit(
 ) {
     let (ft_mean, ft_p50, ft_p95, ft_p99) = summarize_f64(&harness.frame_ms);
     let (dc_mean, dc_p50, dc_p95, dc_p99) = summarize(&harness.draw_calls);
+    let (me_mean, _, _, _) = summarize(&harness.mesh_entities);
     let (ent_mean, _, _, _) = summarize(&harness.entities);
     let (mesh_mean, _, _, _) = summarize(&harness.meshes);
     let (mat_mean, _, _, _) = summarize(&harness.materials);
@@ -354,7 +360,7 @@ fn finish_and_exit(
     bevy::log::info!("samples={n} window={}s", harness.sample_secs);
     bevy::log::info!("frame_ms: mean={ft_mean:.2} p50={ft_p50:.2} p95={ft_p95:.2} p99={ft_p99:.2}");
     bevy::log::info!(
-        "draw_calls(visible Mesh3d): mean={dc_mean:.0} p50={dc_p50:.0} p95={dc_p95:.0} p99={dc_p99:.0}"
+        "draw_calls(visible Mesh3d): mean={dc_mean:.0} p50={dc_p50:.0} p95={dc_p95:.0} p99={dc_p99:.0} (total Mesh3d≈{me_mean:.0})"
     );
     bevy::log::info!(
         "entities≈{ent_mean:.0} meshes≈{mesh_mean:.0} standard_materials≈{mat_mean:.0}"
