@@ -185,14 +185,16 @@ fn menu_screen_override() -> Option<MenuScreen> {
 /// instead of duplicating that policy here.
 fn boot_system(
     mut commands: Commands,
+    config: Res<MfConfig>,
     mut reconnect: ResMut<ReconnectState>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
-    let config = MfConfig::load();
+    // `MfConfig` is loaded and inserted in `main` before the window is
+    // created (so size/position/fullscreen apply on first frame). Boot only
+    // mirrors the weather preference into the render-facing resource.
     commands.insert_resource(mf_state::WeatherEffects {
         enabled: config.weather_effects,
     });
-    commands.insert_resource(config);
 
     match SimLink::spawn_and_connect(None) {
         Ok(link) => {

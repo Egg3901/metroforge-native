@@ -282,8 +282,7 @@ pub struct CampaignProgress {
 
 impl CampaignProgress {
     fn campaign_path() -> Option<PathBuf> {
-        directories::ProjectDirs::from("com", "ahousedivided", "MetroForge")
-            .map(|dirs| dirs.config_dir().join("campaign.toml"))
+        crate::paths::campaign_toml_path()
     }
 
     /// Load from disk, falling back to no progress at all if the file is
