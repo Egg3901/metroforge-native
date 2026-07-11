@@ -40,7 +40,7 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::pbr::{DirectionalLightShadowMap, DistanceFog, FogFalloff};
 use bevy::prelude::*;
 
-use mf_state::{ColorblindMode, QualityTier, Theme};
+use mf_state::{ColorblindMode, EffectiveKnobs, QualityTier, Theme};
 
 use crate::daynight::DayNightState;
 
@@ -110,6 +110,11 @@ impl Plugin for MfRenderPlugin {
         .add_systems(
             Update,
             (
+                // Ensure Advanced overrides are merged before any render
+                // consumer reads knobs this frame (also registered in
+                // `MfStatePlugin`; the `.before(Terrain)` edge is what
+                // matters for ordering here).
+                mf_state::quality::sync_effective_knobs_system.before(MfRenderSet::Terrain),
                 sync_theme_system.before(MfRenderSet::Terrain),
                 sync_colorblind_system.before(MfRenderSet::Terrain),
                 // Runs before daynight's apply system (same `Dynamic` set)
@@ -160,7 +165,7 @@ fn sync_colorblind_system(mode: Res<ColorblindMode>) {
 /// plugin spawned it) and the shadow-cascade map resolution. Everything
 /// else in the table (materials, draw distances, agent caps, terrain
 /// subdivision, day/night on/off) is consumed directly by the relevant
-/// layer module from `QualityTier::knobs()`.
+/// layer module from [`EffectiveKnobs`].
 /// True if `falloff` is already the linear `start..end` we'd set — lets the
 /// per-frame fog reconcile skip a redundant write (and its change-detection
 /// trigger) when the camera's fog is already correct for the tier.
@@ -173,6 +178,7 @@ fn fog_falloff_matches(falloff: &FogFalloff, start: f32, end: f32) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 fn apply_quality_render_settings_system(
+    effective: Res<EffectiveKnobs>,
     quality: Res<QualityTier>,
     mut shadow_map: ResMut<DirectionalLightShadowMap>,
     mut commands: Commands,
@@ -187,7 +193,7 @@ fn apply_quality_render_settings_system(
     cameras_missing_bloom: Query<Entity, (With<Camera3d>, Without<Bloom>)>,
     mut camera_hdr: Query<&mut Camera, With<Camera3d>>,
 ) {
-    let knobs = quality.knobs();
+    let knobs = effective.0;
     let msaa = match knobs.msaa_samples {
         1 => Msaa::Off,
         2 => Msaa::Sample2,
@@ -195,20 +201,20 @@ fn apply_quality_render_settings_system(
         _ => Msaa::Sample4,
     };
     // `mf-game`'s camera.rs spawns `Camera3d` only on `OnEnter(InGame)`,
-    // which happens well after `QualityTier`'s one-time "just inserted"
+    // which happens well after `EffectiveKnobs`'s one-time "just inserted"
     // change-detection tick has already passed — so a plain
-    // `quality.is_changed()` gate here would leave a freshly spawned camera
+    // `effective.is_changed()` gate here would leave a freshly spawned camera
     // with NO `Msaa` component at all (no MSAA, i.e. visibly aliased/dashed
     // thin geometry like roads/route stripes) until the player happened to
     // touch the quality selector. Backfill any camera missing it every
     // frame (cheap: at most one camera), and only redo the full sweep when
-    // the tier actually changes.
+    // the knobs actually change.
     for camera in &cameras_missing_msaa {
         commands.entity(camera).insert(msaa);
     }
     // Same backfill problem for `DistanceFog` on tiers that want it
     // (Potato/Low): a freshly spawned camera otherwise renders with no fog
-    // component at all until the tier changes. Color starts at the
+    // component at all until the knobs change. Color starts at the
     // `Color::WHITE` default; `daynight::apply_day_night_system` (ordered
     // right after this system, same frame) immediately overwrites it with
     // the real sky-matched color, so there's no visible flash.
@@ -279,7 +285,7 @@ fn apply_quality_render_settings_system(
             }
         }
     }
-    if !quality.is_changed() {
+    if !effective.is_changed() {
         return;
     }
     for camera in &cameras {

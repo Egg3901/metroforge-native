@@ -210,6 +210,8 @@ fn boot_system(
     // `config` param. Safe mode forces weather off for this session
     // (bloom/outlines already follow Potato via quality_boot); the on-disk
     // config is left alone.
+    commands.insert_resource(config.graphics);
+    commands.insert_resource(crate::graphics_perf::ShowFps(config.show_fps));
     let weather_enabled = config.weather_effects && !safe_mode.0;
     commands.insert_resource(mf_state::WeatherEffects {
         enabled: weather_enabled,

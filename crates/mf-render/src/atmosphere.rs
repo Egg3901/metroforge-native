@@ -19,7 +19,7 @@ use bevy::render::render_resource::{
 };
 use std::f32::consts::TAU;
 
-use mf_state::{QualityTier, SubwayView, WeatherEffects};
+use mf_state::{EffectiveKnobs, QualityTier, SubwayView, WeatherEffects};
 
 use crate::daynight::DayNightState;
 use crate::palette;
@@ -327,7 +327,7 @@ fn wrap_xz(pos: Vec2, cam: Vec2, half: f32) -> Vec2 {
 
 #[allow(clippy::too_many_arguments)]
 fn sync_atmosphere_system(
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     weather: Res<WeatherEffects>,
     day_night: Res<DayNightState>,
     subway: Res<SubwayView>,
@@ -337,9 +337,10 @@ fn sync_atmosphere_system(
     mut volumes: Query<(&CloudBlob, &MeshMaterial3d<CloudMaterial>, &mut Visibility)>,
     mut materials: ResMut<Assets<CloudMaterial>>,
 ) {
-    let knobs = quality.knobs();
-    // Billboard path does not need shadow maps — only the quality gate +
-    // player toggle + subway fade.
+    let knobs = effective.0;
+    // Billboard path does not need shadow maps — only the effective-knob
+    // gate (preset merged with Advanced overrides) + player toggle + subway
+    // fade.
     let active = knobs.atmosphere_enabled && weather.enabled && subway.t < 0.45;
 
     // Medium/High must not keep the camera's startup linear DistanceFog
@@ -434,11 +435,11 @@ fn drift_cloud_volumes_system(
 fn scroll_cloud_shadows_system(
     time: Res<Time>,
     weather: Res<WeatherEffects>,
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     wind: Res<AtmosphereWind>,
     mut shadows: ResMut<CloudShadowParams>,
 ) {
-    if !quality.knobs().atmosphere_enabled || !weather.enabled {
+    if !effective.0.atmosphere_enabled || !weather.enabled {
         return;
     }
     let dt = time.delta_secs();

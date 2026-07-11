@@ -6,6 +6,11 @@
 //! write to it again or the two would fight every time the player picks a
 //! tier from the HUD.
 //!
+//! Auto-detect (env / GPU) is always latched into [`DetectedQuality`] when
+//! known, including the config-override path (GPU detect still runs so
+//! Settings "Auto" can re-apply it). Vsync follows [`EffectiveKnobs`] so
+//! Advanced overrides apply live.
+//!
 //! `bevy::render::renderer::RenderAdapterInfo` (wrapping `wgpu::AdapterInfo`)
 //! is inserted into the *main* world by `RenderPlugin::finish`, which Bevy
 //! runs before the app's first `Update`, so in practice it is already
@@ -17,7 +22,7 @@
 use bevy::prelude::*;
 use bevy::render::renderer::RenderAdapterInfo;
 use bevy::window::{PresentMode, PrimaryWindow, Window};
-use mf_state::{detect_quality_tier, GpuDeviceKind, QualityTier};
+use mf_state::{detect_quality_tier, DetectedQuality, EffectiveKnobs, GpuDeviceKind, QualityTier};
 
 use crate::config::MfConfig;
 use crate::crash::{self, SafeMode};
@@ -26,14 +31,15 @@ pub struct MfQualityBootPlugin;
 
 impl Plugin for MfQualityBootPlugin {
     fn build(&self, app: &mut App) {
+        // resolve → sync_effective_knobs → apply_vsync so the first frame
+        // after tier resolution already sees merged knobs (including vsync).
         app.add_systems(
             Update,
             (
                 record_adapter_for_crash_system,
-                resolve_quality_system,
-                apply_vsync_system,
-            )
-                .chain(),
+                resolve_quality_system.before(mf_state::quality::sync_effective_knobs_system),
+                apply_vsync_system.after(mf_state::quality::sync_effective_knobs_system),
+            ),
         );
     }
 }
@@ -62,6 +68,7 @@ fn resolve_quality_system(
     mut done: Local<bool>,
     mut env_invalid_warned: Local<bool>,
     mut quality: ResMut<QualityTier>,
+    mut detected: ResMut<DetectedQuality>,
     safe_mode: Res<SafeMode>,
     config: Option<Res<MfConfig>>,
     adapter_info: Option<Res<RenderAdapterInfo>>,
@@ -85,8 +92,16 @@ fn resolve_quality_system(
         return;
     };
 
-    if let Some(tier) = config.quality_override {
-        resolve(&mut quality, tier, "config.toml override");
+    // Config override: still wait for the adapter so DetectedQuality gets
+    // the GPU auto-detect value, then apply the override to QualityTier.
+    if let Some(override_tier) = config.quality_override {
+        let Some(adapter_info) = adapter_info else {
+            return; // RenderPlugin hasn't finished initializing yet; retry next frame
+        };
+        let kind = map_device_kind(adapter_info.device_type);
+        let gpu_tier = detect_quality_tier(&adapter_info.name, kind);
+        detected.0 = gpu_tier;
+        resolve(&mut quality, override_tier, "config.toml override");
         *done = true;
         return;
     }
@@ -94,6 +109,7 @@ fn resolve_quality_system(
     if let Ok(raw) = std::env::var("MF_QUALITY") {
         match parse_mf_quality_env(&raw) {
             Some(tier) => {
+                detected.0 = tier;
                 resolve(&mut quality, tier, "MF_QUALITY env var");
                 *done = true;
                 return;
@@ -116,6 +132,7 @@ fn resolve_quality_system(
     };
     let kind = map_device_kind(adapter_info.device_type);
     let tier = detect_quality_tier(&adapter_info.name, kind);
+    detected.0 = tier;
     resolve(
         &mut quality,
         tier,
@@ -156,20 +173,20 @@ fn map_device_kind(device_type: impl std::fmt::Debug) -> GpuDeviceKind {
     }
 }
 
-/// Applies the `vsync` knob whenever the effective tier changes, including
-/// this module's own initial resolution and any later HUD-driven pick —
-/// `QualityTier` is a plain `Res` read here, not something this system owns.
+/// Applies the `vsync` knob whenever effective knobs change, including
+/// this module's own initial resolution and any later HUD / Advanced
+/// override pick — `EffectiveKnobs` is a plain `Res` read here.
 fn apply_vsync_system(
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
-    if !quality.is_changed() {
+    if !effective.is_changed() {
         return;
     }
     let Ok(mut window) = windows.single_mut() else {
         return;
     };
-    window.present_mode = if quality.knobs().vsync {
+    window.present_mode = if effective.0.vsync {
         PresentMode::AutoVsync
     } else {
         PresentMode::AutoNoVsync
@@ -197,7 +214,7 @@ mod tests {
     // Mirrors `wgpu::DeviceType`'s variant names exactly (not the real type,
     // since `mf-game` deliberately avoids a direct `wgpu` dependency — see
     // `map_device_kind`'s doc comment) so the derived `Debug` output this
-    // test feeds in matches what `map_device_kind` sees in production.
+    // test feeds in matches what `map_device_kind` sees in [REDACTED].
     #[derive(Debug)]
     enum FakeWgpuDeviceType {
         Other,

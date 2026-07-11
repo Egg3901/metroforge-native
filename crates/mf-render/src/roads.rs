@@ -8,7 +8,7 @@
 use bevy::prelude::*;
 use bevy::render::mesh::MeshAabb;
 
-use mf_state::{CurrentCity, HeightAt, QualityTier, Theme};
+use mf_state::{CurrentCity, EffectiveKnobs, HeightAt, Theme};
 
 use crate::mesh_utils::{append_ribbon, MeshBuffers};
 use crate::palette;
@@ -119,7 +119,7 @@ fn build_roads_system(
     mut state: ResMut<RoadsState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     theme: Res<Theme>,
     mut stats: ResMut<RenderCacheStats>,
     counters: Res<crate::perf::PerfCounters>,
@@ -136,7 +136,7 @@ fn build_roads_system(
         return;
     };
     let total_points: usize = city_json.roads.iter().map(|r| r.points.len()).sum();
-    let densify_step = quality.knobs().ribbon_densify_step_m;
+    let densify_step = effective.0.ribbon_densify_step_m;
     let signature = (
         f.version,
         city_json.roads.len(),
@@ -153,7 +153,7 @@ fn build_roads_system(
 
     let road_scale = city_json.road_scale as f32;
     let road_color = palette::road();
-    let unlit = quality.knobs().unlit_material;
+    let unlit = effective.0.unlit_material;
 
     for buf in &mut state.scratch_class {
         buf.clear();
@@ -394,7 +394,7 @@ fn build_roads_system(
 /// `mf-game` (the dependency runs the other way).
 fn road_lod_system(
     state: Res<RoadsState>,
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     cameras: Query<&Transform, With<Camera3d>>,
     mut visibility: Query<&mut Visibility>,
     counters: Res<crate::perf::PerfCounters>,
@@ -415,7 +415,7 @@ fn road_lod_system(
     // hide, to hold skyline structure on the un-fogged tiers) a hide-height at
     // all. Off the fog tiers the original height-only LOD is unchanged and
     // arterials never hide.
-    let fog_end = quality.knobs().fog.map(|(_, end)| end);
+    let fog_end = effective.0.fog.map(|(_, end)| end);
     let local_hide = fog_end.map_or(LOCAL_ROAD_LOD_HEIGHT, |e| e.min(LOCAL_ROAD_LOD_HEIGHT));
     let collector_hide = fog_end.map_or(COLLECTOR_ROAD_LOD_HEIGHT, |e| {
         e.min(COLLECTOR_ROAD_LOD_HEIGHT)
@@ -462,14 +462,14 @@ fn road_lod_system(
 /// deliberately stays out of this (`RoadClassSurface` excludes it) since
 /// it's always lit by design, independent of tier.
 fn apply_quality_to_roads_material_system(
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     roads: Query<&MeshMaterial3d<StandardMaterial>, With<RoadClassSurface>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    if !quality.is_changed() {
+    if !effective.is_changed() {
         return;
     }
-    let unlit = quality.knobs().unlit_material;
+    let unlit = effective.0.unlit_material;
     for handle in &roads {
         if let Some(mat) = materials.get_mut(&handle.0) {
             mat.unlit = unlit;

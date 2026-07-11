@@ -14,7 +14,7 @@ use bevy::prelude::*;
 use bevy::render::mesh::MeshAabb;
 
 use mf_protocol::{TransitMode, UiState};
-use mf_state::{CurrentCity, HeightAt, LatestUi, QualityTier, RouteFocus, Theme};
+use mf_state::{CurrentCity, EffectiveKnobs, HeightAt, LatestUi, RouteFocus, Theme};
 
 use crate::mesh_utils::{
     append_cuboid, append_dashed_ribbon_at_heights, append_ribbon_at_heights, arc_length_table,
@@ -193,7 +193,7 @@ fn transit_update_system(
     ui: Res<LatestUi>,
     city: Res<CurrentCity>,
     height_at: Res<HeightAt>,
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     theme: Res<Theme>,
     colorblind: Res<mf_state::ColorblindMode>,
     mut state: ResMut<TransitState>,
@@ -211,7 +211,7 @@ fn transit_update_system(
     if !ui.is_changed()
         && !theme.is_changed()
         && !colorblind.is_changed()
-        && !quality.is_changed()
+        && !effective.is_changed()
         && !city.is_changed()
     {
         return;
@@ -220,7 +220,7 @@ fn transit_update_system(
         return;
     };
 
-    let densify_step = quality.knobs().ribbon_densify_step_m;
+    let densify_step = effective.0.ribbon_densify_step_m;
     let world_size = city
         .static_city
         .as_ref()
@@ -231,7 +231,7 @@ fn transit_update_system(
     // repaint transit.
     sig ^= (*theme as u64) << 48;
     sig ^= (*colorblind as u64) << 52;
-    if quality.knobs().unlit_material {
+    if effective.0.unlit_material {
         sig ^= 1 << 47;
     }
     // World size affects viaduct pier chunk assignment.
@@ -242,7 +242,7 @@ fn transit_update_system(
             &mut commands,
             u,
             &height_at,
-            &quality,
+            effective.0.unlit_material,
             &mut state,
             &mut meshes,
             &mut materials,
@@ -251,7 +251,7 @@ fn transit_update_system(
             &mut commands,
             u,
             &height_at,
-            &quality,
+            effective.0.unlit_material,
             densify_step,
             world_size,
             &mut state,
@@ -279,7 +279,7 @@ fn rebuild_stations(
     commands: &mut Commands,
     ui: &UiState,
     height_at: &HeightAt,
-    quality: &QualityTier,
+    unlit: bool,
     state: &mut TransitState,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
@@ -287,7 +287,6 @@ fn rebuild_stations(
     for e in state.station_entities.drain(..) {
         commands.entity(e).despawn();
     }
-    let unlit = quality.knobs().unlit_material;
     let body_mesh = meshes.add(
         Cylinder::new(STATION_RADIUS, STATION_HEIGHT)
             .mesh()
@@ -635,7 +634,7 @@ fn rebuild_tracks(
     commands: &mut Commands,
     ui: &UiState,
     height_at: &HeightAt,
-    quality: &QualityTier,
+    unlit: bool,
     densify_step: f32,
     world_size: f32,
     state: &mut TransitState,
@@ -648,8 +647,6 @@ fn rebuild_tracks(
     for e in old_entities.drain(..) {
         commands.entity(e).despawn();
     }
-    let unlit = quality.knobs().unlit_material;
-
     // Station -> grades present, for endpoint ramp / portal detection.
     let mut station_grades: HashMap<i64, Vec<String>> = HashMap::new();
     for t in &ui.tracks {

@@ -1,6 +1,6 @@
 //! Pedestrian/passenger agents (spec §3.3 `agents.rs`): one mesh of small
 //! flat quads, rebuilt from `LatestFrame`'s stride-3 agent array whenever it
-//! changes, capped per tier (`QualityTier::knobs().agent_cap`; potato = 0,
+//! changes, capped per tier (`EffectiveKnobs.agent_cap`; potato = 0,
 //! i.e. agents are entirely disabled on the weakest tier).
 //!
 //! One `Mesh` asset lives for the app's whole life (created once); a rebuild
@@ -14,7 +14,7 @@ use bevy::prelude::*;
 use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_asset::RenderAssetUsages;
 
-use mf_state::{HeightAt, LatestFrame, QualityTier};
+use mf_state::{EffectiveKnobs, HeightAt, LatestFrame};
 
 use crate::mesh_utils::MeshBuffers;
 use crate::RenderCacheStats;
@@ -65,18 +65,18 @@ struct AgentsState {
 /// Flip the shared agents material's `unlit` flag when the quality tier
 /// changes, without waiting for the next `update_agents_system` rebuild.
 fn apply_quality_to_agents_material_system(
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     state: Res<AgentsState>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    if !quality.is_changed() {
+    if !effective.is_changed() {
         return;
     }
     let Some(handle) = &state.material else {
         return;
     };
     if let Some(mat) = materials.get_mut(handle) {
-        mat.unlit = quality.knobs().unlit_material;
+        mat.unlit = effective.0.unlit_material;
     }
 }
 
@@ -84,7 +84,7 @@ fn apply_quality_to_agents_material_system(
 fn update_agents_system(
     frame: Res<LatestFrame>,
     height_at: Res<HeightAt>,
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     mut state: ResMut<AgentsState>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -92,7 +92,7 @@ fn update_agents_system(
     mut visibility: Query<&mut Visibility>,
     mut stats: ResMut<RenderCacheStats>,
 ) {
-    let cap = quality.knobs().agent_cap as usize;
+    let cap = effective.0.agent_cap as usize;
     let entity = if let Some(e) = state.entity {
         e
     } else {
@@ -100,7 +100,7 @@ fn update_agents_system(
         // CCW-from-+Y below (fixed to match), so single-sided is correct.
         let mat = materials.add(StandardMaterial {
             base_color: Color::WHITE,
-            unlit: quality.knobs().unlit_material,
+            unlit: effective.0.unlit_material,
             ..default()
         });
         let e = commands
@@ -126,10 +126,10 @@ fn update_agents_system(
     }
 
     // `LatestFrame` arrives at the sim's tick rate, well under render frame
-    // rate; a `QualityTier` change can move `cap` (and thus `draw_count`)
+    // rate; an `EffectiveKnobs` change can move `cap` (and thus `draw_count`)
     // without any new frame data. Neither changing means the agent mesh
     // can't possibly need to look any different from what's already built.
-    if !frame.is_changed() && !quality.is_changed() {
+    if !frame.is_changed() && !effective.is_changed() {
         return;
     }
     let Some(f) = &frame.0 else {

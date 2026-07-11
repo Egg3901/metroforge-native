@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 
-use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, Theme};
+use mf_state::{CurrentCity, EffectiveKnobs, HeightAt, LatestFields, Theme};
 
 use crate::atmosphere::CloudShadowParams;
 use crate::mesh_utils::MeshBuffers;
@@ -143,7 +143,7 @@ fn build_terrain_system(
     mut commands: Commands,
     city: Res<CurrentCity>,
     fields: Res<LatestFields>,
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     theme: Res<Theme>,
     mut state: ResMut<TerrainState>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -158,9 +158,8 @@ fn build_terrain_system(
     let Some(f) = &fields.0 else {
         return;
     };
-    let knobs = quality.knobs();
-    let divisor = knobs.terrain_subdiv_divisor.max(1);
-    let shader_water = knobs.water_quality > 0;
+    let divisor = effective.0.terrain_subdiv_divisor.max(1);
+    let shader_water = effective.0.water_quality > 0;
     let key = (f.version, divisor, *theme, shader_water);
     if state.key == Some(key) {
         return;
@@ -329,7 +328,7 @@ fn build_terrain_system(
     }
     let mesh = meshes.add(land_buf.build());
 
-    let unlit = knobs.unlit_material;
+    let unlit = effective.0.unlit_material;
     // Grid quads verified CCW-from-+Y below (fixed to match) — single-sided,
     // back-face-culled is correct for a ground plane only ever seen from
     // above. (An A/B-diffed brightness regression in the subway+Potato
@@ -372,7 +371,7 @@ fn build_terrain_system(
 
     if shader_water && !water_buf.is_empty() {
         let water_mesh = meshes.add(water_buf.build());
-        let water_mat = water_materials.add(make_water_material(*quality));
+        let water_mat = water_materials.add(make_water_material(effective.0.water_quality));
         let water_entity = commands.spawn(water_bundle(water_mesh, water_mat)).id();
         state.water_entity = Some(water_entity);
     }
@@ -612,18 +611,18 @@ fn grade_terrain(
 /// that's the full-rebuild path above), just flip the existing material's
 /// `unlit` flag rather than rebuilding the whole ground mesh.
 fn apply_quality_to_terrain_material_system(
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     state: Res<TerrainState>,
     mut materials: ResMut<Assets<TerrainMaterial>>,
 ) {
-    if !quality.is_changed() {
+    if !effective.is_changed() {
         return;
     }
     let Some(handle) = &state.material else {
         return;
     };
     if let Some(mat) = materials.get_mut(handle) {
-        mat.base.unlit = quality.knobs().unlit_material;
+        mat.base.unlit = effective.0.unlit_material;
     }
 }
 

@@ -19,6 +19,7 @@ mod debug_overlay;
 mod design_system;
 mod egui_idle;
 mod goals;
+mod graphics_perf;
 mod hud;
 mod input;
 mod map_mode;
@@ -49,6 +50,7 @@ mod window_mgmt;
 use bevy::prelude::*;
 use bevy::window::WindowPlugin;
 use crash::{MfCrashPlugin, SafeMode};
+use graphics_perf::MfGraphicsPerfPlugin;
 use mf_net::MfNetPlugin;
 use mf_render::MfRenderPlugin;
 use mf_state::MfStatePlugin;
@@ -131,13 +133,15 @@ fn main() {
             soak::MfSoakPlugin,
             perf::MfPerfPlugin,
             egui_idle::MfEguiIdlePlugin,
-            photomode::MfPhotoModePlugin,
-        ));
+        ))
+        // Bevy's Plugins tuple caps at 15 elements; overflow lives here.
+        .add_plugins((photomode::MfPhotoModePlugin, MfGraphicsPerfPlugin));
     // MF_PERF / MF_PERF_LOG: Bevy diagnostic plugins + spans. MF_PERF also
     // drives the 60s sample-then-exit harness in `perf.rs`.
+    // (FrameTimeDiagnosticsPlugin is already registered by
+    // MfGraphicsPerfPlugin for the FPS overlay + benchmark.)
     if std::env::var_os("MF_PERF").is_some() || std::env::var_os("MF_PERF_LOG").is_some() {
         app.add_plugins((
-            bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
             bevy::diagnostic::EntityCountDiagnosticsPlugin,
             bevy::diagnostic::LogDiagnosticsPlugin::default(),
         ));

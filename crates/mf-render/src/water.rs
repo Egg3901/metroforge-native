@@ -98,10 +98,10 @@ impl Default for WaterMaterial {
 }
 
 /// Build a default [`WaterMaterial`] for the current theme / quality tier.
-pub fn make_water_material(quality: QualityTier) -> WaterMaterial {
+pub fn make_water_material(water_quality: u8) -> WaterMaterial {
     WaterMaterial {
         water_color: color_to_vec4(palette::water()),
-        params: Vec4::new(0.0, 0.0, quality.knobs().water_quality.max(1) as f32, 1.0),
+        params: Vec4::new(0.0, 0.0, water_quality.max(1) as f32, 1.0),
         ..Default::default()
     }
 }

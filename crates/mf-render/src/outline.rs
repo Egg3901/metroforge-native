@@ -28,14 +28,14 @@
 //! of city size.
 //!
 //! ## Quality gate
-//! Driven by the `outline_enabled` knob (see `mf-state`'s `quality.rs`).
-//! Originally High-only per spec, it is now on for every tier: the
-//! tier-truth pass found this one-chunk draw is the single biggest
-//! readability win for the unlit Potato/Low tiers (flat white massing with
-//! no lighting reads as edgeless mush without it), and the per-chunk
-//! scoping keeps it affordable even on Potato. Any tier that turned the
-//! knob off would despawn the outline entity so the cost is exactly zero
-//! off-tier, not just visually hidden.
+//! Driven by the `outline_enabled` knob via [`EffectiveKnobs`] (preset
+//! merged with Advanced overrides). Originally High-only per spec, it is
+//! now on for every tier: the tier-truth pass found this one-chunk draw is
+//! the single biggest readability win for the unlit Potato/Low tiers (flat
+//! white massing with no lighting reads as edgeless mush without it), and
+//! the per-chunk scoping keeps it affordable even on Potato. Turning the
+//! knob off despawns the outline entity so the cost is exactly zero when
+//! off, not just visually hidden.
 
 use bevy::pbr::{
     Material, MaterialPipeline, MaterialPipelineKey, NotShadowCaster, NotShadowReceiver,
@@ -47,7 +47,7 @@ use bevy::render::render_resource::{
 };
 
 use bevy::asset::{load_internal_asset, weak_handle};
-use mf_state::QualityTier;
+use mf_state::EffectiveKnobs;
 
 use crate::buildings::{BuildingChunk, BuildingsDenseCenter};
 
@@ -129,14 +129,14 @@ struct OutlineState {
 }
 
 fn maintain_outline_system(
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     dense: Res<BuildingsDenseCenter>,
     chunks: Query<(Entity, &BuildingChunk, &Mesh3d)>,
     mut state: ResMut<OutlineState>,
     mut commands: Commands,
     mut materials: ResMut<Assets<OutlineMaterial>>,
 ) {
-    if !quality.knobs().outline_enabled {
+    if !effective.0.outline_enabled {
         if let Some(e) = state.entity.take() {
             commands.entity(e).try_despawn();
         }

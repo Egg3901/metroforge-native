@@ -14,7 +14,7 @@
 
 use bevy::prelude::*;
 
-use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, Theme};
+use mf_state::{CurrentCity, EffectiveKnobs, HeightAt, LatestFields, Theme};
 
 use crate::mesh_utils::{append_cuboid, hash01, MeshBuffers};
 use crate::palette;
@@ -57,7 +57,7 @@ fn build_trees_system(
     city: Res<CurrentCity>,
     fields: Res<LatestFields>,
     height_at: Res<HeightAt>,
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     theme: Res<Theme>,
     mut state: ResMut<TreesState>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -66,7 +66,7 @@ fn build_trees_system(
 ) {
     let Some(cj) = &city.static_city else { return };
     let Some(f) = &fields.0 else { return };
-    let knobs = quality.knobs();
+    let knobs = effective.0;
     let key = (f.version, *theme, knobs.tree_enabled);
     if state.key == Some(key) {
         return;
@@ -198,7 +198,7 @@ fn build_trees_system(
 }
 
 fn tree_draw_distance_system(
-    quality: Res<QualityTier>,
+    effective: Res<EffectiveKnobs>,
     chunks: Query<(Entity, &TreeChunk)>,
     cameras: Query<&Transform, With<Camera3d>>,
     mut visibility: Query<&mut Visibility>,
@@ -210,7 +210,7 @@ fn tree_draw_distance_system(
         return;
     };
     let cam_xz = Vec2::new(cam.translation.x, cam.translation.z);
-    let max_dist = quality.knobs().tree_draw_distance_m;
+    let max_dist = effective.0.tree_draw_distance_m;
     for (entity, chunk) in &chunks {
         let Ok(mut vis) = visibility.get_mut(entity) else {
             continue;
