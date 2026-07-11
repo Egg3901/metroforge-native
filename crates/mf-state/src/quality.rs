@@ -80,6 +80,13 @@ pub struct QualityKnobs {
     /// Raymarch step count for [`bevy::pbr::VolumetricFog`] when atmosphere
     /// is active. Higher = less banding, more GPU.
     pub atmosphere_fog_steps: u32,
+    /// Stylized water shader tier (mf-render `water.rs`):
+    /// - `0` = flat vertex-color water baked into the terrain mesh (Potato;
+    ///   zero extra draw / fill — required for the llvmpipe release smoke)
+    /// - `1` = separate water mesh, single static ripple layer (Low)
+    /// - `2` = full dual-layer scrolling ripples + specular + fresnel + foam
+    ///   + night shimmer (Medium/High)
+    pub water_quality: u8,
 }
 
 impl QualityTier {
@@ -115,6 +122,7 @@ impl QualityTier {
                 fog: Some((1_200.0, 2_600.0)),
                 atmosphere_enabled: false,
                 atmosphere_fog_steps: 0,
+                water_quality: 0,
             },
             QualityTier::Low => QualityKnobs {
                 vsync: true,
@@ -133,6 +141,7 @@ impl QualityTier {
                 fog: Some((3_000.0, 5_500.0)),
                 atmosphere_enabled: false,
                 atmosphere_fog_steps: 0,
+                water_quality: 1,
             },
             QualityTier::Medium => QualityKnobs {
                 vsync: true,
@@ -151,6 +160,7 @@ impl QualityTier {
                 fog: None,
                 atmosphere_enabled: true,
                 atmosphere_fog_steps: 32,
+                water_quality: 2,
             },
             QualityTier::High => QualityKnobs {
                 vsync: true,
@@ -167,6 +177,7 @@ impl QualityTier {
                 fog: None,
                 atmosphere_enabled: true,
                 atmosphere_fog_steps: 56,
+                water_quality: 2,
             },
         }
     }
@@ -258,6 +269,10 @@ mod tests {
             QualityTier::High.knobs().atmosphere_fog_steps
                 > QualityTier::Medium.knobs().atmosphere_fog_steps
         );
+        assert_eq!(QualityTier::Potato.knobs().water_quality, 0);
+        assert_eq!(QualityTier::Low.knobs().water_quality, 1);
+        assert_eq!(QualityTier::Medium.knobs().water_quality, 2);
+        assert_eq!(QualityTier::High.knobs().water_quality, 2);
     }
 
     /// Fog `end_m` must sit strictly inside `building_draw_distance_m`

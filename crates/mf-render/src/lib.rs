@@ -26,6 +26,7 @@ mod terrain;
 mod transit;
 mod trees;
 mod vehicles;
+mod water;
 
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::pbr::{DirectionalLightShadowMap, DistanceFog, FogFalloff};
@@ -65,6 +66,7 @@ impl Plugin for MfRenderPlugin {
             reveal::MfRevealPlugin,
             sky::MfSkyPlugin,
             terrain::MfTerrainPlugin,
+            water::MfWaterPlugin,
             roads::MfRoadsPlugin,
             buildings::MfBuildingsPlugin,
             transit::MfTransitPlugin,
