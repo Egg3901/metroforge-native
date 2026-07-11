@@ -1,36 +1,36 @@
-//! Atmospheric weather — sparse drifting cloud volumes + ground shadows.
+//! Atmospheric weather — soft drifting cloud cards + ground shadows.
 //!
-//! Replaces the old dual-slab "gray soup" volumetric fog with:
-//! - **2–3 discrete soft [`FogVolume`] blobs** that drift with wind and leave
-//!   clear air between them (city always readable)
-//! - **Scrolling cloud shadows** on terrain/buildings via a shared 2D noise
-//!   texture ([`CloudShadowParams`]) sampled in material extensions
-//! - **Golden-hour tinting** from [`DayNightState::sun_elevation`] / twilight
-//! - **Hard density clamp** so weather never washes out the whole frame
+//! Bevy's [`VolumetricFog`] / [`FogVolume`] path was removed: even with sparse
+//! density textures and hard clamps it read as uniform gray wash (especially
+//! under lavapipe, and in practice as a milky veil over the white city). Soft
+//! unlit billboard cards give 2–3 discrete drifting volumes with clear air
+//! between them, while scrolling cloud shadows on terrain/buildings sell the
+//! sky feel cheaply.
 //!
-//! Bevy's [`VolumetricFog`] is kept: sparse discrete volumes + clamped density
-//! read as weather rather than webcam fog. Gated to Medium/High +
-//! [`WeatherEffects`]; Potato/Low stay clear (needs directional shadow maps).
+//! Also: golden-hour tinting from [`DayNightState::sun_elevation`]. Gated to
+//! Medium/High + [`WeatherEffects`].
 
-use bevy::asset::RenderAssetUsages;
+use bevy::asset::{load_internal_asset, weak_handle, RenderAssetUsages};
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
-use bevy::pbr::{FogVolume, VolumetricFog, VolumetricLight};
+use bevy::pbr::{Material, NotShadowCaster, NotShadowReceiver};
 use bevy::prelude::*;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::render::render_resource::{
+    AsBindGroup, Extent3d, ShaderRef, TextureDimension, TextureFormat,
+};
 use std::f32::consts::TAU;
 
 use mf_state::{QualityTier, SubwayView, WeatherEffects};
 
-use crate::daynight::{DayNightState, Sun};
+use crate::daynight::DayNightState;
 use crate::palette;
 
-/// Index of one of the sparse drifting cloud blobs.
+/// Index of one of the sparse drifting cloud cards.
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 struct CloudBlob {
     index: u8,
 }
 
-/// Shared wind that cloud volumes and ground shadows advect along.
+/// Shared wind that cloud cards and ground shadows advect along.
 #[derive(Resource, Clone, Copy)]
 pub struct AtmosphereWind {
     /// Radians; creeps so the city doesn't get a permanent wind heading.
@@ -76,6 +76,29 @@ impl Default for CloudShadowParams {
     }
 }
 
+const CLOUD_SHADER_HANDLE: Handle<Shader> = weak_handle!("c0a7b8d9-1e2f-4a5b-9c8d-7e6f5a4b3c2d");
+
+/// Soft unlit cloud card — density texture drives alpha; color carries
+/// day/golden/night tint.
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+struct CloudMaterial {
+    #[uniform(0)]
+    color: Vec4,
+    #[texture(1)]
+    #[sampler(2)]
+    density: Handle<Image>,
+}
+
+impl Material for CloudMaterial {
+    fn fragment_shader() -> ShaderRef {
+        CLOUD_SHADER_HANDLE.into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+}
+
 pub struct MfAtmospherePlugin;
 
 /// Runs after wind/volume/shadow params are written for the frame — material
@@ -85,8 +108,10 @@ pub struct AtmosphereReady;
 
 impl Plugin for MfAtmospherePlugin {
     fn build(&self, app: &mut App) {
+        load_internal_asset!(app, CLOUD_SHADER_HANDLE, "cloud.wgsl", Shader::from_wgsl);
         app.init_resource::<AtmosphereWind>()
             .init_resource::<CloudShadowParams>()
+            .add_plugins(MaterialPlugin::<CloudMaterial>::default())
             .configure_sets(Update, AtmosphereReady.in_set(crate::MfRenderSet::Dynamic))
             .add_systems(Startup, setup_atmosphere_system)
             .add_systems(
@@ -104,33 +129,32 @@ impl Plugin for MfAtmospherePlugin {
 }
 
 const NUM_CLOUDS: u8 = 3;
-const NOISE_RES_3D: u32 = 32;
 const SHADOW_RES: u32 = 256;
+const BLOB_RES: u32 = 128;
 /// World meters covered by one repeat of the shadow noise.
 const SHADOW_TILE_M: f32 = 1_100.0;
-/// Soft cloud AABB size (XZ) — large enough to read as weather, small enough
-/// that three of them leave clear corridors between.
-const CLOUD_SIZE_XZ_M: f32 = 4_200.0;
-const CLOUD_THICKNESS_M: f32 = 380.0;
-const CLOUD_CENTER_Y_M: f32 = 640.0;
-/// Hard ceiling — weather must never wash the city. Tuned so even stacked
-/// volumes + twilight boost stay readable.
-const CLOUD_DENSITY_MAX: f32 = 0.00010;
-const CLOUD_DENSITY_BASE: f32 = 0.000055;
+/// Soft cloud card size (XZ).
+const CLOUD_SIZE_XZ_M: f32 = 5_500.0;
+const CLOUD_CENTER_Y_M: f32 = 900.0;
 /// How far cloud centers roam relative to the camera before wrapping.
-const CLOUD_DOMAIN_HALF_M: f32 = 7_500.0;
-const CLOUD_DRIFT_SPEED: f32 = 28.0;
+const CLOUD_DOMAIN_HALF_M: f32 = 8_000.0;
+const CLOUD_DRIFT_SPEED: f32 = 32.0;
 const SHADOW_SCROLL: f32 = 0.012;
-const HAZE_VISIBILITY_DAY_M: f32 = 28_000.0;
-const HAZE_VISIBILITY_NIGHT_M: f32 = 16_000.0;
 const WIND_HEADING_RATE: f32 = 0.003;
 const WIND_GUST_RATE: f32 = 0.55;
-/// Peak ground-shadow darkening (day). Night is quieter.
-const SHADOW_STRENGTH_DAY: f32 = 0.22;
-const SHADOW_STRENGTH_NIGHT: f32 = 0.08;
+/// Peak ground-shadow darkening (day). Must read clearly on white buildings.
+const SHADOW_STRENGTH_DAY: f32 = 0.40;
+const SHADOW_STRENGTH_NIGHT: f32 = 0.12;
+/// Card opacity ceiling — never opaque enough to hide the city behind.
+const CLOUD_ALPHA_MAX: f32 = 0.55;
 
-fn setup_atmosphere_system(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
-    let blob_noise = images.add(build_soft_blob_texture());
+fn setup_atmosphere_system(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<CloudMaterial>>,
+) {
+    let blob = images.add(build_soft_blob_texture_2d());
     let shadow_noise = images.add(build_shadow_noise_texture());
 
     commands.insert_resource(CloudShadowParams {
@@ -140,31 +164,30 @@ fn setup_atmosphere_system(mut commands: Commands, mut images: ResMut<Assets<Ima
         inv_scale: 1.0 / SHADOW_TILE_M,
     });
 
-    // Three discrete soft volumes at staggered starting offsets so the first
-    // frame already has clear air between them (not one fused slab).
+    let mesh = meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)));
+
     for i in 0..NUM_CLOUDS {
         let angle = (i as f32) * (TAU / NUM_CLOUDS as f32) + 0.4;
-        let radius = 2_800.0 + (i as f32) * 900.0;
+        let radius = 3_200.0 + (i as f32) * 1_100.0;
         let x = angle.cos() * radius;
         let z = angle.sin() * radius;
+        let scale_mul = 0.85 + (i as f32) * 0.12;
+        let mat = materials.add(CloudMaterial {
+            color: Vec4::new(0.95, 0.96, 0.98, 0.0),
+            density: blob.clone(),
+        });
         commands.spawn((
             CloudBlob { index: i },
-            FogVolume {
-                density_texture: Some(blob_noise.clone()),
-                density_factor: 0.0,
-                absorption: 0.20,
-                scattering: 0.32,
-                scattering_asymmetry: 0.70,
-                fog_color: Color::srgb(0.92, 0.94, 0.97),
-                light_intensity: 0.85,
-                ..default()
-            },
-            Transform::from_xyz(x, CLOUD_CENTER_Y_M, z).with_scale(Vec3::new(
-                CLOUD_SIZE_XZ_M,
-                CLOUD_THICKNESS_M,
-                CLOUD_SIZE_XZ_M,
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(mat),
+            Transform::from_xyz(x, CLOUD_CENTER_Y_M + (i as f32) * 60.0, z).with_scale(Vec3::new(
+                CLOUD_SIZE_XZ_M * scale_mul,
+                1.0,
+                CLOUD_SIZE_XZ_M * scale_mul * (0.70 + (i as f32) * 0.08),
             )),
             Visibility::Hidden,
+            NotShadowCaster,
+            NotShadowReceiver,
         ));
     }
 }
@@ -178,35 +201,28 @@ fn update_atmosphere_wind_system(time: Res<Time>, mut wind: ResMut<AtmosphereWin
     wind.gust = 0.72 + g * 0.70;
 }
 
-/// Soft ellipsoid density — dense near the volume center, zero at the edges
-/// so discrete FogVolumes read as separate clouds, not a filled slab.
-fn build_soft_blob_texture() -> Image {
-    let n = NOISE_RES_3D as usize;
-    let mut data = vec![0u8; n * n * n];
-    for z in 0..n {
-        for y in 0..n {
-            for x in 0..n {
-                let u = x as f32 / n as f32;
-                let v = y as f32 / n as f32;
-                let w = z as f32 / n as f32;
-                // Ellipsoid: flatter vertically so the deck reads as a layer.
-                let dx = (u - 0.5) * 2.0;
-                let dy = (v - 0.5) * 2.6;
-                let dz = (w - 0.5) * 2.0;
-                let r = (dx * dx + dy * dy + dz * dz).sqrt();
-                let warp = fbm3(u * 3.0 + 1.7, v * 2.0, w * 3.0 + 0.4, 3) * 0.22;
-                let soft = (1.0 - ((r + warp - 0.15) / 0.85).clamp(0.0, 1.0)).powf(1.8);
-                // Hard floor so the outer shell is truly empty (clear air).
-                let shaped = if soft < 0.08 {
-                    0.0
-                } else {
-                    ((soft - 0.08) / 0.92).powf(1.35)
-                };
-                data[z * n * n + y * n + x] = (shaped * 255.0).round() as u8;
-            }
+/// Soft radial blob for cloud-card alpha (empty edges = clear air).
+fn build_soft_blob_texture_2d() -> Image {
+    let n = BLOB_RES as usize;
+    let mut data = vec![0u8; n * n];
+    for y in 0..n {
+        for x in 0..n {
+            let u = x as f32 / n as f32;
+            let v = y as f32 / n as f32;
+            let dx = (u - 0.5) * 2.0;
+            let dy = (v - 0.5) * 2.0;
+            let r = (dx * dx + dy * dy).sqrt();
+            let warp = fbm2(u * 3.2 + 1.1, v * 3.2 + 0.7, 3) * 0.28;
+            let soft = (1.0 - ((r + warp - 0.05) / 0.95).clamp(0.0, 1.0)).powf(1.65);
+            let shaped = if soft < 0.06 {
+                0.0
+            } else {
+                ((soft - 0.06) / 0.94).powf(1.25)
+            };
+            data[y * n + x] = (shaped * 255.0).round() as u8;
         }
     }
-    finish_noise_image_3d(data)
+    finish_noise_image_2d(data, BLOB_RES, ImageAddressMode::ClampToEdge)
 }
 
 /// Large soft 2D blobs for ground-projected cloud shadows (tiling).
@@ -217,19 +233,21 @@ fn build_shadow_noise_texture() -> Image {
         for x in 0..n {
             let u = x as f32 / n as f32;
             let v = y as f32 / n as f32;
-            // Two octaves of large-scale FBM → a few soft patches per tile.
             let a = fbm2(u * 2.2, v * 2.2, 4);
             let b = fbm2(u * 3.5 + 5.1, v * 3.5 + 2.3, 3);
             let dens = (a * 0.65 + b * 0.35).clamp(0.0, 1.0);
-            // Threshold so most of the tile is clear (matching sparse volumes).
             let shaped = ((dens - 0.48).max(0.0) / 0.52).powf(1.6);
             data[y * n + x] = (shaped * 255.0).round() as u8;
         }
     }
+    finish_noise_image_2d(data, SHADOW_RES, ImageAddressMode::Repeat)
+}
+
+fn finish_noise_image_2d(data: Vec<u8>, res: u32, address: ImageAddressMode) -> Image {
     let mut image = Image::new(
         Extent3d {
-            width: SHADOW_RES,
-            height: SHADOW_RES,
+            width: res,
+            height: res,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
@@ -238,33 +256,9 @@ fn build_shadow_noise_texture() -> Image {
         RenderAssetUsages::RENDER_WORLD,
     );
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-        address_mode_u: ImageAddressMode::Repeat,
-        address_mode_v: ImageAddressMode::Repeat,
-        address_mode_w: ImageAddressMode::Repeat,
-        mag_filter: ImageFilterMode::Linear,
-        min_filter: ImageFilterMode::Linear,
-        mipmap_filter: ImageFilterMode::Linear,
-        ..default()
-    });
-    image
-}
-
-fn finish_noise_image_3d(data: Vec<u8>) -> Image {
-    let mut image = Image::new(
-        Extent3d {
-            width: NOISE_RES_3D,
-            height: NOISE_RES_3D,
-            depth_or_array_layers: NOISE_RES_3D,
-        },
-        TextureDimension::D3,
-        data,
-        TextureFormat::R8Unorm,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-        address_mode_u: ImageAddressMode::ClampToEdge,
-        address_mode_v: ImageAddressMode::ClampToEdge,
-        address_mode_w: ImageAddressMode::ClampToEdge,
+        address_mode_u: address,
+        address_mode_v: address,
+        address_mode_w: address,
         mag_filter: ImageFilterMode::Linear,
         min_filter: ImageFilterMode::Linear,
         mipmap_filter: ImageFilterMode::Linear,
@@ -277,15 +271,6 @@ fn hash_21(x: i32, y: i32) -> f32 {
     let mut n = x
         .wrapping_mul(374761393)
         .wrapping_add(y.wrapping_mul(668265263));
-    n = (n ^ (n >> 13)).wrapping_mul(1274126177);
-    (n & 0xffff) as f32 / 65535.0
-}
-
-fn hash_31(x: i32, y: i32, z: i32) -> f32 {
-    let mut n = x
-        .wrapping_mul(374761393)
-        .wrapping_add(y.wrapping_mul(668265263))
-        .wrapping_add(z.wrapping_mul(1274126177));
     n = (n ^ (n >> 13)).wrapping_mul(1274126177);
     (n & 0xffff) as f32 / 65535.0
 }
@@ -306,33 +291,6 @@ fn value_noise_2(x: f32, y: f32) -> f32 {
     x0v + (x1v - x0v) * uy
 }
 
-fn value_noise_3(x: f32, y: f32, z: f32) -> f32 {
-    let x0 = x.floor() as i32;
-    let y0 = y.floor() as i32;
-    let z0 = z.floor() as i32;
-    let fx = x.fract();
-    let fy = y.fract();
-    let fz = z.fract();
-    let ux = fx * fx * (3.0 - 2.0 * fx);
-    let uy = fy * fy * (3.0 - 2.0 * fy);
-    let uz = fz * fz * (3.0 - 2.0 * fz);
-    let c000 = hash_31(x0, y0, z0);
-    let c100 = hash_31(x0 + 1, y0, z0);
-    let c010 = hash_31(x0, y0 + 1, z0);
-    let c110 = hash_31(x0 + 1, y0 + 1, z0);
-    let c001 = hash_31(x0, y0, z0 + 1);
-    let c101 = hash_31(x0 + 1, y0, z0 + 1);
-    let c011 = hash_31(x0, y0 + 1, z0 + 1);
-    let c111 = hash_31(x0 + 1, y0 + 1, z0 + 1);
-    let x00 = c000 + (c100 - c000) * ux;
-    let x10 = c010 + (c110 - c010) * ux;
-    let x01 = c001 + (c101 - c001) * ux;
-    let x11 = c011 + (c111 - c011) * ux;
-    let y0v = x00 + (x10 - x00) * uy;
-    let y1v = x01 + (x11 - x01) * uy;
-    y0v + (y1v - y0v) * uz
-}
-
 fn fbm2(x: f32, y: f32, octaves: u32) -> f32 {
     let mut amp = 0.5;
     let mut freq = 1.0;
@@ -347,30 +305,14 @@ fn fbm2(x: f32, y: f32, octaves: u32) -> f32 {
     sum / norm.max(1e-4)
 }
 
-fn fbm3(x: f32, y: f32, z: f32, octaves: u32) -> f32 {
-    let mut amp = 0.5;
-    let mut freq = 1.0;
-    let mut sum = 0.0;
-    let mut norm = 0.0;
-    for _ in 0..octaves {
-        sum += amp * value_noise_3(x * freq, y * freq, z * freq);
-        norm += amp;
-        amp *= 0.5;
-        freq *= 2.03;
-    }
-    sum / norm.max(1e-4)
-}
-
 /// Dawn/dusk peak: 1 at the horizon transition, 0 at noon and deep night.
 fn twilight_factor(night: f32) -> f32 {
     let t = 1.0 - ((night - 0.5).abs() * 2.0);
     t.clamp(0.0, 1.0).powf(1.2)
 }
 
-/// Extra golden-hour weight from low sun elevation (independent of night
-/// ramp) so dawn/dusk tint even when `night_factor` is still near 0 or 1.
+/// Extra golden-hour weight from low sun elevation.
 fn golden_hour_factor(sun_elevation: f32, night: f32) -> f32 {
-    // Peak when sun is near the horizon but not fully night.
     let low_sun = (1.0 - (sun_elevation / 0.35).clamp(0.0, 1.0)).clamp(0.0, 1.0);
     let not_deep_night = (1.0 - ((night - 0.55).max(0.0) / 0.45)).clamp(0.0, 1.0);
     (low_sun * not_deep_night).clamp(0.0, 1.0)
@@ -391,132 +333,62 @@ fn sync_atmosphere_system(
     subway: Res<SubwayView>,
     mut shadows: ResMut<CloudShadowParams>,
     mut commands: Commands,
-    mut cameras_vol: Query<(Entity, Option<&mut VolumetricFog>), With<Camera3d>>,
-    mut cameras_haze: Query<(Entity, Option<&mut DistanceFog>), With<Camera3d>>,
-    suns: Query<(Entity, Option<&VolumetricLight>), With<Sun>>,
-    mut volumes: Query<(&CloudBlob, &mut FogVolume, &mut Visibility)>,
+    cameras_haze: Query<(Entity, Option<&DistanceFog>), With<Camera3d>>,
+    mut volumes: Query<(&CloudBlob, &MeshMaterial3d<CloudMaterial>, &mut Visibility)>,
+    mut materials: ResMut<Assets<CloudMaterial>>,
 ) {
     let knobs = quality.knobs();
-    let active = knobs.atmosphere_enabled
-        && weather.enabled
-        && subway.t < 0.45
-        && knobs.shadow_map_size.is_some();
+    // Billboard path does not need shadow maps — only the quality gate +
+    // player toggle + subway fade.
+    let active = knobs.atmosphere_enabled && weather.enabled && subway.t < 0.45;
 
-    if !active {
-        shadows.strength = 0.0;
-        for (_, mut vol, mut vis) in &mut volumes {
-            *vis = Visibility::Hidden;
-            vol.density_factor = 0.0;
-        }
-        for (entity, existing) in &mut cameras_vol {
-            if existing.is_some() {
-                commands.entity(entity).remove::<VolumetricFog>();
-            }
-        }
-        for (entity, existing) in &mut cameras_haze {
+    // Medium/High must not keep the camera's startup linear DistanceFog
+    // (or any leftover haze) — that was the main full-frame wash.
+    if knobs.atmosphere_enabled {
+        for (entity, existing) in &cameras_haze {
             if existing.is_some() {
                 commands.entity(entity).remove::<DistanceFog>();
             }
         }
-        for (sun, has_vol) in &suns {
-            if has_vol.is_some() {
-                commands.entity(sun).remove::<VolumetricLight>();
-            }
+    }
+
+    if !active {
+        shadows.strength = 0.0;
+        for (_, _, mut vis) in &mut volumes {
+            *vis = Visibility::Hidden;
         }
         return;
     }
 
-    let steps = knobs.atmosphere_fog_steps.max(16);
     let n = day_night.night_factor;
     let elev = day_night.sun_elevation;
     let twilight = twilight_factor(n);
     let golden = golden_hour_factor(elev, n).max(twilight * 0.85);
 
-    // Warm gold at golden hour / twilight; cool blue at night; near-white midday.
-    let day_fog = Color::srgb(0.94, 0.96, 0.98);
-    let golden_fog = Color::srgb(1.0, 0.78, 0.52);
-    let night_fog = palette::sky_night().mix(&Color::srgb(0.28, 0.34, 0.50), 0.30);
-    let fog_color = day_fog
-        .mix(&golden_fog, golden * 0.90)
-        .mix(&night_fog, n * 0.85);
+    let day_col = Vec3::new(0.96, 0.97, 0.99);
+    let golden_col = Vec3::new(1.0, 0.78, 0.52);
+    let night_col = {
+        let c = palette::sky_night().to_srgba();
+        Vec3::new(c.red, c.green, c.blue).lerp(Vec3::new(0.35, 0.42, 0.58), 0.35)
+    };
+    let rgb = day_col
+        .lerp(golden_col, golden * 0.85)
+        .lerp(night_col, n * 0.75);
+    // Alpha reacts gently but is HARD-CLAMPED so cards never hide the city.
+    let alpha = ((0.38 + golden * 0.12 + n * 0.08) * (1.0 - subway.t)).min(CLOUD_ALPHA_MAX);
 
-    let light_tint = Color::srgb(1.0, 0.97, 0.92)
-        .mix(&Color::srgb(1.0, 0.68, 0.38), golden * 0.75)
-        .mix(&Color::srgb(0.55, 0.65, 0.9), n);
-
-    // Density reacts to time of day but is HARD-CLAMPED so the city always
-    // reads — never a full-frame wash.
-    let density_mul = 1.0 + golden * 0.35 + n * 0.20 + (1.0 - elev) * 0.10;
-    let density = (CLOUD_DENSITY_BASE * density_mul).min(CLOUD_DENSITY_MAX);
-    let asymmetry = (0.58 + (1.0 - elev) * 0.28 + golden * 0.08).clamp(0.3, 0.92);
-
-    for (blob, mut vol, mut vis) in &mut volumes {
+    for (blob, handle, mut vis) in &mut volumes {
         *vis = Visibility::Visible;
-        // Tiny per-index density jitter so overlapping edges don't stack to
-        // a hard double-density band.
-        let jitter = 1.0 - (blob.index as f32) * 0.06;
-        vol.density_factor = (density * jitter).min(CLOUD_DENSITY_MAX);
-        vol.scattering_asymmetry = asymmetry;
-        vol.light_intensity = 0.75 + golden * 0.30;
-        vol.fog_color = fog_color;
-        vol.light_tint = light_tint;
-        // Absorption stays modest — high absorption + density = gray soup.
-        vol.absorption = 0.18 + n * 0.06;
-        vol.scattering = 0.30 + golden * 0.08;
+        let jitter = 1.0 - (blob.index as f32) * 0.05;
+        if let Some(mat) = materials.get_mut(&handle.0) {
+            mat.color = Vec4::new(rgb.x, rgb.y, rgb.z, (alpha * jitter).min(CLOUD_ALPHA_MAX));
+        }
     }
 
-    // Ground shadows: strongest in day/golden hour, quiet at night.
     shadows.strength =
-        (SHADOW_STRENGTH_DAY * (1.0 - n * 0.55) + SHADOW_STRENGTH_NIGHT * n + golden * 0.06)
-            .clamp(0.0, 0.28)
+        (SHADOW_STRENGTH_DAY * (1.0 - n * 0.55) + SHADOW_STRENGTH_NIGHT * n + golden * 0.08)
+            .clamp(0.0, 0.48)
             * (1.0 - subway.t);
-
-    // Ambient must stay tiny — this was a major "webcam fog" contributor.
-    let vol_fog = VolumetricFog {
-        ambient_color: fog_color,
-        ambient_intensity: 0.015 + n * 0.025 + golden * 0.01,
-        step_count: steps,
-        jitter: if matches!(*quality, QualityTier::High) {
-            0.40
-        } else {
-            0.28
-        },
-    };
-
-    // Horizon haze only — long visibility, low alpha, never a milky veil.
-    let haze_vis = HAZE_VISIBILITY_DAY_M + (HAZE_VISIBILITY_NIGHT_M - HAZE_VISIBILITY_DAY_M) * n
-        - golden * 1_500.0;
-    let haze_alpha = 0.22 + n * 0.18 + golden * 0.06;
-    let extinction = fog_color.mix(&golden_fog, golden * 0.4);
-    let inscatter = Color::srgb(0.88, 0.92, 1.0)
-        .mix(&Color::srgb(1.0, 0.75, 0.48), golden)
-        .mix(&Color::srgb(0.35, 0.42, 0.65), n);
-    let haze = DistanceFog {
-        color: fog_color.with_alpha(haze_alpha),
-        directional_light_color: light_tint.with_alpha(0.30 * (1.0 - n * 0.65) + golden * 0.20),
-        directional_light_exponent: 20.0 + elev * 12.0,
-        falloff: FogFalloff::from_visibility_colors(haze_vis.max(8_000.0), extinction, inscatter),
-    };
-
-    for (entity, existing) in &mut cameras_vol {
-        if let Some(mut existing) = existing {
-            *existing = vol_fog;
-        } else {
-            commands.entity(entity).insert(vol_fog);
-        }
-    }
-    for (entity, existing) in &mut cameras_haze {
-        if let Some(mut existing) = existing {
-            *existing = haze.clone();
-        } else {
-            commands.entity(entity).insert(haze.clone());
-        }
-    }
-    for (sun, has_vol) in &suns {
-        if has_vol.is_none() {
-            commands.entity(sun).insert(VolumetricLight);
-        }
-    }
 }
 
 fn drift_cloud_volumes_system(
@@ -525,7 +397,7 @@ fn drift_cloud_volumes_system(
     quality: Res<QualityTier>,
     wind: Res<AtmosphereWind>,
     camera_xforms: Query<&GlobalTransform, With<Camera3d>>,
-    mut volumes: Query<(&CloudBlob, &mut Transform), With<FogVolume>>,
+    mut volumes: Query<(&CloudBlob, &mut Transform), With<MeshMaterial3d<CloudMaterial>>>,
 ) {
     if !quality.knobs().atmosphere_enabled || !weather.enabled {
         return;
@@ -543,20 +415,18 @@ fn drift_cloud_volumes_system(
 
     for (blob, mut transform) in &mut volumes {
         let speed = CLOUD_DRIFT_SPEED * wind.gust * (1.0 - blob.index as f32 * 0.08);
-        // Slight cross-wind so the three blobs don't lock-step.
         let shear = Vec2::new(-dir.y, dir.x) * (0.18 + blob.index as f32 * 0.05);
         let flow = (dir + shear) * speed * dt;
         let mut xz = Vec2::new(transform.translation.x, transform.translation.z) + flow;
         xz = wrap_xz(xz, cam_xz, CLOUD_DOMAIN_HALF_M);
-        // Per-blob scale jitter (stable) so they don't look identical.
-        let scale_mul = 0.88 + (blob.index as f32) * 0.10;
+        let scale_mul = 0.85 + (blob.index as f32) * 0.12;
         transform.translation.x = xz.x;
-        transform.translation.y = CLOUD_CENTER_Y_M + (blob.index as f32) * 40.0;
+        transform.translation.y = CLOUD_CENTER_Y_M + (blob.index as f32) * 60.0;
         transform.translation.z = xz.y;
         transform.scale = Vec3::new(
             CLOUD_SIZE_XZ_M * scale_mul,
-            CLOUD_THICKNESS_M,
-            CLOUD_SIZE_XZ_M * scale_mul,
+            1.0,
+            CLOUD_SIZE_XZ_M * scale_mul * (0.70 + (blob.index as f32) * 0.08),
         );
     }
 }
@@ -574,7 +444,6 @@ fn scroll_cloud_shadows_system(
     let dt = time.delta_secs();
     let dir = Vec2::new(wind.heading.cos(), wind.heading.sin());
     shadows.offset += dir * SHADOW_SCROLL * wind.gust * dt;
-    // Keep UV offsets bounded for precision.
     shadows.offset.x = shadows.offset.x.rem_euclid(1.0);
     shadows.offset.y = shadows.offset.y.rem_euclid(1.0);
     shadows.inv_scale = 1.0 / SHADOW_TILE_M;
@@ -598,12 +467,11 @@ mod tests {
     }
 
     #[test]
-    fn density_clamp_is_hard_ceiling() {
-        let mul = 1.0 + 0.35 + 0.20 + 0.10;
-        let d = (CLOUD_DENSITY_BASE * mul).min(CLOUD_DENSITY_MAX);
-        assert!(d <= CLOUD_DENSITY_MAX);
+    fn cloud_alpha_hard_ceiling() {
+        let a = (0.38_f32 + 0.12 + 0.08).min(CLOUD_ALPHA_MAX);
+        assert!(a <= CLOUD_ALPHA_MAX);
         const {
-            assert!(CLOUD_DENSITY_BASE < CLOUD_DENSITY_MAX);
+            assert!(CLOUD_ALPHA_MAX < 1.0);
         }
     }
 
@@ -611,8 +479,6 @@ mod tests {
     fn fbm_stays_in_unit_range() {
         for i in 0..8 {
             let t = i as f32 * 0.37;
-            let f = fbm3(t, t * 1.3, t * 0.7, 4);
-            assert!((0.0..=1.0).contains(&f), "fbm3={f}");
             let f2 = fbm2(t, t * 1.3, 4);
             assert!((0.0..=1.0).contains(&f2), "fbm2={f2}");
         }

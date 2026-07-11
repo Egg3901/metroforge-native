@@ -3,6 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_icon;
+mod atmosphere_shots;
 mod attract;
 mod audio;
 mod build_ui;
@@ -93,6 +94,7 @@ fn main() {
             report_ui::MfReportUiPlugin,
             attract::MfAttractPlugin,
             promo::MfPromoPlugin,
+            atmosphere_shots::MfAtmosphereShotsPlugin,
             tutorial::MfTutorialPlugin,
             goals::MfGoalsPlugin,
         ));

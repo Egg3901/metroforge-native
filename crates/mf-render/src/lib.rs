@@ -181,15 +181,27 @@ fn apply_quality_render_settings_system(
     // no HDR lighting to compress, so bypassing the tonemapper both fixes
     // the seam exactly (fully-fogged pixel == sky pixel) and renders the
     // palette faithfully. Lit tiers (Medium/High) keep Bevy's default.
-    if let Some((start, end)) = knobs.fog {
-        for camera in &cameras_missing_fog {
-            commands.entity(camera).insert((
-                DistanceFog {
-                    falloff: FogFalloff::Linear { start, end },
-                    ..default()
-                },
-                Tonemapping::None,
-            ));
+    //
+    // Also strip leftover startup DistanceFog from Medium/High cameras:
+    // `camera.rs` inserts a linear fog at spawn, and if that lands after
+    // the quality tier's first change tick the `is_changed` sweep below
+    // never removes it — leaving a milky wash on lit tiers.
+    match knobs.fog {
+        Some((start, end)) => {
+            for camera in &cameras_missing_fog {
+                commands.entity(camera).insert((
+                    DistanceFog {
+                        falloff: FogFalloff::Linear { start, end },
+                        ..default()
+                    },
+                    Tonemapping::None,
+                ));
+            }
+        }
+        None => {
+            for camera in &cameras {
+                commands.entity(camera).remove::<DistanceFog>();
+            }
         }
     }
     // Bloom backfill for Medium/High: camera may spawn after the tier's
