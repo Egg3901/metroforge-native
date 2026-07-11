@@ -204,6 +204,20 @@ pub fn clamp_ui_scale(scale: f32) -> f32 {
     scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX)
 }
 
+/// Camera movement-speed multiplier bounds (pan / orbit / zoom), applied in
+/// `camera.rs`. `1.0` = the tuned defaults; below feels slower, above snappier.
+pub const CAMERA_SENS_MIN: f32 = 0.4;
+pub const CAMERA_SENS_MAX: f32 = 2.5;
+pub const CAMERA_SENS_DEFAULT: f32 = 1.0;
+
+pub fn clamp_camera_sensitivity(v: f32) -> f32 {
+    if v.is_finite() {
+        v.clamp(CAMERA_SENS_MIN, CAMERA_SENS_MAX)
+    } else {
+        CAMERA_SENS_DEFAULT
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -262,6 +276,9 @@ struct ConfigFile {
     /// egui UI scale multiplier (0.85..=1.5). Defaults to 1.0.
     #[serde(default = "default_ui_scale")]
     ui_scale: f32,
+    /// Camera movement-speed multiplier (pan/orbit/zoom). Defaults to 1.0.
+    #[serde(default = "default_camera_sensitivity")]
+    camera_sensitivity: f32,
     /// Colorblind palette shift. Defaults to off.
     #[serde(default, skip_serializing_if = "is_colorblind_off")]
     colorblind: ConfigColorblind,
@@ -292,6 +309,10 @@ fn default_ui_scale() -> f32 {
     UI_SCALE_DEFAULT
 }
 
+fn default_camera_sensitivity() -> f32 {
+    CAMERA_SENS_DEFAULT
+}
+
 fn is_colorblind_off(c: &ConfigColorblind) -> bool {
     *c == ConfigColorblind::Off
 }
@@ -319,6 +340,7 @@ impl Default for ConfigFile {
             master_volume: default_master_volume(),
             mute: false,
             ui_scale: UI_SCALE_DEFAULT,
+            camera_sensitivity: CAMERA_SENS_DEFAULT,
             colorblind: ConfigColorblind::Off,
             reduce_motion: false,
             ambience_enabled: false,
@@ -366,6 +388,8 @@ pub struct MfConfig {
     pub mute: bool,
     /// egui UI scale (clamped to [`UI_SCALE_MIN`]..=[`UI_SCALE_MAX`]).
     pub ui_scale: f32,
+    /// Camera movement-speed multiplier (pan/orbit/zoom); `1.0` = tuned default.
+    pub camera_sensitivity: f32,
     /// Colorblind palette remapping preference.
     pub colorblind: ColorblindMode,
     /// When true, skip UI fades and attract camera yaw drift.
@@ -395,6 +419,7 @@ impl Default for MfConfig {
             master_volume: 1.0,
             mute: false,
             ui_scale: UI_SCALE_DEFAULT,
+            camera_sensitivity: CAMERA_SENS_DEFAULT,
             colorblind: ColorblindMode::Off,
             reduce_motion: false,
             ambience_enabled: false,
@@ -438,6 +463,7 @@ impl MfConfig {
             master_volume: file.master_volume.clamp(0.0, 1.0),
             mute: file.mute,
             ui_scale: clamp_ui_scale(file.ui_scale),
+            camera_sensitivity: clamp_camera_sensitivity(file.camera_sensitivity),
             colorblind: ColorblindMode::from(file.colorblind),
             reduce_motion: file.reduce_motion,
             ambience_enabled: file.ambience_enabled,
@@ -471,6 +497,7 @@ impl MfConfig {
             master_volume: self.master_volume.clamp(0.0, 1.0),
             mute: self.mute,
             ui_scale: clamp_ui_scale(self.ui_scale),
+            camera_sensitivity: clamp_camera_sensitivity(self.camera_sensitivity),
             colorblind: ConfigColorblind::from(self.colorblind),
             reduce_motion: self.reduce_motion,
             ambience_enabled: self.ambience_enabled,
@@ -565,6 +592,14 @@ impl MfConfig {
         }
     }
 
+    /// Persist the camera sensitivity (Settings slider), clamped.
+    pub fn set_camera_sensitivity(&mut self, v: f32) {
+        self.camera_sensitivity = clamp_camera_sensitivity(v);
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
+
     /// Persist the colorblind palette-remap preference.
     pub fn set_colorblind(&mut self, mode: ColorblindMode) {
         self.colorblind = mode;
@@ -613,6 +648,7 @@ mod tests {
             master_volume: 1.0,
             mute: false,
             ui_scale: 1.0,
+            camera_sensitivity: 1.0,
             colorblind: ConfigColorblind::Off,
             reduce_motion: false,
             ambience_enabled: false,
