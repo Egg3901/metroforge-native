@@ -40,6 +40,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+CI also runs `cargo deny` (advisories / duplicate versions / licenses) as a
+**non-blocking** warn step — see [`BUILDING.md`](../BUILDING.md) and
+[`deny.toml`](../deny.toml).
+
+Build profiles, measured compile times / binary sizes, Bevy feature trimming,
+and cross-compile notes live in [`BUILDING.md`](../BUILDING.md).
+
 `cargo test --workspace` includes `mf-protocol`'s fixture round-trip tests (binary
 decode -> encode -> byte equality; JSON literal decode -> encode -> value equality)
 and `mf-state`'s quality-tier detection unit tests. It does **not** include

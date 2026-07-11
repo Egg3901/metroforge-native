@@ -665,7 +665,7 @@ pub struct CityListEntry {
     pub key: String,
     /// Player-facing city name.
     pub label: String,
-    /// Country the city belongs to, when the sidecar provides one.
+    /// Country name, when the sidecar's catalog knows one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
     /// City-proper population when the sidecar knows one.
@@ -677,7 +677,7 @@ pub struct CityListEntry {
     /// World edge length in kilometers (`worldSize / 1000`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_km: Option<f64>,
-    /// Low-res map thumbnail for the city-select card, when present.
+    /// Downsampled land/water minimap for the city-select card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map_preview: Option<CityMapPreview>,
 }

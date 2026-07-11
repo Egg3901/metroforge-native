@@ -27,13 +27,12 @@ winit = { workspace = true }
 # playback without panicking. Version matches bevy_audio → rodio → cpal.
 cpal = "0.15"
 
+# Feature set is trimmed at the workspace level (default-features = false with
+# an explicit list — includes `bevy_audio` for the procedural SFX/ambience,
+# which synthesizes PCM at runtime and never loads vorbis/ogg assets). See
+# BUILDING.md for the audit notes.
 [dependencies.bevy]
 workspace = true
-# Default features include `bevy_audio` (required for procedural SFX/ambience).
-# We synthesize PCM at runtime and never load vorbis/ogg assets, but leaving
-# the default feature set intact keeps the rest of the engine (render, winit,
-# etc.) working; vorbis being present is unused, not harmful.
-default-features = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

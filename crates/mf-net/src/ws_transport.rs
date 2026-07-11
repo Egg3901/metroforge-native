@@ -198,10 +198,9 @@ fn run_worker(
         }
 
         // Drain everything currently queued for send. `WebSocket::send`
-        // (tungstenite 0.24) is `write` + `flush` in one call, so each
-        // message reaches the socket immediately rather than sitting in an
-        // internal write buffer for the next batch — no explicit `flush()`
-        // needed here.
+        // is `write` + `flush` in one call, so each message reaches the
+        // socket immediately rather than sitting in an internal write
+        // buffer for the next batch — no explicit `flush()` needed here.
         loop {
             match outbound_rx.try_recv() {
                 Ok(msg) => {
@@ -214,7 +213,10 @@ fn run_worker(
                             continue;
                         }
                     };
-                    if let Err(e) = socket.send(Message::Text(text)) {
+                    // tungstenite 0.26+: `Message::Text` holds `Utf8Bytes`;
+                    // `Message::text` accepts anything `Into<Utf8Bytes>`
+                    // (including `String`) so the wire payload is unchanged.
+                    if let Err(e) = socket.send(Message::text(text)) {
                         tracing::warn!("mf-net: send error: {e}");
                         closed.store(true, Ordering::Relaxed);
                         return;
