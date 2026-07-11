@@ -7,6 +7,17 @@ for Linux, Windows, and macOS (arm64). Sidecar/data changes land in the
 sibling `metroforge` repo and reach releases via the pinned sidecar SHA in
 `release.yml`.
 
+## [Unreleased]
+
+### Added
+- Main menu overhaul and app icon (#47)
+- Release installers: Windows NSIS setup.exe, macOS .dmg, Linux tarball with
+  desktop integration (#52)
+
+### Fixed
+- Sidecar: NYC terrain water-bleed and missing NJ/Brooklyn road coverage
+  (metroforge#29)
+
 ## [0.4.2-alpha] - 2026-07-10
 
 The "streets actually render" release. v0.4.1 shipped with no visible roads
