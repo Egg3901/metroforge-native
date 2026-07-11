@@ -53,7 +53,7 @@ pub use fields::LatestFields;
 pub use frame::LatestFrame;
 pub use height::HeightAt;
 pub use overlay::{OverlayMode, OverlayState};
-pub use plugin::MfStatePlugin;
+pub use plugin::{KnobSyncSet, MfStatePlugin};
 pub use quality::{
     detect as detect_quality_tier, merge_knobs, recommend_tier_from_frame_times,
     sync_effective_knobs_system, DetectedQuality, EffectiveKnobs, GpuDeviceKind, QualityKnobs,

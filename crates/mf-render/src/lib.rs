@@ -107,14 +107,15 @@ impl Plugin for MfRenderPlugin {
             ),
         ))
         .add_plugins(photomode::MfPhotoModeRenderPlugin)
+        // Advanced overrides are merged into `EffectiveKnobs` before any
+        // render consumer reads them this frame. The system itself is owned by
+        // `MfStatePlugin` (registered once, inside `KnobSyncSet`); we only add
+        // the ordering edge here via the set, rather than re-registering the
+        // system (which duplicated it and panicked schedule build on boot).
+        .configure_sets(Update, mf_state::KnobSyncSet.before(MfRenderSet::Terrain))
         .add_systems(
             Update,
             (
-                // Ensure Advanced overrides are merged before any render
-                // consumer reads knobs this frame (also registered in
-                // `MfStatePlugin`; the `.before(Terrain)` edge is what
-                // matters for ordering here).
-                mf_state::quality::sync_effective_knobs_system.before(MfRenderSet::Terrain),
                 sync_theme_system.before(MfRenderSet::Terrain),
                 sync_colorblind_system.before(MfRenderSet::Terrain),
                 // Runs before daynight's apply system (same `Dynamic` set)
