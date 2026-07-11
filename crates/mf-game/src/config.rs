@@ -91,9 +91,19 @@ struct ConfigFile {
     /// config.toml files keep the new Medium+ atmosphere without an edit.
     #[serde(default = "default_weather_effects")]
     weather_effects: bool,
+    /// Whether the bottom-right HUD minimap (`minimap.rs`) is expanded.
+    /// Defaults to on so existing config.toml files (which predate the
+    /// minimap) still show it without an edit, same rationale as
+    /// `weather_effects` above.
+    #[serde(default = "default_minimap_open")]
+    minimap_open: bool,
 }
 
 fn default_weather_effects() -> bool {
+    true
+}
+
+fn default_minimap_open() -> bool {
     true
 }
 
@@ -104,6 +114,7 @@ impl Default for ConfigFile {
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
+            minimap_open: true,
         }
     }
 }
@@ -121,6 +132,11 @@ pub struct MfConfig {
     /// Player preference for atmospheric weather (fog/cloud). Still gated
     /// by quality tier at render time.
     pub weather_effects: bool,
+    /// Whether the HUD minimap (`minimap.rs`) is expanded. `M` toggles the
+    /// top-down map mode (`map_mode.rs`), so the minimap claims `N` instead
+    /// (verified unclaimed by grep before wiring it up, same convention
+    /// `map_mode.rs`'s module doc uses for `M`).
+    pub minimap_open: bool,
     path: Option<PathBuf>,
 }
 
@@ -131,6 +147,7 @@ impl Default for MfConfig {
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
+            minimap_open: true,
             path: None,
         }
     }
@@ -167,11 +184,13 @@ impl MfConfig {
             .map(|f| f.tutorial_completed)
             .unwrap_or(false);
         let weather_effects = parsed.as_ref().map(|f| f.weather_effects).unwrap_or(true);
+        let minimap_open = parsed.as_ref().map(|f| f.minimap_open).unwrap_or(true);
         MfConfig {
             quality_override,
             theme_override,
             tutorial_completed,
             weather_effects,
+            minimap_open,
             path: Some(path),
         }
     }
@@ -190,6 +209,7 @@ impl MfConfig {
             theme_override: self.theme_override.map(ConfigTheme::from),
             tutorial_completed: self.tutorial_completed,
             weather_effects: self.weather_effects,
+            minimap_open: self.minimap_open,
         };
         let toml_str = toml::to_string_pretty(&file)?;
         std::fs::write(path, toml_str)?;
@@ -226,6 +246,15 @@ impl MfConfig {
             tracing::warn!("mf-game: failed to persist config.toml: {e}");
         }
     }
+
+    /// Persist the minimap's collapsed/expanded state (`N` toggle, see
+    /// `minimap.rs`).
+    pub fn set_minimap_open(&mut self, open: bool) {
+        self.minimap_open = open;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -239,6 +268,7 @@ mod tests {
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
+            minimap_open: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("high"));
@@ -253,6 +283,7 @@ mod tests {
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
+            minimap_open: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         let back: ConfigFile = toml::from_str(&s).unwrap();
@@ -275,6 +306,7 @@ mod tests {
             theme_override: None,
             tutorial_completed: false,
             weather_effects: false,
+            minimap_open: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("false"));
@@ -289,6 +321,7 @@ mod tests {
             theme_override: Some(ConfigTheme::Purple),
             tutorial_completed: false,
             weather_effects: true,
+            minimap_open: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("purple"));
@@ -303,6 +336,7 @@ mod tests {
             theme_override: None,
             tutorial_completed: true,
             weather_effects: true,
+            minimap_open: true,
         };
         let s = toml::to_string_pretty(&file).unwrap();
         assert!(s.contains("tutorial_completed"));
