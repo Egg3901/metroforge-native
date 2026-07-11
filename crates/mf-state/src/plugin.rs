@@ -64,10 +64,14 @@ fn apply_sim_events_system(
                 city.apply_buildings(buildings.clone());
             }
             FromSimMsg::Fields(f) => {
-                fields.0 = Some(f.clone());
+                // Arc clone — Fields arrays are large; avoid deep-copying
+                // every 7 sim-days on NYC-scale grids.
+                fields.0 = Some(std::sync::Arc::clone(f));
             }
             FromSimMsg::Frame(f) => {
-                frame.0 = Some(f.clone());
+                // Arc clone — Frame arrives ~20 Hz; deep-cloning vehicle/
+                // agent Vecs here was pure allocator churn.
+                frame.0 = Some(std::sync::Arc::clone(f));
             }
             FromSimMsg::Json(FromSimJson::Ui(u)) => {
                 ui.0 = Some(u.clone());

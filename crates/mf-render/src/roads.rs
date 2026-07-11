@@ -38,6 +38,8 @@ pub(crate) const COLLECTOR_WIDTH: f64 = 36.0;
 pub(crate) const LOCAL_WIDTH: f64 = 20.0;
 /// Camera height above which local-road detail is hidden (LOD).
 const LOCAL_ROAD_LOD_HEIGHT: f32 = 4_000.0;
+/// Collectors hide above this height (arterials stay for skyline structure).
+const COLLECTOR_ROAD_LOD_HEIGHT: f32 = 8_000.0;
 
 pub struct MfRoadsPlugin;
 
@@ -47,7 +49,7 @@ impl Plugin for MfRoadsPlugin {
             Update,
             (
                 build_roads_system.in_set(crate::MfRenderSet::Statics),
-                local_road_lod_system.in_set(crate::MfRenderSet::Dynamic),
+                road_lod_system.in_set(crate::MfRenderSet::Dynamic),
                 apply_quality_to_roads_material_system.in_set(crate::MfRenderSet::Dynamic),
             ),
         );
@@ -57,19 +59,25 @@ impl Plugin for MfRoadsPlugin {
 #[derive(Resource, Default)]
 struct RoadsState {
     /// Cheap structural signature: `(fields version, roads.len(), total
-    /// point count, theme)`. Road geometry never changes after `ready` in
-    /// v1, but the terrain the ribbons drape over rebuilds on every fields
-    /// version — baking only once left roads buried under relief that
-    /// arrived in a later version (the residual half of the roads race).
-    /// `Theme` rides along so a theme switch forces a full rebuild (road
-    /// color is baked into mesh vertex color at build time).
-    signature: Option<(u32, usize, usize, Theme)>,
+    /// point count, theme, densify step bits)`. Road geometry never changes
+    /// after `ready` in v1, but the terrain the ribbons drape over rebuilds
+    /// on every fields version — baking only once left roads buried under
+    /// relief that arrived in a later version (the residual half of the
+    /// roads race). `Theme` rides along so a theme switch forces a full
+    /// rebuild (road color is baked into mesh vertex color at build time).
+    /// Densify step bits so a quality-tier change rebuilds at the new
+    /// ribbon resolution.
+    signature: Option<(u32, usize, usize, Theme, u32)>,
     entities: Vec<Entity>,
     local_entity: Option<Entity>,
+    collector_entity: Option<Entity>,
 }
 
 #[derive(Component)]
 struct LocalRoadMarker;
+
+#[derive(Component)]
+struct CollectorRoadMarker;
 
 /// Marker on every road-surface mesh entity (all classes + the arterial
 /// hairline edge) so `subway.rs` can fade their alpha toward 0.3 in subway
@@ -108,7 +116,14 @@ fn build_roads_system(
         return;
     };
     let total_points: usize = city_json.roads.iter().map(|r| r.points.len()).sum();
-    let signature = (f.version, city_json.roads.len(), total_points, *theme);
+    let densify_step = quality.knobs().ribbon_densify_step_m;
+    let signature = (
+        f.version,
+        city_json.roads.len(),
+        total_points,
+        *theme,
+        densify_step.to_bits(),
+    );
     if state.signature == Some(signature) {
         return;
     }
@@ -118,6 +133,7 @@ fn build_roads_system(
         commands.entity(e).despawn();
     }
     state.local_entity = None;
+    state.collector_entity = None;
 
     let road_scale = city_json.road_scale as f32;
     let road_color = palette::road();
@@ -138,7 +154,9 @@ fn build_roads_system(
             continue;
         }
         // Follow the terrain, not just the sparse simplified vertices.
-        let pts = crate::mesh_utils::densify_polyline(&pts, 24.0);
+        // Step is tiered: Potato/Low use coarser densify to cut rebuild
+        // vertices and draw cost.
+        let pts = crate::mesh_utils::densify_polyline(&pts, densify_step);
         let (idx, width) = match road.cls.as_str() {
             "arterial" => (0usize, ARTERIAL_WIDTH as f32 * road_scale),
             "collector" => (1usize, COLLECTOR_WIDTH as f32 * road_scale),
@@ -245,6 +263,9 @@ fn build_roads_system(
         if names[i] == "local" {
             entity_commands.insert(LocalRoadMarker);
             state.local_entity = Some(entity_commands.id());
+        } else if names[i] == "collector" {
+            entity_commands.insert(CollectorRoadMarker);
+            state.collector_entity = Some(entity_commands.id());
         }
         state.entities.push(entity_commands.id());
     }
@@ -284,30 +305,39 @@ fn build_roads_system(
     }
 }
 
-/// Hide the local-roads mesh once the camera climbs above
-/// [`LOCAL_ROAD_LOD_HEIGHT`] (spec: "Local-roads Visibility toggled by
-/// camera height"). Reads Bevy's own `Camera3d`/`Transform` rather than
+/// Hide local/collector road meshes once the camera climbs above their LOD
+/// heights (spec: "Local-roads Visibility toggled by camera height";
+/// collectors follow at a higher threshold so arterials alone remain for
+/// skyline structure). Reads Bevy's own `Camera3d`/`Transform` rather than
 /// `mf-game`'s `CameraRig` component, since `mf-render` must not depend on
 /// `mf-game` (the dependency runs the other way).
-fn local_road_lod_system(
+fn road_lod_system(
     state: Res<RoadsState>,
     cameras: Query<&Transform, With<Camera3d>>,
     mut visibility: Query<&mut Visibility>,
 ) {
-    let Some(entity) = state.local_entity else {
-        return;
-    };
     let Ok(cam_transform) = cameras.single() else {
         return;
     };
-    let Ok(mut vis) = visibility.get_mut(entity) else {
-        return;
-    };
-    *vis = if cam_transform.translation.y > LOCAL_ROAD_LOD_HEIGHT {
-        Visibility::Hidden
-    } else {
-        Visibility::Visible
-    };
+    let y = cam_transform.translation.y;
+    if let Some(entity) = state.local_entity {
+        if let Ok(mut vis) = visibility.get_mut(entity) {
+            *vis = if y > LOCAL_ROAD_LOD_HEIGHT {
+                Visibility::Hidden
+            } else {
+                Visibility::Visible
+            };
+        }
+    }
+    if let Some(entity) = state.collector_entity {
+        if let Ok(mut vis) = visibility.get_mut(entity) {
+            *vis = if y > COLLECTOR_ROAD_LOD_HEIGHT {
+                Visibility::Hidden
+            } else {
+                Visibility::Visible
+            };
+        }
+    }
 }
 
 /// Flip the 3 road-class materials' `unlit` flag when the quality tier

@@ -12,7 +12,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use bevy::prelude::*;
 
-use mf_protocol::{TransitMode, UiState, UiStation};
+use mf_protocol::{TransitMode, UiState};
 use mf_state::{HeightAt, LatestUi, QualityTier};
 
 use crate::mesh_utils::{
@@ -124,14 +124,17 @@ fn transit_update_system(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut ring_query: Query<(&mut StationRing, &MeshMaterial3d<StandardMaterial>)>,
 ) {
-    if !ui.is_changed() {
+    // Quality changes densify step / unlit; must rebuild ribbons even when
+    // UiState is unchanged.
+    if !ui.is_changed() && !quality.is_changed() {
         return;
     }
     let Some(u) = &ui.0 else {
         return;
     };
 
-    let sig = signature_of(u);
+    let densify_step = quality.knobs().ribbon_densify_step_m;
+    let sig = signature_of(u) ^ (u64::from(densify_step.to_bits()) << 1);
     if state.signature != Some(sig) {
         state.signature = Some(sig);
         rebuild_stations(
@@ -147,6 +150,7 @@ fn transit_update_system(
             u,
             &height_at,
             &quality,
+            densify_step,
             &mut state,
             &mut meshes,
             &mut materials,
@@ -155,11 +159,12 @@ fn transit_update_system(
             &mut commands,
             u,
             &height_at,
+            densify_step,
             &mut state,
             &mut meshes,
             &mut materials,
         );
-    } else {
+    } else if ui.is_changed() {
         update_station_crowding(u, &mut materials, &mut ring_query);
     }
 }
@@ -253,12 +258,10 @@ fn update_station_crowding(
         .iter()
         .map(|s| s.ridership)
         .fold(1.0_f64, f64::max);
-    // Join rings to stations by id, not by query iteration order (ECS query
-    // order isn't guaranteed to track spawn order). Rings for stations no
-    // longer present keep their current color rather than guessing.
-    let station_by_id: HashMap<i64, &UiStation> = ui.stations.iter().map(|s| (s.id, s)).collect();
+    // Linear join by id — station counts are typically <200, so this beats
+    // allocating a fresh HashMap on every 2 Hz tick (perf audit).
     for (mut ring, mat_handle) in ring_query.iter_mut() {
-        let Some(st) = station_by_id.get(&ring.station_id) else {
+        let Some(st) = ui.stations.iter().find(|s| s.id == ring.station_id) else {
             continue;
         };
         let t = (st.ridership / max_ridership).clamp(0.0, 1.0) as f32;
@@ -277,11 +280,13 @@ fn update_station_crowding(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rebuild_tracks(
     commands: &mut Commands,
     ui: &UiState,
     height_at: &HeightAt,
     quality: &QualityTier,
+    densify_step: f32,
     state: &mut TransitState,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
@@ -305,7 +310,7 @@ fn rebuild_tracks(
         let width = if t.mode == TransitMode::Bus { 5.0 } else { 8.0 };
         let buf = groups.entry((t.mode, t.grade.clone())).or_default();
         let pts = crate::mesh_utils::smooth_polyline(&pts, 2);
-        let pts = crate::mesh_utils::densify_polyline(&pts, 24.0);
+        let pts = crate::mesh_utils::densify_polyline(&pts, densify_step);
         append_ribbon(
             buf,
             &pts,
@@ -385,6 +390,7 @@ fn rebuild_routes(
     commands: &mut Commands,
     ui: &UiState,
     height_at: &HeightAt,
+    densify_step: f32,
     state: &mut TransitState,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
@@ -489,7 +495,7 @@ fn rebuild_routes(
         for (pi, seg) in &pair_segs {
             let width = widths.get(*pi).copied().unwrap_or(STRIPE_WIDTH);
             let seg = crate::mesh_utils::smooth_polyline(seg, 2);
-            let seg = crate::mesh_utils::densify_polyline(&seg, 24.0);
+            let seg = crate::mesh_utils::densify_polyline(&seg, densify_step);
             append_ribbon(
                 &mut normal_buf,
                 &seg,
@@ -559,7 +565,7 @@ fn rebuild_routes(
         if r.mode == TransitMode::Metro {
             let mut bold_buf = MeshBuffers::new();
             let dense_path = crate::mesh_utils::smooth_polyline(&path, 2);
-            let dense_path = crate::mesh_utils::densify_polyline(&dense_path, 24.0);
+            let dense_path = crate::mesh_utils::densify_polyline(&dense_path, densify_step);
             append_ribbon(
                 &mut bold_buf,
                 &dense_path,
