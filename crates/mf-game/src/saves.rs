@@ -1,5 +1,6 @@
 //! Disk save slots: 3 numbered slots plus a ring of 3 autosaves, each a
-//! JSON file under `ProjectDirs(...).data_dir()/saves/<slot>.json`.
+//! JSON file under `paths::saves_dir()` (OS data dir via `ProjectDirs`,
+//! with an exe-adjacent fallback — see `paths.rs`).
 //!
 //! # Versioned wrapper format
 //!
@@ -237,8 +238,7 @@ pub fn migrate_to_current(mut doc: Value) -> anyhow::Result<Value> {
 // ---------------------------------------------------------------------------
 
 fn saves_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("com", "[REDACTED]", "MetroForge")
-        .map(|dirs| dirs.data_dir().join("saves"))
+    crate::paths::saves_dir()
 }
 
 fn slot_path(slot: SaveSlot) -> Option<PathBuf> {

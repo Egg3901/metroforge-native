@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use bevy::prelude::*;
+use bevy::render::mesh::MeshAabb;
 
 use mf_protocol::{TransitMode, UiState};
 use mf_state::{HeightAt, LatestUi, QualityTier, Theme};
@@ -100,40 +101,9 @@ struct TransitState {
     station_entities: Vec<Entity>,
     track_entities: Vec<Entity>,
     route_entities: Vec<Entity>,
-    /// Strong handles for every mesh/material this layer minted. Despawn
-    /// alone drops the entity components' handles, but Bevy's asset GC is
-    /// refcount-based and a rebuild that only despawns can leave a
-    /// generation alive for a frame (or longer if anything else cloned a
-    /// handle). Holding the generation here and calling `Assets::remove`
-    /// on the next rebuild makes free deterministic — the F11 overlay /
-    /// soak harness can trust mesh/material counts plateau under edit churn.
-    owned_meshes: Vec<Handle<Mesh>>,
-    owned_materials: Vec<Handle<StandardMaterial>>,
-}
-
-/// Despawn every transit entity and explicitly free the previous
-/// generation's mesh/material assets. Called at the start of each
-/// structural rebuild.
-fn free_transit_generation(
-    commands: &mut Commands,
-    state: &mut TransitState,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-) {
-    for e in state
-        .station_entities
-        .drain(..)
-        .chain(state.track_entities.drain(..))
-        .chain(state.route_entities.drain(..))
-    {
-        commands.entity(e).despawn();
-    }
-    for handle in state.owned_meshes.drain(..) {
-        meshes.remove(&handle);
-    }
-    for handle in state.owned_materials.drain(..) {
-        materials.remove(&handle);
-    }
+    /// Reused track mesh assets keyed by (mode, grade).
+    track_meshes: HashMap<(TransitMode, String), Handle<Mesh>>,
+    track_materials: HashMap<(TransitMode, String), Handle<StandardMaterial>>,
 }
 
 /// Structural fingerprint of `ui` (station/track/route identity), used to
@@ -166,8 +136,11 @@ fn transit_update_system(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut ring_query: Query<(&mut StationRing, &MeshMaterial3d<StandardMaterial>)>,
+    counters: Res<crate::perf::PerfCounters>,
     mut stats: ResMut<RenderCacheStats>,
 ) {
+    let _span = tracing::info_span!("transit_update").entered();
+    let _timer = crate::perf::PerfSpan::start(&counters.transit_update_us);
     // Theme/quality changes recolor stations, tracks, and stripes — force a
     // structural rebuild even when UiState is unchanged (issue #32 gap).
     if !ui.is_changed() && !theme.is_changed() && !quality.is_changed() {
@@ -186,7 +159,6 @@ fn transit_update_system(
     }
     if state.signature != Some(sig) {
         state.signature = Some(sig);
-        free_transit_generation(&mut commands, &mut state, &mut meshes, &mut materials);
         rebuild_stations(
             &mut commands,
             u,
@@ -232,6 +204,9 @@ fn rebuild_stations(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
 ) {
+    for e in state.station_entities.drain(..) {
+        commands.entity(e).despawn();
+    }
     let unlit = quality.knobs().unlit_material;
     let body_mesh = meshes.add(
         Cylinder::new(STATION_RADIUS, STATION_HEIGHT)
@@ -239,8 +214,6 @@ fn rebuild_stations(
             .anchor(bevy::render::mesh::CylinderAnchor::Bottom),
     );
     let ring_mesh = meshes.add(Annulus::new(STATION_RING_INNER, STATION_RING_OUTER));
-    state.owned_meshes.push(body_mesh.clone());
-    state.owned_meshes.push(ring_mesh.clone());
     // Solid cylinder, always opaque, built by Bevy's own `Cylinder` primitive
     // (correctly wound by construction) — single-sided/back-face-culled is
     // correct. `unlit` matches the city shell on Potato/Low.
@@ -251,7 +224,6 @@ fn rebuild_stations(
         reflectance: 0.0,
         ..default()
     });
-    state.owned_materials.push(body_material.clone());
 
     for st in &ui.stations {
         let ground_y = height_at.sample(st.x as f32, st.y as f32);
@@ -284,7 +256,6 @@ fn rebuild_stations(
             reflectance: 0.0,
             ..default()
         });
-        state.owned_materials.push(ring_material.clone());
         let ring = commands
             .spawn((
                 Mesh3d(ring_mesh.clone()),
@@ -355,6 +326,12 @@ fn rebuild_tracks(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
 ) {
+    // Hide previous track entities; we'll reuse mesh assets and re-show /
+    // respawn as needed. Despawn only entities whose key disappeared.
+    let mut old_entities = std::mem::take(&mut state.track_entities);
+    for e in old_entities.drain(..) {
+        commands.entity(e).despawn();
+    }
     let unlit = quality.knobs().unlit_material;
     // Group by mode+grade so each combination gets one merged mesh/material
     // (small, fixed set: 4 modes x 3 grades).
@@ -381,41 +358,56 @@ fn rebuild_tracks(
             |x, z| height_at.sample(x, z),
         );
     }
-    for ((mode, grade), buf) in groups {
+    let mut live_keys = std::collections::HashSet::new();
+    for ((mode, grade), mut buf) in groups {
         if buf.is_empty() {
             continue;
         }
+        let key = (mode, grade.clone());
+        live_keys.insert(key.clone());
         let alpha = if grade == "tunnel" { 0.18 } else { 0.28 };
-        let mesh = meshes.add(buf.build());
-        state.owned_meshes.push(mesh.clone());
-        // Genuinely translucent always (0.18/0.28, never faded to 1.0 by
-        // subway.rs) — stays `Blend`, unlike the road/stripe materials.
-        // `double_sided`/`cull_mode` also stay as before: this is an
-        // `append_ribbon`-built, `Blend`-mode, no-reactive-`unlit`-updater
-        // material — the same shape as roads.rs's road-class materials,
-        // where single-siding was A/B-diff-verified to visibly brighten the
-        // subway+low-quality combination versus baseline (see the long
-        // comment there). Reverted alongside that fix out of caution rather
-        // than independently re-verified.
-        let material = materials.add(StandardMaterial {
-            double_sided: true,
-            cull_mode: None,
-            // Material-level mode accent (same Blend vertex-color bug that
-            // washed roads/stripes white when color lived only in vertices).
-            base_color: palette::mode_accent(mode).with_alpha(alpha),
-            alpha_mode: AlphaMode::Blend,
-            unlit,
-            perceptual_roughness: 1.0,
-            reflectance: 0.0,
-            ..default()
-        });
-        state.owned_materials.push(material.clone());
+        let mesh_handle = state
+            .track_meshes
+            .entry(key.clone())
+            .or_insert_with(|| {
+                meshes.add(Mesh::new(
+                    bevy::render::mesh::PrimitiveTopology::TriangleList,
+                    bevy::render::render_asset::RenderAssetUsages::default(),
+                ))
+            })
+            .clone();
+        let aabb = {
+            let mesh = meshes.get_mut(&mesh_handle).expect("track mesh");
+            buf.apply_to_mesh(mesh);
+            mesh.compute_aabb().unwrap_or_default()
+        };
+        let material_handle = state
+            .track_materials
+            .entry(key)
+            .or_insert_with(|| {
+                materials.add(StandardMaterial {
+                    double_sided: true,
+                    cull_mode: None,
+                    base_color: palette::mode_accent(mode).with_alpha(alpha),
+                    alpha_mode: AlphaMode::Blend,
+                    unlit,
+                    perceptual_roughness: 1.0,
+                    reflectance: 0.0,
+                    ..default()
+                })
+            })
+            .clone();
+        if let Some(mat) = materials.get_mut(&material_handle) {
+            mat.base_color = palette::mode_accent(mode).with_alpha(alpha);
+            mat.unlit = unlit;
+        }
         let e = commands
             .spawn((
-                Mesh3d(mesh),
-                MeshMaterial3d(material),
+                Mesh3d(mesh_handle),
+                MeshMaterial3d(material_handle),
                 Transform::IDENTITY,
                 Visibility::default(),
+                aabb,
                 TrackRibbon {
                     color: palette::mode_accent(mode),
                 },
@@ -424,6 +416,9 @@ fn rebuild_tracks(
             .id();
         state.track_entities.push(e);
     }
+    // Drop mesh/material handles for keys that no longer exist so Assets can GC.
+    state.track_meshes.retain(|k, _| live_keys.contains(k));
+    state.track_materials.retain(|k, _| live_keys.contains(k));
 }
 
 /// Per-STATION-PAIR ribbon widths for a route's stripe (v0.3, ship-plan
@@ -465,6 +460,9 @@ fn rebuild_routes(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
 ) {
+    for e in state.route_entities.drain(..) {
+        commands.entity(e).despawn();
+    }
     if ui.routes.is_empty() {
         return;
     }
@@ -576,7 +574,6 @@ fn rebuild_routes(
         // brighten). Chevrons get their own Opaque child mesh below so the
         // art-direction "20% brighter" accent actually shows.
         let mesh = meshes.add(normal_buf.build());
-        state.owned_meshes.push(mesh.clone());
         // `Blend`, not `Opaque` — see the long comment on the road-class
         // materials in `roads.rs` for why: dynamically flipping this to
         // `Opaque` when steady and back to `Blend` mid-fade (this crate's
@@ -612,7 +609,6 @@ fn rebuild_routes(
             reflectance: 0.0,
             ..default()
         });
-        state.owned_materials.push(material.clone());
         let e = commands
             .spawn((
                 Mesh3d(mesh),
@@ -644,12 +640,9 @@ fn rebuild_routes(
                 reflectance: 0.0,
                 ..default()
             });
-            state.owned_materials.push(chevron_mat.clone());
-            let chevron_mesh = meshes.add(chevron_buf.build());
-            state.owned_meshes.push(chevron_mesh.clone());
             let chevron_e = commands
                 .spawn((
-                    Mesh3d(chevron_mesh),
+                    Mesh3d(meshes.add(chevron_buf.build())),
                     MeshMaterial3d(chevron_mat),
                     Transform::IDENTITY,
                     Visibility::default(),
@@ -672,7 +665,6 @@ fn rebuild_routes(
                 |x, z| height_at.sample(x, z),
             );
             let bold_mesh = meshes.add(bold_buf.build());
-            state.owned_meshes.push(bold_mesh.clone());
             // Solid whenever visible (subway.rs only ever toggles this
             // entity's Visibility, never its alpha) — `..default()` already
             // gives `AlphaMode::Opaque`, kept implicit here since nothing
@@ -689,7 +681,6 @@ fn rebuild_routes(
                 emissive: palette::emissive(color, 0.8),
                 ..default()
             });
-            state.owned_materials.push(bold_material.clone());
             let bold_e = commands
                 .spawn((
                     Mesh3d(bold_mesh),

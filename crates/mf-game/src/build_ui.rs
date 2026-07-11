@@ -878,6 +878,7 @@ impl Plugin for MfBuildUiPlugin {
                 (build_toolbar_system, route_panel_system)
                     .chain()
                     .run_if(in_state(AppState::InGame))
+                    .run_if(crate::egui_idle::egui_content_active)
                     .run_if(|| !crate::design_system::hud_hidden()),
             );
     }
