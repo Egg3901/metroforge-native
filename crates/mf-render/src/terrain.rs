@@ -201,17 +201,51 @@ fn build_terrain_system(
         let idx = (gy * field_w + gx) as usize;
         let is_water = f.water.get(idx).copied().unwrap_or(0) >= 1;
         let is_park = f.parks.get(idx).copied().unwrap_or(0) >= 1;
-        let y = if is_water {
+        // Soft shoreline: average the 3x3 water mask so land/water edges
+        // blend instead of hard cell steps (visual fidelity).
+        let water_frac = {
+            let mut sum = 0.0_f32;
+            let mut n = 0.0_f32;
+            let gx_i = gx as i32;
+            let gy_i = gy as i32;
+            let fw = field_w as i32;
+            let fh = field_h as i32;
+            for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    let nx = gx_i + dx;
+                    let ny = gy_i + dy;
+                    if nx < 0 || ny < 0 || nx >= fw || ny >= fh {
+                        continue;
+                    }
+                    let nidx = (ny * fw + nx) as usize;
+                    sum += if f.water.get(nidx).copied().unwrap_or(0) >= 1 {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    n += 1.0;
+                }
+            }
+            if n > 0.0 {
+                sum / n
+            } else if is_water {
+                1.0
+            } else {
+                0.0
+            }
+        };
+        let y = if water_frac > 0.5 {
             WATER_LEVEL_Y
         } else {
             graded_terrain.get(idx).copied().unwrap_or(0.0) * TERRAIN_Z_SCALE
         };
-        let color = if is_water {
+        let land = if is_park { park } else { ground };
+        let color = if water_frac <= 0.0 {
+            land
+        } else if water_frac >= 1.0 {
             water
-        } else if is_park {
-            park
         } else {
-            ground
+            land.mix(&water, water_frac)
         };
         let x = origin_x + gx as f32 * cell_size;
         let z = origin_y + gy as f32 * cell_size;

@@ -40,7 +40,7 @@ use bevy::prelude::*;
 use mf_protocol::BuildingFootprint;
 use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, RevealState, Theme};
 
-use crate::mesh_utils::{append_cuboid, append_prism, hash01, polygon_area, MeshBuffers};
+use crate::mesh_utils::{append_cuboid_cel, append_prism, hash01, polygon_area, MeshBuffers};
 use crate::palette;
 use crate::reveal::{BuildingMaterial, RevealExtension};
 
@@ -504,7 +504,7 @@ fn build_buildings_system(
             let ground_y = height_at.sample(x, z);
             let (cx, cz) = chunk_index(Vec2::new(x, z), world_size);
             chunk_lot_counts[cz * CHUNKS_PER_SIDE + cx] += (half_x * half_z).max(1.0) * height;
-            append_cuboid(
+            append_cuboid_cel(
                 &mut chunk_bufs[cz * CHUNKS_PER_SIDE + cx],
                 Vec2::new(x, z),
                 ground_y,
@@ -513,6 +513,8 @@ fn build_buildings_system(
                 height,
                 tint(top),
                 tint(side),
+                tint(side_sunlit),
+                tint(side_shaded),
                 tint(base),
             );
         };
@@ -654,7 +656,7 @@ fn build_buildings_system(
                         let ground_y = height_at.sample(c.x, c.y);
                         let (cx, cz) = chunk_index(c, world_size);
                         chunk_lot_counts[cz * CHUNKS_PER_SIDE + cx] += 1.0;
-                        append_cuboid(
+                        append_cuboid_cel(
                             &mut chunk_bufs[cz * CHUNKS_PER_SIDE + cx],
                             c,
                             ground_y,
@@ -663,6 +665,8 @@ fn build_buildings_system(
                             height,
                             tint(top),
                             tint(side),
+                            tint(side_sunlit),
+                            tint(side_shaded),
                             tint(base),
                         );
                     }

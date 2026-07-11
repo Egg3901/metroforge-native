@@ -475,50 +475,23 @@ fn track_cost_feedback_system(mut tool: ResMut<ToolState>, mut events: EventRead
 // Ghost/preview rendering (bevy Gizmos: immediate-mode, zero asset churn).
 // ---------------------------------------------------------------------
 
-/// Vivid route color table, duplicated from `mf-render`'s private
-/// `palette::vivid_route_color` (that module isn't visible to `mf-game`,
-/// and this crate deliberately doesn't gain a dependency on `mf-render`'s
-/// internals just for eight numbers). TODO(unify): hoist this into a small
-/// shared color crate both renderers can depend on, so the two tables can
-/// never drift apart. Kept identical value-for-value with `mf-render`'s
-/// table so a route's draft ghost previews in the SAME color it will
-/// finish in once built.
-const VIVID_ROUTE_COLORS: [(u8, u8, u8); 8] = [
-    (0xff, 0x3b, 0x30),
-    (0x00, 0x7a, 0xff),
-    (0xff, 0xcc, 0x00),
-    (0x34, 0xc7, 0x59),
-    (0xff, 0x95, 0x00),
-    (0xaf, 0x52, 0xde),
-    (0x00, 0xc7, 0xbe),
-    (0xff, 0x2d, 0x95),
-];
-
-fn hex_color(r: u8, g: u8, b: u8) -> Color {
-    Color::srgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
-}
-
 /// Color for the NEXT route about to be created, indexed by how many
 /// routes already exist (`LatestUi.routes.len()`), same index/same color
-/// convention `mf-render`'s finished routes use. Wraps modulo the fixed
-/// eight rather than `mf-render`'s golden-angle extension past index 7:
-/// good enough for a transient ghost preview, called out in the TODO above.
+/// convention `mf-render`'s finished routes use — including golden-angle
+/// extension past the fixed eight.
 fn route_ghost_color(next_route_idx: usize) -> Color {
-    let (r, g, b) = VIVID_ROUTE_COLORS[next_route_idx % VIVID_ROUTE_COLORS.len()];
-    hex_color(r, g, b)
+    mf_render::palette::vivid_route_color(next_route_idx)
 }
 
-/// Accent blue for the place-station ghost: literally
-/// `VIVID_ROUTE_COLORS[1]` / `mf-render::palette::mode_accent(Metro)`, kept
-/// as its own named function rather than a magic index for readability at
-/// the call site.
+/// Accent blue for the place-station ghost: metro mode accent from the
+/// shared palette (theme-aware).
 fn accent_blue() -> Color {
-    hex_color(0x00, 0x7a, 0xff)
+    mf_render::palette::mode_accent(mf_protocol::TransitMode::Metro)
 }
 
-/// Bulldoze ghost red: `VIVID_ROUTE_COLORS[0]`, named for the same reason.
+/// Bulldoze ghost red: first vivid route brick from the shared palette.
 fn bulldoze_red() -> Color {
-    hex_color(0xff, 0x3b, 0x30)
+    mf_render::palette::vivid_route_color(0)
 }
 
 /// Draws a flat circle lying in the ground (XZ) plane: `Gizmos::circle`
@@ -894,7 +867,10 @@ mod tests {
     }
 
     #[test]
-    fn route_ghost_color_wraps_at_eight() {
-        assert_eq!(route_ghost_color(8), route_ghost_color(0));
+    fn route_ghost_color_extends_past_eight_via_golden_angle() {
+        // Shared palette uses golden-angle HSL past the fixed eight bricks
+        // (same as finished routes), not modulo wrap.
+        assert_ne!(route_ghost_color(8), route_ghost_color(0));
+        assert_ne!(route_ghost_color(8), route_ghost_color(7));
     }
 }

@@ -13,7 +13,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use bevy::prelude::*;
 
 use mf_protocol::{TransitMode, UiState, UiStation};
-use mf_state::{HeightAt, LatestUi, QualityTier};
+use mf_state::{HeightAt, LatestUi, QualityTier, Theme};
 
 use crate::mesh_utils::{
     append_ribbon, arc_length_table, offset_polyline, point_along, MeshBuffers,
@@ -119,19 +119,27 @@ fn transit_update_system(
     ui: Res<LatestUi>,
     height_at: Res<HeightAt>,
     quality: Res<QualityTier>,
+    theme: Res<Theme>,
     mut state: ResMut<TransitState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut ring_query: Query<(&mut StationRing, &MeshMaterial3d<StandardMaterial>)>,
 ) {
-    if !ui.is_changed() {
+    // Theme/quality changes recolor stations, tracks, and stripes — force a
+    // structural rebuild even when UiState is unchanged (issue #32 gap).
+    if !ui.is_changed() && !theme.is_changed() && !quality.is_changed() {
         return;
     }
     let Some(u) = &ui.0 else {
         return;
     };
 
-    let sig = signature_of(u);
+    let mut sig = signature_of(u);
+    // Fold theme + unlit into the gate so Settings switches repaint transit.
+    sig ^= (*theme as u64) << 48;
+    if quality.knobs().unlit_material {
+        sig ^= 1 << 47;
+    }
     if state.signature != Some(sig) {
         state.signature = Some(sig);
         rebuild_stations(
@@ -159,7 +167,7 @@ fn transit_update_system(
             &mut meshes,
             &mut materials,
         );
-    } else {
+    } else if ui.is_changed() {
         update_station_crowding(u, &mut materials, &mut ring_query);
     }
 }
@@ -333,7 +341,7 @@ fn rebuild_tracks(
         let material = materials.add(StandardMaterial {
             double_sided: true,
             cull_mode: None,
-            base_color: Color::WHITE.with_alpha(alpha),
+            base_color: palette::mode_accent(mode).with_alpha(alpha),
             alpha_mode: AlphaMode::Blend,
             unlit,
             ..default()
@@ -499,7 +507,9 @@ fn rebuild_routes(
                 |x, z| height_at.sample(x, z),
             );
         }
-        append_chevrons(&mut normal_buf, &path, height_at, color);
+        // Stripe mesh alone (Blend material ignores per-vertex chevron
+        // brighten). Chevrons get their own Opaque child mesh below so the
+        // art-direction "20% brighter" accent actually shows.
         let mesh = meshes.add(normal_buf.build());
         // `Blend`, not `Opaque` — see the long comment on the road-class
         // materials in `roads.rs` for why: dynamically flipping this to
@@ -519,12 +529,7 @@ fn rebuild_routes(
         // `StandardMaterial`s in this Bevy 0.16 setup, so leaving the vivid
         // color only in the ribbon's per-vertex colors (as this used to)
         // rendered every stripe plain white, not the rainbow the vertex data
-        // encoded. The per-vertex chevron brightness accent (`append_chevrons`
-        // paints its triangles 20% brighter than the ribbon) is lost by the
-        // same mechanism: chevrons share this mesh/material, so they render
-        // the same flat `color` as the stripe rather than standing out.
-        // Accepted: chevrons are still visible via geometry (they're a
-        // separate arrow shape sitting on the stripe), just not extra-bright.
+        // encoded.
         // `perceptual_roughness`/`reflectance` added to match roads.rs's
         // matte discipline: this surface now receives direct sun the same as
         // roads once its base_color actually carries the route color, so it
@@ -555,6 +560,34 @@ fn rebuild_routes(
             ))
             .id();
         state.route_entities.push(e);
+
+        // Chevron arrows as a separate Opaque mesh: Opaque honors vertex
+        // color (and we also set base_color to the brightened route color),
+        // restoring art-direction §3's "20% brighter" accent that Blend
+        // stripe materials cannot show.
+        let mut chevron_buf = MeshBuffers::new();
+        append_chevrons(&mut chevron_buf, &path, height_at, color);
+        if !chevron_buf.is_empty() {
+            let bright = palette::brighten(color, 0.2);
+            let chevron_mat = materials.add(StandardMaterial {
+                base_color: bright,
+                emissive: palette::emissive(bright, 0.55),
+                unlit: true,
+                perceptual_roughness: 1.0,
+                reflectance: 0.0,
+                ..default()
+            });
+            let chevron_e = commands
+                .spawn((
+                    Mesh3d(meshes.add(chevron_buf.build())),
+                    MeshMaterial3d(chevron_mat),
+                    Transform::IDENTITY,
+                    Visibility::default(),
+                    Name::new(format!("route-chevrons-{}", r.id)),
+                ))
+                .id();
+            state.route_entities.push(chevron_e);
+        }
 
         if r.mode == TransitMode::Metro {
             let mut bold_buf = MeshBuffers::new();

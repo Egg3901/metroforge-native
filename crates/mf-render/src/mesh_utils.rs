@@ -200,6 +200,88 @@ pub fn append_cuboid(
     }
 }
 
+/// Cel-shaded cuboid for mask/procedural buildings: same geometry as
+/// [`append_cuboid`], but each wall picks sunlit / shaded / plain from the
+/// fixed stylized sun direction (same thresholds as [`append_prism`]) so
+/// cities without vector footprints still get facade depth on unlit tiers.
+#[allow(clippy::too_many_arguments)]
+pub fn append_cuboid_cel(
+    buf: &mut MeshBuffers,
+    center_xz: Vec2,
+    ground_y: f32,
+    half_x: f32,
+    half_z: f32,
+    height: f32,
+    top: Color,
+    side_plain: Color,
+    side_sunlit: Color,
+    side_shaded: Color,
+    base: Color,
+) {
+    let x0 = center_xz.x - half_x;
+    let x1 = center_xz.x + half_x;
+    let z0 = center_xz.y - half_z;
+    let z1 = center_xz.y + half_z;
+    let y0 = ground_y;
+    let y1 = ground_y + height;
+
+    buf.push_flat_quad(
+        Vec3::new(x0, y1, z1),
+        Vec3::new(x1, y1, z1),
+        Vec3::new(x1, y1, z0),
+        Vec3::new(x0, y1, z0),
+        Vec3::Y,
+        top,
+    );
+
+    let sun_dir = wall_sun_dir();
+    let walls = [
+        (
+            Vec3::new(x0, y0, z1),
+            Vec3::new(x1, y0, z1),
+            Vec3::new(x1, y1, z1),
+            Vec3::new(x0, y1, z1),
+            Vec3::Z,
+            Vec2::new(0.0, 1.0),
+        ),
+        (
+            Vec3::new(x1, y0, z0),
+            Vec3::new(x0, y0, z0),
+            Vec3::new(x0, y1, z0),
+            Vec3::new(x1, y1, z0),
+            Vec3::NEG_Z,
+            Vec2::new(0.0, -1.0),
+        ),
+        (
+            Vec3::new(x1, y0, z1),
+            Vec3::new(x1, y0, z0),
+            Vec3::new(x1, y1, z0),
+            Vec3::new(x1, y1, z1),
+            Vec3::X,
+            Vec2::new(1.0, 0.0),
+        ),
+        (
+            Vec3::new(x0, y0, z0),
+            Vec3::new(x0, y0, z1),
+            Vec3::new(x0, y1, z1),
+            Vec3::new(x0, y1, z0),
+            Vec3::NEG_X,
+            Vec2::new(-1.0, 0.0),
+        ),
+    ];
+    for (p0, p1, p2, p3, n, outward_xz) in walls {
+        let facing = outward_xz.dot(sun_dir);
+        let side = if facing > 0.25 {
+            side_sunlit
+        } else if facing < -0.25 {
+            side_shaded
+        } else {
+            side_plain
+        };
+        buf.push_quad(p0, p1, p2, p3, n, base, base, side, side);
+    }
+}
+
 /// Twice the standard (shoelace) signed area of a polygon, treating each
 /// `Vec2` as (x, y) in the ordinary math sense (positive = counter-clockwise
 /// when x is right and y is "up" on the page). This is a plain planar
