@@ -15,6 +15,7 @@ use mf_state::{LatestUi, QualityTier, SubwayView, Theme};
 use crate::audio::{PlaySfx, Sfx};
 use crate::campaign::{self, CampaignProgress};
 use crate::config::MfConfig;
+use crate::goals::GoalsPanelOpen;
 use crate::saves::{self, SaveManager, SaveSlot};
 use crate::state::{toggle_pause, AppState, MenuScreen, PauseState, PendingInit, SimHello};
 
@@ -1186,6 +1187,7 @@ fn in_game_hud_system(
     link: Option<Res<SimLink>>,
     mut subway: ResMut<SubwayView>,
     toasts: Res<ToastLog>,
+    mut goals_panel: ResMut<GoalsPanelOpen>,
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
 ) -> Result {
@@ -1302,6 +1304,21 @@ fn in_game_hud_system(
                 if subway_resp.clicked() {
                     subway.toggle();
                     sfx.write(PlaySfx(if subway.active {
+                        Sfx::Confirm
+                    } else {
+                        Sfx::Cancel
+                    }));
+                }
+
+                thin_separator(ui);
+                let goals_button = egui::Button::new("Goals")
+                    .fill(if goals_panel.0 { accent() } else { card_bg() })
+                    .corner_radius(crate::design_system::CORNER_RADIUS);
+                let goals_resp = ui.add(goals_button);
+                hover_tick(&goals_resp, &mut hovered, &mut sfx);
+                if goals_resp.clicked() {
+                    goals_panel.0 = !goals_panel.0;
+                    sfx.write(PlaySfx(if goals_panel.0 {
                         Sfx::Confirm
                     } else {
                         Sfx::Cancel
