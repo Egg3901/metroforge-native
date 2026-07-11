@@ -47,6 +47,7 @@ use bevy::render::primitives::Aabb;
 use mf_protocol::BuildingFootprint;
 use mf_state::{CurrentCity, HeightAt, LatestFields, QualityTier, RevealState, Theme};
 
+use crate::atmosphere::CloudShadowParams;
 use crate::mesh_utils::{
     append_cuboid_cel, append_prism, append_rooftop_detail, hash01, polygon_area, MeshBuffers,
 };
@@ -102,6 +103,9 @@ impl Plugin for MfBuildingsPlugin {
                     apply_night_dim_system.in_set(crate::MfRenderSet::Dynamic),
                     apply_facade_uniforms_system.in_set(crate::MfRenderSet::Dynamic),
                     apply_reveal_system.in_set(crate::MfRenderSet::Dynamic),
+                    apply_cloud_shadow_to_buildings_system
+                        .in_set(crate::MfRenderSet::Dynamic)
+                        .after(crate::atmosphere::AtmosphereReady),
                 ),
             );
     }
@@ -306,6 +310,7 @@ fn build_buildings_system(
     quality: Res<QualityTier>,
     theme: Res<Theme>,
     day_night: Res<crate::daynight::DayNightState>,
+    cloud_shadows: Res<CloudShadowParams>,
     mut state: ResMut<BuildingsState>,
     mut dense_center: ResMut<BuildingsDenseCenter>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -787,14 +792,19 @@ fn build_buildings_system(
         },
         // Fresh material starts with reveal off; facade night/enable are
         // baked from the live day-night + tier so a mid-night Medium rebuild
-        // doesn't flash unlit windows for a frame.
+        // doesn't flash unlit windows for a frame. Cloud-shadow texture is
+        // wired from `CloudShadowParams` (may still be default Handle at first
+        // build); reveal is picked up by `apply_reveal_system` next tick since
+        // `applied_reveal_bucket` is reset below.
         extension: RevealExtension {
+            cloud_noise: Some(cloud_shadows.texture.clone()),
             facade: Vec4::new(
                 day_night.night_factor,
                 if facade_enabled { 1.0 } else { 0.0 },
                 0.0,
                 0.0,
             ),
+
             ..default()
         },
     });
@@ -1041,6 +1051,27 @@ fn apply_reveal_system(
         mat.extension.params = Vec4::new(reveal_state.strength, 0.0, 0.0, 0.0);
     }
     state.applied_reveal_bucket = Some(bucket);
+}
+
+fn apply_cloud_shadow_to_buildings_system(
+    shadows: Res<CloudShadowParams>,
+    state: Res<BuildingsState>,
+    mut materials: ResMut<Assets<BuildingMaterial>>,
+) {
+    let Some(handle) = &state.material else {
+        return;
+    };
+    if let Some(mat) = materials.get_mut(handle) {
+        mat.extension.cloud = Vec4::new(
+            shadows.offset.x,
+            shadows.offset.y,
+            shadows.strength,
+            shadows.inv_scale,
+        );
+        if mat.extension.cloud_noise.is_none() && shadows.texture != Handle::default() {
+            mat.extension.cloud_noise = Some(shadows.texture.clone());
+        }
+    }
 }
 
 #[cfg(test)]

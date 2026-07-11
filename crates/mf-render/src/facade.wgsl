@@ -8,6 +8,8 @@
 //   < ~2.5km  grid-only (floor lines + column hints)
 //   beyond    flat cel shading (identity)
 // Tier gate: `facade.y` (enabled) is 0 on Potato/Low; Medium/High set 1.
+// Also applies scrolling cloud-shadow darkening from atmosphere's 2D noise
+// (projected on world XZ), gated by `cloud.z` strength.
 
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
@@ -21,15 +23,23 @@
 // binding Vec4 fields — see RevealExtension in reveal.rs):
 //   reveal = (center_x, center_z, inner_radius, outer_radius) world space
 //   params = (reveal_strength 0..1, reserved, reserved, reserved)
+//   cloud  = (offset_u, offset_v, strength, inv_scale)
 //   facade = (night_factor 0..1, enabled 0/1, reserved, reserved)
 struct RevealUniform {
     reveal: vec4<f32>,
     params: vec4<f32>,
+    cloud: vec4<f32>,
     facade: vec4<f32>,
 }
 
 @group(2) @binding(100)
 var<uniform> reveal_uniform: RevealUniform;
+
+@group(2) @binding(101)
+var cloud_noise_texture: texture_2d<f32>;
+
+@group(2) @binding(102)
+var cloud_noise_sampler: sampler;
 
 const BAYER_4X4: array<f32, 16> = array(
     0.0 / 16.0, 8.0 / 16.0, 2.0 / 16.0, 10.0 / 16.0,
@@ -59,6 +69,17 @@ fn reveal_should_discard(world_xz: vec2<f32>, frag_xy: vec2<f32>) -> bool {
     let t_geom = smoothstep(reveal_uniform.reveal.z, reveal_uniform.reveal.w, dist);
     let t = mix(1.0, t_geom, reveal_uniform.params.x);
     return reveal_bayer_threshold(frag_xy) >= t;
+}
+
+fn cloud_shadow_factor(world_xz: vec2<f32>) -> f32 {
+    let strength = reveal_uniform.cloud.z;
+    if strength < 0.001 {
+        return 1.0;
+    }
+    let uv = world_xz * reveal_uniform.cloud.w + reveal_uniform.cloud.xy;
+    let n = textureSample(cloud_noise_texture, cloud_noise_sampler, uv).r;
+    // Soft multiply — never crush to black; city must stay readable.
+    return 1.0 - n * strength;
 }
 
 fn hash11(n: f32) -> f32 {
@@ -187,5 +208,7 @@ fn fragment(
         out.color = pbr_input.material.base_color;
     }
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+    let cloud_shadow = cloud_shadow_factor(in.world_position.xz);
+    out.color = vec4(out.color.rgb * cloud_shadow, out.color.a);
     return out;
 }

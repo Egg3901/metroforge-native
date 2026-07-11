@@ -71,14 +71,12 @@ pub struct QualityKnobs {
     /// off on Medium/High where draw distance is unlimited or generous
     /// enough that fog would just look like a boring haze over open sky.
     pub fog: Option<(f32, f32)>,
-    /// When `true`, scrolling volumetric fog/cloud + distance haze are
-    /// eligible (Medium/High). Potato/Low keep this off — volumetric fog
-    /// needs shadow maps, which those tiers disable. The player can still
-    /// turn the effect off via [`crate::WeatherEffects`] even when this is
-    /// `true`.
+    /// When `true`, soft cloud cards + scrolling ground shadows are eligible
+    /// (Medium/High). Potato/Low keep this off. The player can still turn the
+    /// effect off via [`crate::WeatherEffects`] even when this is `true`.
     pub atmosphere_enabled: bool,
-    /// Raymarch step count for [`bevy::pbr::VolumetricFog`] when atmosphere
-    /// is active. Higher = less banding, more GPU.
+    /// Reserved after the billboard rewrite (was volumetric raymarch steps).
+    /// Kept so quality tables stay stable; unused by the renderer.
     pub atmosphere_fog_steps: u32,
     /// Stylized water shader tier (mf-render `water.rs`):
     /// - `0` = flat vertex-color water baked into the terrain mesh (Potato;

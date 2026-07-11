@@ -254,14 +254,20 @@ pub(crate) fn apply_day_night_system(
         state.applied_night_bucket = Some(night_bucket);
         let day_color = palette::sky_day();
         let night_color = palette::sky_night();
-        // Warm the clear color slightly through twilight so dusk isn't a
-        // straight white→navy lerp (pairs with atmosphere's golden fog).
+        // Warm the clear color through twilight AND low-sun golden hour so
+        // dusk/dawn aren't a straight white→navy lerp (pairs with atmosphere).
         let twilight = {
             let t = 1.0 - ((n - 0.5).abs() * 2.0);
             t.clamp(0.0, 1.0).powf(1.2)
         };
-        let dusk = Color::srgb(0.92, 0.72, 0.55);
-        clear_color.0 = day_color.mix(&dusk, twilight * 0.35).mix(&night_color, n);
+        let golden = {
+            let low_sun = (1.0 - (state.sun_elevation / 0.35).clamp(0.0, 1.0)).clamp(0.0, 1.0);
+            let not_deep_night = (1.0 - ((n - 0.55).max(0.0) / 0.45)).clamp(0.0, 1.0);
+            low_sun * not_deep_night
+        };
+        let warm = twilight.max(golden);
+        let dusk = Color::srgb(1.0, 0.72, 0.48);
+        clear_color.0 = day_color.mix(&dusk, warm * 0.55).mix(&night_color, n);
         // Distance fog (Potato/Low, quality sweep in lib.rs) must track the
         // clear color exactly - including this same twilight/night lerp and
         // the active theme - or the horizon shows a hard seam where fogged
@@ -271,9 +277,9 @@ pub(crate) fn apply_day_night_system(
             fog.color = clear_color.0;
         }
 
-        // Cool ambient at night, warm kiss at twilight.
+        // Cool ambient at night, warm kiss at golden hour / twilight.
         ambient.color = Color::WHITE
-            .mix(&Color::srgb(1.0, 0.88, 0.75), twilight * 0.25)
+            .mix(&Color::srgb(1.0, 0.82, 0.62), warm * 0.40)
             .mix(&Color::srgb(0.70, 0.78, 1.0), n * 0.45);
         ambient.brightness = 550.0 * (1.0 - n * 0.85);
     }
@@ -312,11 +318,18 @@ pub(crate) fn apply_day_night_system(
             1.0
         };
         light.illuminance = day_lux * night_dim;
+        let twilight = {
+            let t = 1.0 - ((n - 0.5).abs() * 2.0);
+            t.clamp(0.0, 1.0).powf(1.2)
+        };
+        let golden = {
+            let low_sun = (1.0 - (elev / 0.35).clamp(0.0, 1.0)).clamp(0.0, 1.0);
+            let not_deep_night = (1.0 - ((n - 0.55).max(0.0) / 0.45)).clamp(0.0, 1.0);
+            low_sun * not_deep_night
+        };
+        let warm = twilight.max(golden);
         light.color = Color::srgb(1.0, 0.96, 0.88)
-            .mix(&Color::srgb(1.0, 0.78, 0.55), {
-                let t = 1.0 - ((n - 0.5).abs() * 2.0);
-                t.clamp(0.0, 1.0).powf(1.2) * 0.45
-            })
+            .mix(&Color::srgb(1.0, 0.70, 0.42), warm * 0.70)
             .mix(&Color::srgb(0.55, 0.65, 0.9), n);
         light.shadows_enabled = shadows_ok;
         light.shadow_depth_bias = depth_bias;
