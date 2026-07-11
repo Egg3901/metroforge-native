@@ -19,9 +19,14 @@ use bevy::pbr::{
 };
 use bevy::prelude::*;
 
-use mf_state::{LatestUi, QualityTier, Theme};
+use mf_state::{AttractLighting, LatestUi, QualityTier, Theme};
 
 use crate::palette;
+
+/// Attract-mode golden hour (local solar time). Low sun → long shadows on
+/// Medium+; warm twilight tint on clear/ambient/sun color. Chosen so
+/// `night_factor` sits in the dusk band without extinguishing shadows.
+const ATTRACT_GOLDEN_HOUR: f32 = 19.0;
 
 /// Mirrors `metroforge/src/core/constants.ts`'s `TICKS_PER_DAY` (spec: "each
 /// tick is a 50ms host step; `TICKS_PER_DAY = 1200`").
@@ -143,6 +148,7 @@ fn compute_day_night_system(
     ui: Res<LatestUi>,
     quality: Res<QualityTier>,
     theme: Res<Theme>,
+    attract: Res<AttractLighting>,
     mut state: ResMut<DayNightState>,
 ) {
     // Dark/Purple ARE the night rig promoted to a standing theme (issue
@@ -154,6 +160,15 @@ fn compute_day_night_system(
     if *theme != Theme::Light {
         state.target_hour = 0.0;
         state.target_night_factor = 1.0;
+        return;
+    }
+    // Title-screen attract diorama: lock golden hour regardless of sim
+    // clock (and ahead of Potato's fixed-noon path) so the backdrop stays
+    // warm/moody while the city sim races at 30× behind the menu.
+    if attract.active {
+        let (hour, night) = attract_golden_hour_targets();
+        state.target_hour = hour;
+        state.target_night_factor = night;
         return;
     }
     if !quality.knobs().day_night_enabled {
@@ -179,6 +194,15 @@ fn compute_day_night_system(
     let elevation = (((hour - 6.0) / 12.0) * PI).sin();
     state.target_hour = hour;
     state.target_night_factor = (-elevation * 1.2).clamp(0.0, 1.0);
+}
+
+/// Pure golden-hour targets for attract mode. Exposed to unit tests so the
+/// dusk-band / shadow-on invariants don't drift silently.
+fn attract_golden_hour_targets() -> (f32, f32) {
+    let hour = ATTRACT_GOLDEN_HOUR;
+    let elevation = (((hour - 6.0) / 12.0) * PI).sin();
+    let night = (-elevation * 1.2).clamp(0.0, 1.0);
+    (hour, night)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -396,5 +420,20 @@ mod tests {
     #[allow(clippy::assertions_on_constants)]
     fn shadow_hysteresis_band_is_ordered() {
         assert!(SHADOW_ON_NIGHT < SHADOW_OFF_NIGHT);
+    }
+
+    #[test]
+    fn attract_golden_hour_is_in_dusk_band_with_shadows_still_on() {
+        let (hour, night) = attract_golden_hour_targets();
+        assert!((hour - ATTRACT_GOLDEN_HOUR).abs() < 1e-6);
+        // Warm twilight kiss without extinguishing Medium+ shadows.
+        assert!(
+            (0.15..0.55).contains(&night),
+            "expected dusk-band night_factor, got {night}"
+        );
+        assert!(
+            night < SHADOW_ON_NIGHT,
+            "golden hour must keep shadows latched on (night={night})"
+        );
     }
 }

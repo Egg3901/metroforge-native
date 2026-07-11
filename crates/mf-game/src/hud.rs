@@ -309,8 +309,9 @@ struct SettingsControls<'w> {
 fn connecting_hud_system(mut contexts: EguiContexts, reconnect: Res<ReconnectState>) -> Result {
     let ctx = contexts.ctx_mut()?;
     egui::CentralPanel::default()
-        .frame(egui::Frame::default().fill(crate::design_system::menu_wash()))
+        .frame(egui::Frame::default().fill(egui::Color32::TRANSPARENT))
         .show(ctx, |ui| {
+            crate::design_system::paint_menu_gradient_scrim(ui.painter(), ui.max_rect());
             ui.vertical_centered(|ui| {
                 ui.add_space((ui.available_height() * 0.28).max(24.0));
                 draw_logo(ui, 56.0);
@@ -748,10 +749,12 @@ fn title_screen_ui(
         });
 
     // Transparent central panel: the attract-mode diorama is the brand
-    // surface. Opaque fill hid the white-city entirely (design audit).
+    // surface. A horizontal gradient scrim keeps the menu column readable
+    // without milking out the city on the far side.
     egui::CentralPanel::default()
-        .frame(egui::Frame::default().fill(crate::design_system::menu_wash()))
+        .frame(egui::Frame::default().fill(egui::Color32::TRANSPARENT))
         .show(ctx, |ui| {
+            crate::design_system::paint_menu_gradient_scrim(ui.painter(), ui.max_rect());
             ui.set_opacity(fade);
             ui.vertical_centered(|ui| {
                 ui.add_space((ui.available_height() * 0.24).max(crate::design_system::SPACE_LG));
@@ -938,11 +941,12 @@ fn city_select_screen_ui(
             });
         });
 
-    // Soft wash only — city cards carry their own fills so the diorama
+    // Soft gradient wash — city cards carry their own fills so the diorama
     // still reads behind the grid (brand-first menu composition).
     egui::CentralPanel::default()
-        .frame(egui::Frame::default().fill(crate::design_system::menu_wash()))
+        .frame(egui::Frame::default().fill(egui::Color32::TRANSPARENT))
         .show(ctx, |ui| {
+            crate::design_system::paint_menu_gradient_scrim(ui.painter(), ui.max_rect());
             ui.set_opacity(fade);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -1216,8 +1220,9 @@ fn loading_hud_system(
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     egui::CentralPanel::default()
-        .frame(egui::Frame::default().fill(crate::design_system::menu_wash()))
+        .frame(egui::Frame::default().fill(egui::Color32::TRANSPARENT))
         .show(ctx, |ui| {
+            crate::design_system::paint_menu_gradient_scrim(ui.painter(), ui.max_rect());
             ui.vertical_centered(|ui| {
                 ui.add_space((ui.available_height() * 0.28).max(24.0));
                 draw_logo(ui, 48.0);

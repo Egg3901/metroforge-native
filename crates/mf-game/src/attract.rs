@@ -1,13 +1,15 @@
 //! Main-menu "live diorama" (ship-plan #25, v0.4): while the player sits at
 //! `AppState::MainMenu`, the real city (default preset, per `PendingInit`)
-//! streams in from the sidecar and the camera slowly orbits over it behind
-//! the menu, instead of the menu sitting over a static/empty scene.
+//! streams in from the sidecar and a slow attract-mode camera path drifts
+//! over it behind the menu — low-altitude oblique vantage points that keep
+//! buildings volumetric, never a top-down paper-map framing.
 //!
 //! Two responsibilities live here, bundled per this wave's mission scope:
 //!
 //! 1. Kick off (and re-kick-off on a city change) an `init` for the
-//!    MainMenu's preview city, and drive a slow cinematic camera orbit over
-//!    it — [`AttractState`] + [`MfAttractPlugin`]'s `MainMenu`-gated systems.
+//!    MainMenu's preview city, drive the attract camera path, and lock
+//!    golden-hour lighting via [`mf_state::AttractLighting`] —
+//!    [`AttractState`] + [`MfAttractPlugin`]'s `MainMenu`-gated systems.
 //! 2. Set the OS window icon once at startup (unrelated feature-wise, just
 //!    riding along in the same wave) — [`set_window_icon_system`].
 //!
@@ -19,15 +21,20 @@
 //! before writing this one. Writing only `CameraRig`'s `_goal` fields while
 //! in `MainMenu` (the pattern `map_mode.rs` uses) would therefore do
 //! nothing visible: nothing chases those goals or re-derives the camera's
-//! `Transform` outside `InGame`. `camera.rs` is out of this wave's
-//! ownership (see the mission brief), so rather than extending its
-//! `run_if`s, this module carries its own miniature goal-chase +
-//! transform-derivation for the `MainMenu` orbit only — mirroring the exact
-//! precedent `reveal_input.rs` already set for `ease_strength` (a private
-//! copy of `camera.rs`'s smoothing formula, "kept as its own copy here
-//! since that one is private to `camera.rs`"). The two easers can never
-//! fight: `camera.rs`'s versions only run `InGame`, this module's only run
-//! `MainMenu`, and the states are mutually exclusive.
+//! `Transform` outside `InGame`. This module carries its own miniature
+//! goal-chase + transform-derivation for the `MainMenu` path only —
+//! mirroring the exact precedent `reveal_input.rs` already set for
+//! `ease_strength`. The two easers can never fight: `camera.rs`'s versions
+//! only run `InGame`, this module's only run `MainMenu`, and the states are
+//! mutually exclusive.
+//!
+//! ## Attract camera path
+//!
+//! Medium+ tiers crossfade between a handful of low-oblique vantage points
+//! every ~20s, with a slow yaw drift inside each hold. Distance is clamped
+//! below the tier's fog / building-draw envelope so the horizon never shows
+//! raw unfogged terrain. Potato stays dirt cheap: one static framing, no
+//! drift, still clamped so buildings fill the screen.
 //!
 //! ## Init / re-init flow
 //!
@@ -43,23 +50,6 @@
 //!   the city is already streamed in, so it skips the redundant `init`
 //!   (which would otherwise throw away everything attract-mode streamed)
 //!   and just normalizes the clock back down from attract's 30x.
-//!
-//! ## Integration handoff
-//!
-//! `MfAttractPlugin` is NOT added to `main.rs`'s `.add_plugins(...)` tuple
-//! yet — that tuple is a known hotspot several parallel v0.4 worktrees touch
-//! this same wave (see `map_mode.rs`'s identical handoff note from v0.3),
-//! and this wave's ownership was scoped to `main.rs`'s `mod attract;` line
-//! only. Wiring `MfAttractPlugin` into the tuple is left for integration.
-//! Every cross-module read here uses `Option<Res<_>>`/`Option<ResMut<_>>`
-//! (mirroring `state.rs`'s own `Option<Res<SimLink>>` convention) precisely
-//! so the rest of the app keeps compiling and running correctly even before
-//! that wiring lands — nothing panics on a missing `AttractState`.
-//!
-//! `#![allow(dead_code)]` below covers the "never constructed"/"never used"
-//! cascade this causes until that wiring lands — identical reasoning (and
-//! precedent) to `map_mode.rs`'s own module doc for the same situation.
-#![allow(dead_code)]
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -67,7 +57,7 @@ use bevy::winit::WinitWindows;
 use mf_net::SimLink;
 use mf_protocol::{InitPayload, SetSpeedPayload, ToSim};
 use mf_render::BuildingsDenseCenter;
-use mf_state::{CurrentCity, HeightAt};
+use mf_state::{AttractLighting, CurrentCity, HeightAt, QualityTier};
 
 use crate::camera::CameraRig;
 use crate::state::{AppState, PendingInit, SimHello};
@@ -82,30 +72,91 @@ pub struct AttractState {
     pub inited_preset: Option<String>,
 }
 
-/// Cinematic orbit yaw rate (radians/second). Slow by design — this is a
-/// background diorama the player glances at while reading the menu, not
-/// something they consciously track the way they would the RTS camera's own
-/// orbit drag. A full revolution takes `TAU / ATTRACT_YAW_RATE` ≈ 209s.
-const ATTRACT_YAW_RATE: f32 = 0.03;
-/// Pitch goal: a clear elevated 3/4 view over the skyline (same convention
-/// as `verify.rs`'s `frame_elevated`, chosen independently here since that
-/// function is private to `verify.rs`).
-const ATTRACT_PITCH_GOAL: f32 = 0.5;
-const ATTRACT_DISTANCE_GOAL: f32 = 2200.0;
-/// Goal-chase settle rate for pitch/distance/target (see
+/// Per-visit camera path progress. Reset whenever attract re-inits a city so
+/// a fresh preset doesn't inherit a mid-crossfade from the previous one.
+#[derive(Resource, Default)]
+struct AttractCameraState {
+    /// Seconds into the current vantage hold (including its trailing crossfade).
+    phase_t: f32,
+    /// Index of the vantage currently held / fading *from*.
+    index: usize,
+    /// Potato: latch after the first static frame so we don't keep writing.
+    potato_framed: bool,
+}
+
+/// One low-altitude oblique framing relative to [`BuildingsDenseCenter`].
+/// Pitch stays well below a top-down map angle so facades stay volumetric.
+#[derive(Clone, Copy)]
+struct AttractVantage {
+    target_offset: Vec2,
+    yaw: f32,
+    pitch: f32,
+    /// Nominal dolly distance before the per-tier fog/draw clamp.
+    distance: f32,
+}
+
+/// Four skyline vantages; Medium+ crossfades through them. Potato uses only
+/// the first (static). Distances are intentionally close — elevated 2 km
+/// pull-backs read as a flat paper map at the horizon.
+const ATTRACT_VANTAGES: [AttractVantage; 4] = [
+    AttractVantage {
+        target_offset: Vec2::ZERO,
+        yaw: 0.55,
+        pitch: 0.30,
+        distance: 820.0,
+    },
+    AttractVantage {
+        target_offset: Vec2::new(160.0, -110.0),
+        yaw: 1.95,
+        pitch: 0.26,
+        distance: 700.0,
+    },
+    AttractVantage {
+        target_offset: Vec2::new(-130.0, 180.0),
+        yaw: 3.55,
+        pitch: 0.34,
+        distance: 980.0,
+    },
+    AttractVantage {
+        target_offset: Vec2::new(95.0, 140.0),
+        yaw: 5.05,
+        pitch: 0.28,
+        distance: 760.0,
+    },
+];
+
+/// Hold each vantage this long before crossfading to the next.
+const ATTRACT_HOLD_SECS: f32 = 20.0;
+/// Trailing portion of each hold spent blending into the next vantage.
+const ATTRACT_CROSSFADE_SECS: f32 = 4.0;
+/// Slow yaw drift (rad/s) inside a hold — enough to feel alive, not dizzy.
+const ATTRACT_DRIFT_YAW_RATE: f32 = 0.012;
+/// Goal-chase settle rate for pitch/distance/target/yaw (see
 /// `attract_smooth`/`attract_smooth_yaw`): deliberately gentler than
 /// `camera.rs`'s own `ORBIT_SMOOTH_RATE`/`DOLLY_SMOOTH_RATE` (~150-250ms
-/// settle) — a dreamy multi-second drift into the orbit framing reads as
+/// settle) — a dreamy multi-second drift into the framing reads as
 /// "cinematic," where the RTS camera's snappy settle would read as a jarring
 /// snap for a menu background nobody is actively steering.
 const ATTRACT_SMOOTH_RATE: f32 = 2.0;
+/// Fraction of the fog-end / building-draw envelope the camera may use.
+/// Staying well inside keeps the horizon inside fog (Potato/Low) or before
+/// hard building culls (Medium), so raw unfogged terrain never shows.
+const ATTRACT_ENVELOPE_FRACTION: f32 = 0.42;
 
 pub struct MfAttractPlugin;
 
 impl Plugin for MfAttractPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AttractState>()
+            .init_resource::<AttractCameraState>()
             .add_systems(OnEnter(AppState::MainMenu), attract_init_on_enter_system)
+            .add_systems(
+                OnEnter(AppState::MainMenu),
+                attract_lighting_on_enter_system,
+            )
+            // Keep golden hour through Loading (still showing the diorama);
+            // release once gameplay owns the clock.
+            .add_systems(OnEnter(AppState::InGame), attract_lighting_on_exit_system)
             .add_systems(
                 Update,
                 (attract_watch_preset_system, attract_orbit_system)
@@ -113,6 +164,14 @@ impl Plugin for MfAttractPlugin {
             )
             .add_systems(Startup, set_window_icon_system);
     }
+}
+
+fn attract_lighting_on_enter_system(mut attract: ResMut<AttractLighting>) {
+    attract.active = true;
+}
+
+fn attract_lighting_on_exit_system(mut attract: ResMut<AttractLighting>) {
+    attract.active = false;
 }
 
 /// `MF_AUTOSTART` (see `state.rs`'s `autostart_system`) owns the whole
@@ -181,6 +240,7 @@ fn attract_init_on_enter_system(
     hello: Res<SimHello>,
     pending: Res<PendingInit>,
     mut attract: ResMut<AttractState>,
+    mut cam: ResMut<AttractCameraState>,
     link: Option<Res<SimLink>>,
 ) {
     if !should_attract_init(
@@ -196,6 +256,7 @@ fn attract_init_on_enter_system(
     };
     send_attract_init(link, &pending.preset_key);
     attract.inited_preset = Some(pending.preset_key.clone());
+    *cam = AttractCameraState::default();
 }
 
 /// Watches for the player picking a different city in the `MainMenu` combo
@@ -213,6 +274,7 @@ fn attract_init_on_enter_system(
 fn attract_watch_preset_system(
     pending: Res<PendingInit>,
     mut attract: ResMut<AttractState>,
+    mut cam: ResMut<AttractCameraState>,
     link: Option<Res<SimLink>>,
 ) {
     if !should_attract_reinit(
@@ -227,14 +289,72 @@ fn attract_watch_preset_system(
     };
     send_attract_init(link, &pending.preset_key);
     attract.inited_preset = Some(pending.preset_key.clone());
+    *cam = AttractCameraState::default();
 }
 
-/// Advances a yaw goal by `dt * ATTRACT_YAW_RATE`, wrapped into `[0, TAU)`
-/// rather than accumulating unbounded — an idle menu left open for a long
-/// session must not let this grow into an `f32` precision problem. Pure so
-/// the wrap behavior is directly unit-testable.
-fn advance_yaw_goal(current_goal: f32, dt: f32) -> f32 {
-    (current_goal + dt * ATTRACT_YAW_RATE).rem_euclid(std::f32::consts::TAU)
+/// Max camera distance for attract framing on this tier: a fraction of the
+/// fog-end (Potato/Low) or building-draw distance (Medium), so the look
+/// stays inside the envelope that hides pop-in / raw horizon terrain.
+fn attract_distance_cap(quality: QualityTier) -> f32 {
+    let knobs = quality.knobs();
+    let envelope = knobs
+        .fog
+        .map(|(_, end)| end)
+        .or(knobs.building_draw_distance_m)
+        .unwrap_or(14_000.0);
+    envelope * ATTRACT_ENVELOPE_FRACTION
+}
+
+fn smoothstep01(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Crossfade weight inside a hold: 0 for most of the hold, then eases 0→1
+/// across the trailing [`ATTRACT_CROSSFADE_SECS`].
+fn crossfade_weight(phase_t: f32) -> f32 {
+    let fade_start = (ATTRACT_HOLD_SECS - ATTRACT_CROSSFADE_SECS).max(0.0);
+    if phase_t <= fade_start {
+        0.0
+    } else {
+        smoothstep01((phase_t - fade_start) / ATTRACT_CROSSFADE_SECS)
+    }
+}
+
+/// Advance path clock; returns the (possibly wrapped) phase and vantage index.
+fn advance_attract_phase(phase_t: f32, index: usize, dt: f32) -> (f32, usize) {
+    let mut t = phase_t + dt;
+    let mut i = index;
+    let n = ATTRACT_VANTAGES.len();
+    while t >= ATTRACT_HOLD_SECS {
+        t -= ATTRACT_HOLD_SECS;
+        i = (i + 1) % n;
+    }
+    (t, i)
+}
+
+/// Resolve the current path sample: blended vantage goals + optional yaw drift.
+fn sample_attract_path(
+    phase_t: f32,
+    index: usize,
+    dense_center: Vec2,
+    distance_cap: f32,
+    drift: bool,
+) -> (Vec2, f32, f32, f32) {
+    let n = ATTRACT_VANTAGES.len();
+    let from = &ATTRACT_VANTAGES[index % n];
+    let to = &ATTRACT_VANTAGES[(index + 1) % n];
+    let w = crossfade_weight(phase_t);
+    let target = dense_center + from.target_offset.lerp(to.target_offset, w);
+    let mut yaw = from.yaw + shortest_angle_delta(from.yaw, to.yaw) * w;
+    if drift {
+        // Drift only during the hold proper so the crossfade itself stays clean.
+        let drift_t = phase_t.min((ATTRACT_HOLD_SECS - ATTRACT_CROSSFADE_SECS).max(0.0));
+        yaw += drift_t * ATTRACT_DRIFT_YAW_RATE;
+    }
+    let pitch = from.pitch + (to.pitch - from.pitch) * w;
+    let distance = (from.distance + (to.distance - from.distance) * w).min(distance_cap);
+    (target, yaw, pitch, distance)
 }
 
 /// Frame-rate-independent exponential smoothing, identical formula to
@@ -252,12 +372,8 @@ fn attract_smooth_vec2(value: Vec2, goal: Vec2, rate: f32, dt: f32) -> Vec2 {
 }
 
 /// Shortest signed angular delta from `from` to `to` (radians), wrapped into
-/// `(-PI, PI]`. Needed because the yaw goal wraps at `TAU` (see
-/// `advance_yaw_goal`): naively easing `value` toward a goal that just
-/// wrapped from ~`TAU` back to ~`0` would compute a huge NEGATIVE delta and
-/// visibly spin the camera backward for a frame. Taking the shortest path
-/// means the wrap is invisible — the eased value just keeps advancing
-/// forward through it.
+/// `(-PI, PI]`. Needed because vantage yaws span the circle: naively easing
+/// across a wrap would spin the camera the long way.
 fn shortest_angle_delta(from: f32, to: f32) -> f32 {
     let tau = std::f32::consts::TAU;
     let raw = to - from;
@@ -288,18 +404,17 @@ fn apply_attract_transform(rig: &CameraRig, height_at: &HeightAt, transform: &mu
     *transform = transform.looking_at(target_world, Vec3::Y);
 }
 
-/// Drives the slow cinematic orbit while `MainMenu` is showing city data
-/// (`CurrentCity.masks_complete()`): advances the yaw goal, points the
-/// target at `mf_render`'s `BuildingsDenseCenter` (the interesting part of
-/// the city, same reasoning `verify.rs` uses for its own framing), and eases
-/// `CameraRig` + the actual `Transform` toward that framing every frame (see
-/// module doc for why this module carries its own easer/transform-deriver
-/// rather than relying on `camera.rs`'s `InGame`-only systems).
+/// Drives the attract camera path while `MainMenu` is showing city data
+/// (`CurrentCity.masks_complete()`): samples the vantage path (or a static
+/// Potato frame), points at `BuildingsDenseCenter`, and eases `CameraRig` +
+/// the actual `Transform` toward that framing every frame.
 fn attract_orbit_system(
     time: Res<Time>,
     city: Res<CurrentCity>,
     dense_center: Res<BuildingsDenseCenter>,
     height_at: Res<HeightAt>,
+    quality: Res<QualityTier>,
+    mut cam: ResMut<AttractCameraState>,
     mut rigs: Query<(&mut CameraRig, &mut Transform)>,
 ) {
     if !city.masks_complete() {
@@ -309,16 +424,42 @@ fn attract_orbit_system(
         return;
     };
     let dt = time.delta_secs();
+    let cap = attract_distance_cap(*quality);
+    let potato = matches!(*quality, QualityTier::Potato);
 
-    rig.yaw_goal = advance_yaw_goal(rig.yaw_goal, dt);
-    rig.pitch_goal = ATTRACT_PITCH_GOAL;
-    rig.distance_goal = ATTRACT_DISTANCE_GOAL;
-    rig.target_goal = dense_center.0;
+    let (target, yaw, pitch, distance) = if potato {
+        if cam.potato_framed {
+            // Static: still re-apply transform in case HeightAt refined, but
+            // don't advance the path or chase new goals.
+            apply_attract_transform(&rig, &height_at, &mut transform);
+            return;
+        }
+        cam.potato_framed = true;
+        sample_attract_path(0.0, 0, dense_center.0, cap, false)
+    } else {
+        let (phase_t, index) = advance_attract_phase(cam.phase_t, cam.index, dt);
+        cam.phase_t = phase_t;
+        cam.index = index;
+        sample_attract_path(phase_t, index, dense_center.0, cap, true)
+    };
 
-    rig.yaw = attract_smooth_yaw(rig.yaw, rig.yaw_goal, ATTRACT_SMOOTH_RATE, dt);
-    rig.pitch = attract_smooth(rig.pitch, rig.pitch_goal, ATTRACT_SMOOTH_RATE, dt);
-    rig.distance = attract_smooth(rig.distance, rig.distance_goal, ATTRACT_SMOOTH_RATE, dt);
-    rig.target = attract_smooth_vec2(rig.target, rig.target_goal, ATTRACT_SMOOTH_RATE, dt);
+    rig.yaw_goal = yaw;
+    rig.pitch_goal = pitch;
+    rig.distance_goal = distance;
+    rig.target_goal = target;
+
+    if potato {
+        // Snap once so Potato pays no easing cost and never drifts.
+        rig.yaw = yaw;
+        rig.pitch = pitch;
+        rig.distance = distance;
+        rig.target = target;
+    } else {
+        rig.yaw = attract_smooth_yaw(rig.yaw, rig.yaw_goal, ATTRACT_SMOOTH_RATE, dt);
+        rig.pitch = attract_smooth(rig.pitch, rig.pitch_goal, ATTRACT_SMOOTH_RATE, dt);
+        rig.distance = attract_smooth(rig.distance, rig.distance_goal, ATTRACT_SMOOTH_RATE, dt);
+        rig.target = attract_smooth_vec2(rig.target, rig.target_goal, ATTRACT_SMOOTH_RATE, dt);
+    }
 
     apply_attract_transform(&rig, &height_at, &mut transform);
 }
@@ -515,34 +656,85 @@ mod tests {
         ));
     }
 
-    // --- yaw goal wrap -------------------------------------------------------
+    // --- path / envelope ----------------------------------------------------
 
     #[test]
-    fn yaw_goal_advances_by_rate_times_dt() {
-        let next = advance_yaw_goal(1.0, 2.0);
-        assert!((next - (1.0 + 2.0 * ATTRACT_YAW_RATE)).abs() < 1e-6);
+    fn distance_cap_stays_inside_potato_fog_end() {
+        let cap = attract_distance_cap(QualityTier::Potato);
+        let fog_end = QualityTier::Potato.knobs().fog.unwrap().1;
+        assert!(cap < fog_end);
+        assert!((cap - fog_end * ATTRACT_ENVELOPE_FRACTION).abs() < 1e-3);
     }
 
     #[test]
-    fn yaw_goal_wraps_past_tau_back_into_zero_tau_range() {
-        let tau = std::f32::consts::TAU;
-        let next = advance_yaw_goal(tau - 0.01, 1.0); // + 0.03 rad crosses TAU
-        assert!(
-            (0.0..tau).contains(&next),
-            "goal {next} not wrapped into [0, TAU)"
+    fn distance_cap_uses_building_draw_when_fog_absent() {
+        let cap = attract_distance_cap(QualityTier::Medium);
+        let draw = QualityTier::Medium
+            .knobs()
+            .building_draw_distance_m
+            .unwrap();
+        assert!((cap - draw * ATTRACT_ENVELOPE_FRACTION).abs() < 1e-3);
+    }
+
+    #[test]
+    fn sampled_distance_never_exceeds_cap() {
+        let cap = 500.0;
+        let (_, _, _, d) = sample_attract_path(0.0, 0, Vec2::ZERO, cap, false);
+        assert!(d <= cap);
+        // Mid-crossfade should also respect the cap.
+        let mid = ATTRACT_HOLD_SECS - ATTRACT_CROSSFADE_SECS * 0.5;
+        let (_, _, _, d2) = sample_attract_path(mid, 0, Vec2::ZERO, cap, true);
+        assert!(d2 <= cap);
+    }
+
+    #[test]
+    fn crossfade_weight_is_zero_during_hold_and_one_at_end() {
+        assert_eq!(crossfade_weight(0.0), 0.0);
+        assert_eq!(
+            crossfade_weight(ATTRACT_HOLD_SECS - ATTRACT_CROSSFADE_SECS),
+            0.0
         );
-        // And it's the expected small positive remainder, not some other
-        // value entirely.
-        assert!((next - (ATTRACT_YAW_RATE - 0.01)).abs() < 1e-5);
+        assert!((crossfade_weight(ATTRACT_HOLD_SECS) - 1.0).abs() < 1e-5);
     }
 
     #[test]
-    fn yaw_goal_never_grows_unbounded_over_many_steps() {
-        let tau = std::f32::consts::TAU;
-        let mut goal = 0.0_f32;
-        for _ in 0..100_000 {
-            goal = advance_yaw_goal(goal, 1.0 / 60.0);
-            assert!((0.0..tau).contains(&goal));
+    fn advance_phase_wraps_to_next_vantage_after_hold() {
+        let (t, i) = advance_attract_phase(ATTRACT_HOLD_SECS - 0.1, 0, 0.2);
+        assert_eq!(i, 1);
+        assert!((t - 0.1).abs() < 1e-5);
+    }
+
+    #[test]
+    fn sample_at_hold_start_matches_from_vantage() {
+        let (target, yaw, pitch, distance) =
+            sample_attract_path(0.0, 0, Vec2::new(10.0, 20.0), 10_000.0, false);
+        let v = &ATTRACT_VANTAGES[0];
+        assert!((target - (Vec2::new(10.0, 20.0) + v.target_offset)).length() < 1e-4);
+        assert!((yaw - v.yaw).abs() < 1e-5);
+        assert!((pitch - v.pitch).abs() < 1e-5);
+        assert!((distance - v.distance).abs() < 1e-5);
+    }
+
+    #[test]
+    fn sample_at_hold_end_matches_next_vantage() {
+        let (target, yaw, pitch, distance) =
+            sample_attract_path(ATTRACT_HOLD_SECS, 0, Vec2::ZERO, 10_000.0, false);
+        let v = &ATTRACT_VANTAGES[1];
+        assert!((target - v.target_offset).length() < 1e-3);
+        assert!((yaw - v.yaw).abs() < 1e-4);
+        assert!((pitch - v.pitch).abs() < 1e-4);
+        assert!((distance - v.distance).abs() < 1e-3);
+    }
+
+    #[test]
+    fn vantage_pitches_stay_oblique_not_top_down() {
+        for v in &ATTRACT_VANTAGES {
+            // ~0.22..0.40 rad keeps facades volumetric; 0.5+ reads as a map.
+            assert!(
+                (0.20..0.40).contains(&v.pitch),
+                "pitch {} outside oblique band",
+                v.pitch
+            );
         }
     }
 
@@ -551,9 +743,6 @@ mod tests {
     #[test]
     fn shortest_angle_delta_is_small_across_the_tau_wrap() {
         let tau = std::f32::consts::TAU;
-        // value just below TAU, goal just above 0 (having wrapped) — the
-        // real angular distance is tiny (going forward), not almost a full
-        // circle backward.
         let delta = shortest_angle_delta(tau - 0.01, 0.02);
         assert!(delta > 0.0, "expected forward progress, got {delta}");
         assert!(
@@ -572,11 +761,8 @@ mod tests {
     fn attract_smooth_yaw_advances_forward_across_a_wrap_without_snapping_back() {
         let tau = std::f32::consts::TAU;
         let value = tau - 0.01;
-        let goal = 0.02; // goal has wrapped past TAU back near 0
+        let goal = 0.02;
         let next = attract_smooth_yaw(value, goal, ATTRACT_SMOOTH_RATE, 1.0 / 60.0);
-        // Continuing forward past TAU (possibly wrapping itself) is fine;
-        // jumping backward toward ~3.14 (halfway around) would indicate the
-        // naive-difference bug this function exists to avoid.
         let forward_progress = if next < value {
             next + tau - value
         } else {
