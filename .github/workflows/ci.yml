@@ -57,6 +57,56 @@ jobs:
           manifest-path: metroforge-native/Cargo.toml
           command: check advisories bans licenses sources
 
+  # PR-time Windows cross-compile CHECK (#107). The host `rust` job is
+  # Linux-only, so `#[cfg(windows)]` paths (e.g. the JobHandle Send/Sync
+  # break in #100) only ever compiled in release.yml on tag and reached
+  # master undetected. A `cargo xwin check` is much cheaper than the full
+  # build release.yml does, and catches those breaks at PR time. The xwin
+  # tool + Windows SDK cache is shared with release.yml via the same key.
+  windows-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout metroforge-native
+        uses: actions/checkout@v4
+        with:
+          path: metroforge-native
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: metroforge-native
+
+      # Mirror release.yml's cargo-xwin cache (same key) so PR checks reuse
+      # the MSVC CRT/Windows SDK the release job already downloaded.
+      - name: Cache cargo-xwin tool + Windows SDK + cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-xwin
+            ~/.cargo/registry
+            ~/.cache/cargo-xwin
+          key: ubuntu-cargo-xwin-v1-${{ hashFiles('metroforge-native/Cargo.lock') }}
+          restore-keys: |
+            ubuntu-cargo-xwin-v1-
+
+      - name: Install cross-compile toolchain and Bevy Linux system deps
+        run: sudo apt-get update && sudo apt-get install -y clang llvm lld libasound2-dev libudev-dev pkg-config libwayland-dev
+
+      - name: Add Windows rustup target
+        run: rustup target add x86_64-pc-windows-msvc
+
+      - name: Install cargo-xwin
+        run: command -v cargo-xwin || cargo install cargo-xwin
+
+      - name: cargo xwin check --workspace (windows)
+        working-directory: metroforge-native
+        run: cargo xwin check --workspace -j 4 --target x86_64-pc-windows-msvc
+
   # Optional: kill the sidecar mid-session and assert the client recovers
   # in place (MF_TEST_KILL_SIDECAR). Continues on error so a missing/broken
   # sidecar checkout never reds the required `rust` job — flip

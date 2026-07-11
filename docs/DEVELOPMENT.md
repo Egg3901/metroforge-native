@@ -61,6 +61,29 @@ cargo test -p mf-net --test live_sidecar -- --ignored
 Set `MF_REQUIRE_SIDECAR=1` alongside that to turn "sidecar unavailable" from a
 silent skip into a hard failure, for a CI job that's supposed to have one built.
 
+### Parallel builds and target-dir isolation (#110)
+
+When several worktrees (or several agents) build at once, **each must build into its
+own Cargo target directory**. Cargo's fingerprint / dep-info files are not safe to
+share across concurrent builds: one build writing `target/` while another reads it
+produces *phantom* "stale type" errors — compile failures that reference signatures
+no longer in the source and vanish on a clean rebuild.
+
+Rules that keep this from happening:
+
+- **Never point multiple concurrent builds at one `CARGO_TARGET_DIR`.** A per-worktree
+  `target/` (the default when `CARGO_TARGET_DIR` is unset) is already isolated — do
+  not override it to a shared path. If you must set it, scope it per worktree, e.g.
+  `export CARGO_TARGET_DIR="$PWD/target"` inside each worktree.
+- **Serialize release builds.** Run at most one `cargo build --release` at a time on
+  this box; a release build is I/O- and RAM-heavy and starves the others. Agents doing
+  verification should stick to `cargo clippy`/`cargo test -j4` and let one orchestrator
+  do the single release/screenshot build.
+- **Auto-deploy uses its own tree.** Any auto-deploy/build timer must build in a
+  checkout and target dir separate from agent worktrees so its 2-minute rebuild can't
+  clobber or lock a target dir mid-build. (MetroForge-native is released by tag, not
+  auto-deployed, so this is a guard for future automation rather than a live path.)
+
 ## Running against a dev sidecar
 
 The client needs a `metroforge-sidecar` executable at runtime. In development,
@@ -183,6 +206,14 @@ cargo install cargo-xwin
 
 cargo xwin build --release -p mf-game --target x86_64-pc-windows-msvc
 ```
+
+**CI now cross-compile-checks Windows on every PR** (`ci.yml`, the `windows-check`
+job) with the cheaper `cargo xwin check --workspace --target x86_64-pc-windows-msvc`.
+This exists because the host `rust` job is Linux-only, so `#[cfg(windows)]` code
+(e.g. the `JobHandle` `Send`/`Sync` break in #100) previously only compiled in
+`release.yml` on tag and reached master undetected. `check` skips codegen/link, so
+it is a strict subset of the release `build` above — anything the build compiles,
+the check compiles — and it shares the same `ubuntu-cargo-xwin-v1-*` SDK cache.
 
 `cargo-xwin` downloads the MSVC CRT and Windows SDK on first use (a few hundred MB)
 and takes a couple of minutes to build itself from source the first time; both are
