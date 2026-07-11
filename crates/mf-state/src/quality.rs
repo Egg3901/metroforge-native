@@ -147,7 +147,7 @@ impl QualityTier {
                 tree_enabled: true,
                 tree_draw_distance_m: None,
                 atmosphere_enabled: true,
-                atmosphere_fog_steps: 48,
+                atmosphere_fog_steps: 56,
             },
         }
     }
