@@ -81,14 +81,12 @@ pub struct QualityKnobs {
     /// off on Medium/High where draw distance is unlimited or generous
     /// enough that fog would just look like a boring haze over open sky.
     pub fog: Option<(f32, f32)>,
-    /// When `true`, scrolling volumetric fog/cloud + distance haze are
-    /// eligible (Medium/High). Potato/Low keep this off — volumetric fog
-    /// needs shadow maps, which those tiers disable. The player can still
-    /// turn the effect off via [`crate::WeatherEffects`] even when this is
-    /// `true`.
+    /// When `true`, soft cloud cards + scrolling ground shadows are eligible
+    /// (Medium/High). Potato/Low keep this off. The player can still turn the
+    /// effect off via [`crate::WeatherEffects`] even when this is `true`.
     pub atmosphere_enabled: bool,
-    /// Raymarch step count for [`bevy::pbr::VolumetricFog`] when atmosphere
-    /// is active. Higher = less banding, more GPU.
+    /// Reserved after the billboard rewrite (was volumetric raymarch steps).
+    /// Kept so quality tables stay stable; unused by the renderer.
     pub atmosphere_fog_steps: u32,
     /// Stylized water shader tier (mf-render `water.rs`):
     /// - `0` = flat vertex-color water baked into the terrain mesh (Potato;
@@ -105,6 +103,20 @@ pub struct QualityKnobs {
     /// When `true`, arterial street-lamp glow meshes are built (Low+).
     /// Potato skips them with day/night disabled.
     pub street_lamps_enabled: bool,
+    /// When `true`, the cheap inverted-hull cel outline is drawn on the
+    /// dense-center building chunk (see `mf-render`'s `outline.rs`).
+    ///
+    /// Originally High-only (spec §art-direction), but the tier-truth pass
+    /// (owner feedback: the low tiers "look like shit") found this is the
+    /// single biggest readability lever for the *unlit* tiers: with no
+    /// lighting and near-white building colors, Potato/Low read as flat
+    /// white mush with no edge definition. The outline is a bounded cost —
+    /// exactly ONE of the 64 building chunks, inverted-hull, regardless of
+    /// tier — so even Potato (agent_cap 0, no trees) has the budget for it,
+    /// and it is what makes the "white cel blocks with crisp black edges"
+    /// art direction land on every tier instead of only High. Enabled on all
+    /// four tiers; the per-chunk scoping in `outline.rs` keeps it cheap.
+    pub outline_enabled: bool,
 }
 
 impl QualityTier {
@@ -143,9 +155,22 @@ impl QualityTier {
                 water_quality: 0,
                 bloom_enabled: false,
                 street_lamps_enabled: false,
+                // The one cheap thing that saves Potato from flat white mush:
+                // crisp black edges on the dense core turn "broken High" into
+                // a deliberate flat-shaded minimal style. One chunk draw; the
+                // tier has the budget (agent_cap 0, no trees, no shadows).
+                outline_enabled: true,
             },
             QualityTier::Low => QualityKnobs {
                 vsync: true,
+                // MSAA off on Low. 2x looked tempting as "cheap edge-AA" for
+                // the newly-added outlines/route stripes, but WebGPU only
+                // GUARANTEES sample counts [1, 4] for the Depth32Float target
+                // Bevy uses here — 2x panics outright on lavapipe (software)
+                // and can be unsupported on real integrated GPUs too, exactly
+                // the hardware this tier targets. 4x is the next portable
+                // step but too costly for the weak-GPU tier, so this stays 1
+                // (off); the outline crispness is the win, not AA.
                 msaa_samples: 1,
                 shadow_map_size: None,
                 unlit_material: true,
@@ -164,6 +189,10 @@ impl QualityTier {
                 water_quality: 1,
                 bloom_enabled: false,
                 street_lamps_enabled: true,
+                // The headline Low fix: outlines give the unlit white massing
+                // the edge definition it was completely missing, so Low reads
+                // as a city instead of "Potato with a longer draw distance".
+                outline_enabled: true,
             },
             QualityTier::Medium => QualityKnobs {
                 vsync: true,
@@ -185,6 +214,11 @@ impl QualityTier {
                 water_quality: 2,
                 bloom_enabled: true,
                 street_lamps_enabled: true,
+                // Medium reads via shadows already, but the cel outline is the
+                // signature art direction and one chunk is trivial next to the
+                // shadow/bloom/atmosphere passes it already runs — keep the
+                // look consistent from Low all the way to High.
+                outline_enabled: true,
             },
             QualityTier::High => QualityKnobs {
                 vsync: true,
@@ -204,6 +238,7 @@ impl QualityTier {
                 water_quality: 2,
                 bloom_enabled: true,
                 street_lamps_enabled: true,
+                outline_enabled: true,
             },
         }
     }
@@ -307,6 +342,13 @@ mod tests {
         assert!(QualityTier::Low.knobs().street_lamps_enabled);
         assert!(QualityTier::Medium.knobs().street_lamps_enabled);
         assert!(QualityTier::High.knobs().street_lamps_enabled);
+        // Cel outline is now on for every tier (the tier-truth readability
+        // fix): one bounded dense-center chunk draw, cheap enough even for
+        // Potato, and the signature "white cel blocks" look end to end.
+        assert!(QualityTier::Potato.knobs().outline_enabled);
+        assert!(QualityTier::Low.knobs().outline_enabled);
+        assert!(QualityTier::Medium.knobs().outline_enabled);
+        assert!(QualityTier::High.knobs().outline_enabled);
     }
 
     /// Fog `end_m` must sit strictly inside `building_draw_distance_m`

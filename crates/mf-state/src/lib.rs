@@ -6,12 +6,15 @@
 //!
 //! Resources: [`CurrentCity`], [`LatestFields`], [`LatestUi`],
 //! [`LatestFrame`], [`QualityTier`], [`SubwayView`], [`HeightAt`],
-//! [`RevealState`], [`LatestDemand`], [`OverlayState`], [`WeatherEffects`].
+//! [`RevealState`], [`LatestDemand`], [`OverlayState`], [`WeatherEffects`],
+//! [`AttractLighting`].
 //!
 //! Crate map and pipeline: `docs/ARCHITECTURE.md`.
 
 #![warn(missing_docs)]
 
+/// Attract-mode cinematic lighting state.
+pub mod attract;
 /// Loaded city statics + masks + optional building footprints.
 pub mod city;
 /// Latest unserved-demand payload from the sidecar.
@@ -39,6 +42,7 @@ pub mod ui;
 /// Player weather-effects Settings toggle.
 pub mod weather;
 
+pub use attract::AttractLighting;
 pub use city::CurrentCity;
 pub use demand::LatestDemand;
 pub use fields::LatestFields;

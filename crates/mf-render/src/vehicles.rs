@@ -28,8 +28,11 @@
 //! Night headlights / cabin strips extend the same paint-key pattern: a
 //! parallel grow-only pool of small emissive quads (cool-white front glow
 //! for every mode; warm interior strip for tram/metro) shares materials by
-//! `(LightKind, night_bucket, unlit)` — never per-vehicle `PointLight`s,
-//! so the body-material batching from the perf audit stays intact.
+//! `(LightKind, unlit)` — never per-vehicle `PointLight`s, so the
+//! body-material batching from the perf audit stays intact. Night intensity
+//! is written in place onto those few shared materials (not keyed by the
+//! 65-step night bucket), so dusk/dawn cannot mint a new material every
+//! bucket step.
 //!
 //! **Mode (bus/tram/metro/rail), documented gap:** `FrameSnapshot.vehicles`
 //! carries no mode field. `sim.worker.ts`'s `sendFrame` sets
@@ -42,7 +45,7 @@
 //! "trams 1.6x longer, 0.85x width"); an out-of-range index (e.g. one frame
 //! of skew right after a route is deleted) falls back to the standard box.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
@@ -51,6 +54,7 @@ use mf_state::{HeightAt, LatestFrame, LatestUi, QualityTier};
 
 use crate::daynight::DayNightState;
 use crate::palette;
+use crate::RenderCacheStats;
 
 const VEHICLE_BASE_LENGTH: f32 = 10.0;
 const VEHICLE_WIDTH: f32 = 4.5;
@@ -95,11 +99,14 @@ struct VehiclePool {
     entities: Vec<Entity>,
     box_mesh: Option<Handle<Mesh>>,
     tram_mesh: Option<Handle<Mesh>>,
-    /// Shared materials keyed by quantized paint. Finite set: ~8 route
-    /// colors × ~65 brightness buckets × 2 unlit states × 2 overlay-dim
-    /// states. Overlay dimming changes the mixed color, so it must be part
-    /// of the key or a material minted while an overlay is open serves the
-    /// washed-out color forever.
+    /// Shared materials keyed by quantized paint. Keys use the raw route
+    /// index (same index → same color via [`palette::vivid_route_color`]),
+    /// so the theoretical set is `routes × 65 brightness × 2 unlit × 2
+    /// overlay`. Overlay dimming changes the mixed color, so it must be
+    /// part of the key or a material minted while an overlay is open serves
+    /// the washed-out color forever. Unused entries are pruned each paint
+    /// pass so a long session cannot retain every occupancy bucket ever
+    /// seen — only keys currently applied to a live slot stay alive.
     material_cache: HashMap<(usize, i32, bool, bool), Handle<StandardMaterial>>,
     /// Last-applied paint key per slot, parallel to `entities`.
     applied_paint: Vec<Option<(usize, i32, bool, bool)>>,
@@ -108,9 +115,11 @@ struct VehiclePool {
     headlight_mesh: Option<Handle<Mesh>>,
     cabin_mesh_bus: Option<Handle<Mesh>>,
     cabin_mesh_tram: Option<Handle<Mesh>>,
-    /// Shared light materials: `(kind, night_bucket, unlit)`.
-    light_material_cache: HashMap<(LightKind, i32, bool), Handle<StandardMaterial>>,
-    applied_light_paint: Vec<[Option<(LightKind, i32, bool)>; 2]>,
+    /// Shared light materials: `(kind, unlit)` only. Night intensity is
+    /// mutated in place (see [`sync_light_emissive`]) so the 65-step night
+    /// bucket cannot grow this map across dusk/dawn.
+    light_material_cache: HashMap<(LightKind, bool), Handle<StandardMaterial>>,
+    applied_light_paint: Vec<[Option<(LightKind, bool)>; 2]>,
     /// Last night bucket this pass ran for. `DayNightState` is written every
     /// frame by the smoothing system, so `is_changed()` is always true and
     /// would defeat the 20 Hz skip-gate below; only a bucket step matters.
@@ -140,25 +149,20 @@ fn material_for_paint(
 }
 
 fn light_material_for_paint(
-    cache: &mut HashMap<(LightKind, i32, bool), Handle<StandardMaterial>>,
+    cache: &mut HashMap<(LightKind, bool), Handle<StandardMaterial>>,
     materials: &mut Assets<StandardMaterial>,
-    paint_key: (LightKind, i32, bool),
+    paint_key: (LightKind, bool),
+    night: f32,
 ) -> Handle<StandardMaterial> {
     cache
         .entry(paint_key)
         .or_insert_with(|| {
-            let (kind, night_bucket, unlit) = paint_key;
+            let (kind, unlit) = paint_key;
             let color = match kind {
                 LightKind::Headlight => HEADLIGHT_COLOR,
                 LightKind::Cabin => CABIN_COLOR,
             };
-            let night = (night_bucket as f32 / 64.0).clamp(0.0, 1.0);
-            // Strong emissive so Medium/High bloom picks them up; still a
-            // readable bright spot on Low without bloom.
-            let strength = match kind {
-                LightKind::Headlight => 4.0 * night,
-                LightKind::Cabin => 2.2 * night,
-            };
+            let strength = light_emissive_strength(kind, night);
             materials.add(StandardMaterial {
                 base_color: color,
                 emissive: palette::emissive(color, strength),
@@ -168,6 +172,45 @@ fn light_material_for_paint(
             })
         })
         .clone()
+}
+
+fn light_emissive_strength(kind: LightKind, night: f32) -> f32 {
+    let night = night.clamp(0.0, 1.0);
+    match kind {
+        // Strong emissive so Medium/High bloom picks them up; still a
+        // readable bright spot on Low without bloom.
+        LightKind::Headlight => 4.0 * night,
+        LightKind::Cabin => 2.2 * night,
+    }
+}
+
+/// Rewrite emissive on every cached light material when the night bucket
+/// steps. Keeps the cache at most `2 kinds × 2 unlit = 4` entries for the
+/// whole session instead of minting a new material per dusk/dawn bucket.
+fn sync_light_emissive(
+    cache: &HashMap<(LightKind, bool), Handle<StandardMaterial>>,
+    materials: &mut Assets<StandardMaterial>,
+    night: f32,
+) {
+    for (&(kind, _), handle) in cache {
+        let color = match kind {
+            LightKind::Headlight => HEADLIGHT_COLOR,
+            LightKind::Cabin => CABIN_COLOR,
+        };
+        let strength = light_emissive_strength(kind, night);
+        if let Some(mat) = materials.get_mut(handle) {
+            mat.emissive = palette::emissive(color, strength);
+        }
+    }
+}
+
+/// Drop body-paint materials that no live slot currently references. Without
+/// this, every occupancy bucket a vehicle ever visits stays pinned in
+/// `Assets<StandardMaterial>` for the rest of the session.
+fn prune_material_cache(pool: &mut VehiclePool) {
+    let live: HashSet<(usize, i32, bool, bool)> =
+        pool.applied_paint.iter().flatten().copied().collect();
+    pool.material_cache.retain(|k, _| live.contains(k));
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -201,6 +244,7 @@ fn update_vehicles_system(
         ),
         (With<VehicleLightSlot>, Without<VehicleSlot>),
     >,
+    mut stats: ResMut<RenderCacheStats>,
 ) {
     // `LatestFrame` arrives at the sim's ~20Hz tick while this system runs
     // every render frame (60+ Hz); `QualityTier` / `Theme` / overlay / night
@@ -223,6 +267,7 @@ fn update_vehicles_system(
         return;
     };
     let unlit = quality.knobs().unlit_material;
+    let night_factor = day_night.night_factor.clamp(0.0, 1.0);
     // Theme switches change `vivid_route_color` for the same color_idx —
     // drop the paint cache so vehicles pick up the new palette immediately.
     if theme.is_changed() {
@@ -234,6 +279,11 @@ fn update_vehicles_system(
         for slot in &mut pool.applied_light_paint {
             *slot = [None, None];
         }
+    }
+    // Night bucket stepped: rewrite emissive on the (few) shared light
+    // materials in place rather than minting a new handle per bucket.
+    if night_changed && !pool.light_material_cache.is_empty() {
+        sync_light_emissive(&pool.light_material_cache, &mut materials, night_factor);
     }
     let box_mesh = pool
         .box_mesh
@@ -281,7 +331,6 @@ fn update_vehicles_system(
         .clone();
 
     let vehicle_count = f.vehicle_count as usize;
-    let night_factor = day_night.night_factor.clamp(0.0, 1.0);
     let lights_on = night_factor >= LIGHT_VISIBLE_NIGHT;
     // Grow the entity pool (rare; only when this session has never had this
     // many vehicles on screen at once before). Only meaningful when a new
@@ -451,12 +500,13 @@ fn update_vehicles_system(
             } else {
                 Visibility::Hidden
             };
-            let light_key = (LightKind::Headlight, night_bucket, unlit);
+            let light_key = (LightKind::Headlight, unlit);
             if pool.applied_light_paint.get(i).and_then(|s| s[0]) != Some(light_key) {
                 light_mat.0 = light_material_for_paint(
                     &mut pool.light_material_cache,
                     &mut materials,
                     light_key,
+                    night_factor,
                 );
                 if let Some(slot) = pool.applied_light_paint.get_mut(i) {
                     slot[0] = Some(light_key);
@@ -488,12 +538,13 @@ fn update_vehicles_system(
                 Visibility::Hidden
             };
             if show_cabin {
-                let light_key = (LightKind::Cabin, night_bucket, unlit);
+                let light_key = (LightKind::Cabin, unlit);
                 if pool.applied_light_paint.get(i).and_then(|s| s[1]) != Some(light_key) {
                     light_mat.0 = light_material_for_paint(
                         &mut pool.light_material_cache,
                         &mut materials,
                         light_key,
+                        night_factor,
                     );
                     if let Some(slot) = pool.applied_light_paint.get_mut(i) {
                         slot[1] = Some(light_key);
@@ -502,4 +553,9 @@ fn update_vehicles_system(
             }
         }
     }
+
+    prune_material_cache(&mut pool);
+    stats.vehicle_slots = pool.entities.len();
+    stats.vehicle_material_cache = pool.material_cache.len();
+    stats.vehicle_light_material_cache = pool.light_material_cache.len();
 }

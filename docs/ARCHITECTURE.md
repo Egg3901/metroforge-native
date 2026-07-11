@@ -88,7 +88,19 @@ crossbeam channels bridge to ECS. `drain_inbound_system` pushes
 `Events<SimEvent>` each frame. Ping every 5 s; 10 s silence → dead; reconnect
 policy in `reconnect.rs` (500 ms → 4 s, 5 attempts).
 
-Sidecar spawn / `--port 0` / `$MF_SIDECAR_PATH` rules:
+`SidecarProcess` locates and spawns the sidecar binary (lookup order: env var, then
+next to the running executable, then a dev fallback of `bun run sidecar/index.ts`
+against the sibling `metroforge` checkout), parses its one-line stdout handshake to
+learn the assigned port, captures a rolling stderr log tail, and kills the process
+group on `Drop`. On Unix the child sets `PR_SET_PDEATHSIG` so a client crash cannot
+leave a zombie sidecar; on Windows the child is assigned to a Job Object with
+`KILL_ON_JOB_CLOSE`. Stale `metroforge-sidecar` processes from a previous run are
+reaped on every spawn. `reconnect.rs` implements the liveness policy: process exit
+**or** no inbound traffic for 5 seconds means the sim is declared dead (the two
+causes are distinguished); respawn and reconnect with backoff from 500 ms up to 4 s,
+for up to 3 attempts. Mid-game recovery re-handshakes and restores from autosave
+without returning to MainMenu; exhausting attempts surfaces a diagnostics screen
+with the sidecar log tail. Sidecar spawn / `--port 0` / `$MF_SIDECAR_PATH` rules:
 [`PROTOCOL.md` §4](PROTOCOL.md).
 
 ---
@@ -171,6 +183,8 @@ Vehicles: grow-only entity pool; materials shared by paint key
 
 ```
 Boot → ConnectingSim → MainMenu → Loading → InGame
+                                                 ↓
+                                             SimError  (exhausted sidecar reconnects)
 ```
 
 - **Boot**: load config, spawn sidecar + WS.

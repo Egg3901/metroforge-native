@@ -15,7 +15,9 @@ pub mod transport;
 pub mod ws_transport;
 
 pub use plugin::{MfNetPlugin, NetSet, SimAlive, SimEvent, SimLink};
-pub use reconnect::{NetStatus, ReconnectState};
-pub use sidecar::SidecarProcess;
+pub use reconnect::{
+    FatalDiagnostics, NetStatus, ReconnectPhase, ReconnectState, ResumePolicy, MAX_ATTEMPTS,
+};
+pub use sidecar::{SidecarDeathReason, SidecarProcess};
 pub use transport::SimTransport;
-pub use ws_transport::WsTransport;
+pub use ws_transport::{WsTransport, LIVENESS_WINDOW};
