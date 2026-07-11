@@ -6,8 +6,8 @@
 //!
 //! Resources: [`CurrentCity`], [`LatestFields`], [`LatestUi`],
 //! [`LatestFrame`], [`QualityTier`], [`SubwayView`], [`HeightAt`],
-//! [`RevealState`], [`LatestDemand`], [`OverlayState`], [`WeatherEffects`],
-//! [`AttractLighting`].
+//! [`RevealState`], [`LatestDemand`], [`OverlayState`], [`RouteFocus`],
+//! [`WeatherEffects`], [`AttractLighting`].
 //!
 //! Crate map and pipeline: `docs/ARCHITECTURE.md`.
 
@@ -33,6 +33,7 @@ pub mod plugin;
 pub mod quality;
 /// Cursor/camera building-reveal hole state.
 pub mod reveal;
+pub mod route_focus;
 /// Subway-view toggle + eased progress.
 pub mod subway;
 /// Visual theme selection (Light/Dark/Purple).
@@ -52,6 +53,7 @@ pub use overlay::{OverlayMode, OverlayState};
 pub use plugin::MfStatePlugin;
 pub use quality::{detect as detect_quality_tier, GpuDeviceKind, QualityKnobs, QualityTier};
 pub use reveal::RevealState;
+pub use route_focus::RouteFocus;
 pub use subway::{SubwayView, SUBWAY_TRANSITION_SECS};
 pub use theme::Theme;
 pub use ui::LatestUi;
