@@ -156,6 +156,7 @@ impl ToSim {
 /// "Sidecar -> client" minus `fields`/`traffic`/`frame`/the static masks,
 /// which are binary (see `crate::binary`).
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum FromSimJson {
     Hello(HelloInfo),
     Ready(ReadyPayload),

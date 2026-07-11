@@ -17,13 +17,45 @@ sibling `metroforge` repo and reach releases via the pinned sidecar SHA in
   process-group / PDEATHSIG (Unix) and Job Object kill-on-close (Windows)
   orphan prevention, stale-sidecar reap on startup, and
   `MF_TEST_KILL_SIDECAR` recovery harness (optional CI job).
-- Main menu overhaul and app icon (#47)
-- Release installers: Windows NSIS setup.exe, macOS .dmg, Linux tarball with
-  desktop integration (#52)
+- Windows desktop polish wave 2 (#72): DPI-aware scaling, F11/Alt+Enter
+  borderless fullscreen (persisted), window size/position recall, rendering
+  pause on minimize/alt-tab, single-instance focus guard, native icon in
+  .exe header + VERSIONINFO block, OS-native crash reports.
+
+### Changed
+- Performance measurement harness (MF_PERF): Bevy diagnostics, render-pass
+  spans, visibility LOD truth (#77). Measurement-first pass on hot paths.
+
+## [0.5.0-alpha] - 2026-07-10
+
+The "night and detail" release. City-scale night lighting, building windows,
+stylized water, the minimap, tutorial for new players, save hardening, and
+sim-depth economy transparency.
+
+### Added
+- Night lighting systems: bloom-mapped street lamps + headlights, city glow
+  overlay, per-building window emission (#68).
+- Procedural building facade detail: night-lit windows, rooftop geometry,
+  LOD transitions from prism outline to detailed mass (#64).
+- Stylized water shader with quality-tier gating: Mirror's Edge-clean with
+  mesh waves, Sobel edge detection at the shoreline, foam trail on vehicle
+  wake (#65).
+- Collapsible HUD minimap: N toggle, click-to-pan, cached quad-tree layers
+  for district/route dimming (#70).
+- Sim-depth economy UI fields in the native client, bridging the sidecar's
+  demand/utilization/supply fields into building panels and diagnostics (#74).
+- Hardened save/load: versioned wrapper schema with migration registry,
+  atomic writes + backup recovery, autosave ring of 3 (Settings-controlled
+  interval), and title-screen Load Game browser with per-slot metadata (#67).
+
+### Changed
+- CI workflow: parallelize release builds across Linux/Windows/macOS,
+  reducing full-release runtime from ~22 min to ~10-12 min (#69).
 
 ### Fixed
-- Sidecar: NYC terrain water-bleed and missing NJ/Brooklyn road coverage
-  (metroforge#29)
+- Potato/Low tier title-screen horizon: paper-map terrain rendering now
+  includes per-tier fog to mask draw-distance pop-in; frame city in viewport
+  with orthographic scale (#76).
 
 ## [0.4.2-alpha] - 2026-07-10
 
