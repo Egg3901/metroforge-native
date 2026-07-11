@@ -3243,6 +3243,7 @@ dependencies = [
  "bevy_app",
  "bevy_ecs",
  "crossbeam-channel",
+ "directories",
  "mf-protocol",
  "serde",
  "serde_json",

@@ -10,6 +10,7 @@ mod camera;
 mod campaign;
 mod command_bus;
 mod config;
+mod crash;
 mod design_system;
 mod goals;
 mod hud;
@@ -30,6 +31,7 @@ mod verify;
 
 use bevy::prelude::*;
 use bevy::window::{PresentMode, Window, WindowPlugin};
+use crash::{MfCrashPlugin, SafeMode};
 use mf_net::MfNetPlugin;
 use mf_render::MfRenderPlugin;
 use mf_state::MfStatePlugin;
@@ -44,26 +46,34 @@ const SKY_DAY: Color = Color::srgb(
 );
 
 fn main() {
+    // Panic hook before any Bevy/plugin work so boot-time panics still leave
+    // a local report. Log ring attaches via LogPlugin::custom_layer below.
+    crash::install_panic_hook();
+    let cli = crash::parse_cli(std::env::args());
+
     let mut app = App::new();
     app.insert_resource(ClearColor(SKY_DAY))
+        .insert_resource(SafeMode(cli.safe_mode))
         .add_plugins(
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "MetroForge".to_string(),
-                    // MF_RESOLUTION=WxH overrides for promo/screenshot runs.
-                    resolution: std::env::var("MF_RESOLUTION")
-                        .ok()
-                        .and_then(|v| {
-                            let (w, h) = v.split_once('x')?;
-                            Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))
-                        })
-                        .unwrap_or((1440.0, 900.0))
-                        .into(),
-                    present_mode: PresentMode::AutoVsync,
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "MetroForge".to_string(),
+                        // MF_RESOLUTION=WxH overrides for promo/screenshot runs.
+                        resolution: std::env::var("MF_RESOLUTION")
+                            .ok()
+                            .and_then(|v| {
+                                let (w, h) = v.split_once('x')?;
+                                Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))
+                            })
+                            .unwrap_or((1440.0, 900.0))
+                            .into(),
+                        present_mode: PresentMode::AutoVsync,
+                        ..default()
+                    }),
                     ..default()
-                }),
-                ..default()
-            }),
+                })
+                .set(crash::log_plugin_with_ring()),
         )
         .add_plugins((MfNetPlugin, MfStatePlugin, MfRenderPlugin))
         .add_plugins(app_icon::MfAppIconPlugin)
@@ -73,6 +83,7 @@ fn main() {
             input::MfInputPlugin,
             reveal_input::MfRevealInputPlugin,
             hud::MfHudPlugin,
+            MfCrashPlugin,
             saves::MfSavesPlugin,
             verify::MfVerifyPlugin,
             MfQualityBootPlugin,

@@ -12,6 +12,7 @@ use mf_state::{CurrentCity, LatestFields, LatestUi};
 
 use crate::attract::AttractState;
 use crate::config::MfConfig;
+use crate::crash::SafeMode;
 
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AppState {
@@ -184,10 +185,14 @@ fn boot_system(
     mut commands: Commands,
     mut reconnect: ResMut<ReconnectState>,
     mut next_state: ResMut<NextState<AppState>>,
+    safe_mode: Res<SafeMode>,
 ) {
     let config = MfConfig::load();
+    // Safe mode forces weather off for this session (bloom/outlines already
+    // follow Potato via quality_boot). Config on disk is left alone.
+    let weather_enabled = config.weather_effects && !safe_mode.0;
     commands.insert_resource(mf_state::WeatherEffects {
-        enabled: config.weather_effects,
+        enabled: weather_enabled,
     });
     commands.insert_resource(config);
 
