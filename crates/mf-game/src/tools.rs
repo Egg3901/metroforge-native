@@ -243,7 +243,7 @@ fn keybind_system(keys: Res<ButtonInput<KeyCode>>, mut tool: ResMut<ToolState>) 
     // guidance in the routes panel.
     if keys.just_pressed(KeyCode::KeyR) {
         if matches!(tool.active, ActiveTool::PlaceStation(_)) {
-            tool.ghost_quarter_turns = (tool.ghost_quarter_turns + 1) % 4;
+            tool.ghost_quarter_turns = next_ghost_quarter_turns(tool.ghost_quarter_turns);
         } else {
             tool.active = ActiveTool::Route;
         }
@@ -781,8 +781,10 @@ fn tool_gizmo_system(
                 snapped_world + Vec3::Y * STATION_GHOST_HEIGHT_M,
                 tint,
             );
-            let ang = tool.ghost_quarter_turns as f32 * std::f32::consts::FRAC_PI_2;
-            let facing = Vec3::new(ang.sin(), 0.0, ang.cos()) * (STATION_GHOST_RADIUS_M * 1.4);
+            // Facing tick: a short spoke pointing in the R-rotated direction,
+            // so the rotate gesture reads on screen even for a round marker.
+            let facing_xz = ghost_facing_xz(tool.ghost_quarter_turns);
+            let facing = Vec3::new(facing_xz.x, 0.0, facing_xz.y) * (STATION_GHOST_RADIUS_M * 1.4);
             gizmos.line(snapped_world, snapped_world + facing, tint);
             if let Some(guide_from) = placement.and_then(|p| p.guide_from) {
                 let from_world = Vec3::new(
@@ -928,6 +930,21 @@ fn draw_direction_ticks(
 // ---------------------------------------------------------------------
 // Pure helpers (no ECS types), unit-tested directly with hand data.
 // ---------------------------------------------------------------------
+
+/// Advance the place-station ghost's R-rotate state one quarter-turn,
+/// wrapping `3 -> 0`. Extracted from `keybind_system` so the wrap is
+/// unit-testable without an input event.
+fn next_ghost_quarter_turns(turns: u8) -> u8 {
+    (turns + 1) % 4
+}
+
+/// Unit facing direction in world XZ for a given quarter-turn state
+/// (0 = +Z / "north", 1 = +X / "east", 2 = -Z / "south", 3 = -X / "west"),
+/// matching the gizmo spoke drawn by `tool_gizmo_system`.
+fn ghost_facing_xz(quarter_turns: u8) -> Vec2 {
+    let ang = (quarter_turns % 4) as f32 * std::f32::consts::FRAC_PI_2;
+    Vec2::new(ang.sin(), ang.cos())
+}
 
 /// Nearest station to `point` within `max_dist` meters, or `None` if every
 /// station is farther than that (including the trivial case of an empty
@@ -1515,5 +1532,105 @@ mod tests {
             nearest_point_on_roads(Vec2::new(50.0, 500.0), &roads, 45.0),
             None
         );
+    }
+
+    // --- rotation states ---------------------------------------------------
+
+    #[test]
+    fn ghost_quarter_turns_wrap_three_to_zero() {
+        assert_eq!(next_ghost_quarter_turns(0), 1);
+        assert_eq!(next_ghost_quarter_turns(1), 2);
+        assert_eq!(next_ghost_quarter_turns(2), 3);
+        assert_eq!(next_ghost_quarter_turns(3), 0);
+        // A full spin returns to the start.
+        let mut t = 0u8;
+        for _ in 0..4 {
+            t = next_ghost_quarter_turns(t);
+        }
+        assert_eq!(t, 0);
+    }
+
+    #[test]
+    fn ghost_facing_covers_cardinal_directions() {
+        let expected = [
+            Vec2::new(0.0, 1.0),  // 0: +Z / north
+            Vec2::new(1.0, 0.0),  // 1: +X / east
+            Vec2::new(0.0, -1.0), // 2: -Z / south
+            Vec2::new(-1.0, 0.0), // 3: -X / west
+        ];
+        for (turns, want) in expected.into_iter().enumerate() {
+            let got = ghost_facing_xz(turns as u8);
+            assert!(
+                (got - want).length() < 1e-5,
+                "turns={turns}: got {got:?}, want {want:?}"
+            );
+        }
+    }
+
+    // --- CityGrid bounds / snap edge cases ---------------------------------
+
+    #[test]
+    fn grid_cell_of_at_exact_cell_boundaries() {
+        let grid = CityGrid::from_city(&grid_city(vec![]));
+        // Left/bottom edge of cell (2,3) is at world (20, 30); floor maps
+        // that exact boundary into (2,3), not the previous cell.
+        assert_eq!(grid.cell_of(Vec2::new(20.0, 30.0)), (2, 3));
+        // One ulp inside the next cell.
+        assert_eq!(grid.cell_of(Vec2::new(29.999, 39.999)), (2, 3));
+        assert_eq!(grid.cell_of(Vec2::new(30.0, 40.0)), (3, 4));
+    }
+
+    #[test]
+    fn grid_in_bounds_rejects_negative_and_past_far_edge() {
+        let grid = CityGrid::from_city(&grid_city(vec![]));
+        assert!(grid.in_bounds(0, 0));
+        assert!(grid.in_bounds(9, 9));
+        assert!(!grid.in_bounds(-1, 0));
+        assert!(!grid.in_bounds(0, -1));
+        assert!(!grid.in_bounds(10, 9));
+        assert!(!grid.in_bounds(9, 10));
+        // cell_of of a point past the far edge is out of bounds.
+        let (cx, cy) = grid.cell_of(Vec2::new(100.0, 100.0));
+        assert!(!grid.in_bounds(cx, cy));
+    }
+
+    #[test]
+    fn road_snap_includes_exact_radius_excludes_just_beyond() {
+        // Horizontal road on y=0. Grid-snapped cursor at (50, 45) is exactly
+        // ROAD_SNAP_RADIUS_M from the road; (50, 45+ε) is not.
+        let roads = vec![road(vec![0.0, 0.0, 100.0, 0.0])];
+        let on_boundary = nearest_point_on_roads(
+            Vec2::new(50.0, ROAD_SNAP_RADIUS_M),
+            &roads,
+            ROAD_SNAP_RADIUS_M,
+        );
+        assert_eq!(on_boundary, Some(Vec2::new(50.0, 0.0)));
+
+        let just_beyond = nearest_point_on_roads(
+            Vec2::new(50.0, ROAD_SNAP_RADIUS_M + 0.5),
+            &roads,
+            ROAD_SNAP_RADIUS_M,
+        );
+        assert_eq!(just_beyond, None);
+    }
+
+    #[test]
+    fn road_snap_skips_degenerate_polylines() {
+        // Fewer than 2 vertices (4 floats) must be ignored, not panic.
+        let roads = vec![road(vec![0.0, 0.0]), road(vec![0.0, 0.0, 100.0, 0.0])];
+        let p = nearest_point_on_roads(Vec2::new(40.0, 5.0), &roads, 45.0);
+        assert_eq!(p, Some(Vec2::new(40.0, 0.0)));
+    }
+
+    #[test]
+    fn station_separation_boundary_is_inclusive_invalid() {
+        let city = grid_city(vec![]);
+        let stations = vec![station(1, 50.0, 50.0)];
+        // Exactly STATION_MIN_SEPARATION_M away: `<=` in nearest_station_id
+        // means occupied / invalid.
+        let on_ring = Vec2::new(50.0 + STATION_MIN_SEPARATION_M, 50.0);
+        assert!(!placement_valid(on_ring, Some(&city), None, &stations));
+        let outside = Vec2::new(50.0 + STATION_MIN_SEPARATION_M + 1.0, 50.0);
+        assert!(placement_valid(outside, Some(&city), None, &stations));
     }
 }

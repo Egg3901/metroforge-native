@@ -566,3 +566,376 @@ fn envelope_ready_hello_and_toast_roundtrip() {
     let env: Envelope = serde_json::from_str(bye_json).unwrap();
     assert_eq!(FromSimJson::from_envelope(env).unwrap(), FromSimJson::Bye);
 }
+
+// ---------------------------------------------------------------------------
+// Exhaustive FromSimJson coverage + degrade-on-malformed
+// ---------------------------------------------------------------------------
+
+fn parse_from_sim(json: &str) -> Result<FromSimJson, mf_protocol::envelope::EnvelopeError> {
+    let env: Envelope = serde_json::from_str(json).expect("envelope JSON itself must parse");
+    FromSimJson::from_envelope(env)
+}
+
+fn minimal_static_city_json() -> &'static str {
+    r#"{"fieldW":2,"fieldH":2,"cellSize":10.0,"originX":0.0,"originY":0.0,"worldSize":20.0,"roadScale":1.0,"roads":[]}"#
+}
+
+fn minimal_ui_state_json() -> &'static str {
+    r#"{
+        "tick": 1,
+        "insights": [],
+        "day": 0,
+        "speed": 1,
+        "cash": 0,
+        "loanBalance": 0,
+        "lastDay": {"fares":0,"subsidy":0,"operations":0,"maintenance":0,"interest":0},
+        "netHistory": [],
+        "population": 0,
+        "approval": 50,
+        "transitShare": 0,
+        "coverage": 0,
+        "dailyTransitTrips": 0,
+        "unlockedModes": [],
+        "stations": [],
+        "tracks": [],
+        "routes": [],
+        "activeEvents": [],
+        "fieldsVersion": 0,
+        "bankrupt": false,
+        "commandCount": 0
+    }"#
+}
+
+#[test]
+fn from_sim_json_every_variant_roundtrips() {
+    // Hello
+    let hello = r#"{"t":"hello","p":{"protocolVersion":1,"gameVersion":"0.5.0","cityList":[{"key":"nyc","label":"NYC"}],"defaultWorldSize":24000.0}}"#;
+    match parse_from_sim(hello).unwrap() {
+        FromSimJson::Hello(h) => {
+            assert_eq!(h.protocol_version, 1);
+            assert_eq!(h.city_list[0].key, "nyc");
+        }
+        other => panic!("Hello: {other:?}"),
+    }
+
+    // Ready
+    let ready = format!(
+        r#"{{"t":"ready","p":{{"staticCity":{}}}}}"#,
+        minimal_static_city_json()
+    );
+    match parse_from_sim(&ready).unwrap() {
+        FromSimJson::Ready(r) => assert_eq!(r.static_city.field_w, 2),
+        other => panic!("Ready: {other:?}"),
+    }
+
+    // Demand
+    let demand = r#"{"t":"demand","p":{"lines":[{"x1":0,"y1":0,"x2":1,"y2":1,"weight":2.5,"share":0.1}],"maxWeight":2.5}}"#;
+    match parse_from_sim(demand).unwrap() {
+        FromSimJson::Demand(d) => {
+            assert_eq!(d.lines.len(), 1);
+            assert!((d.max_weight - 2.5).abs() < 1e-9);
+        }
+        other => panic!("Demand: {other:?}"),
+    }
+
+    // Ui
+    let ui = format!(r#"{{"t":"ui","p":{}}}"#, minimal_ui_state_json());
+    match parse_from_sim(&ui).unwrap() {
+        FromSimJson::Ui(u) => {
+            assert_eq!(u.tick, 1);
+            // Optional sim-depth fields omitted → defaults, not panic.
+            assert!(u.hour_of_day.is_none());
+            assert!(u.districts.is_empty());
+        }
+        other => panic!("Ui: {other:?}"),
+    }
+
+    // CommandResult (already covered above; keep in the exhaustive set)
+    let cr = r#"{"t":"commandResult","seq":9,"p":{"result":{"ok":false,"error":"nope"}}}"#;
+    match parse_from_sim(cr).unwrap() {
+        FromSimJson::CommandResult { seq, result } => {
+            assert_eq!(seq, Some(9));
+            assert!(!result.ok);
+            assert_eq!(result.error.as_deref(), Some("nope"));
+        }
+        other => panic!("CommandResult: {other:?}"),
+    }
+
+    // TrackCost
+    let tc = r#"{"t":"trackCost","seq":3,"p":{"cost":1234.5}}"#;
+    match parse_from_sim(tc).unwrap() {
+        FromSimJson::TrackCost { seq, cost } => {
+            assert_eq!(seq, Some(3));
+            assert!((cost - 1234.5).abs() < 1e-9);
+        }
+        other => panic!("TrackCost: {other:?}"),
+    }
+
+    // Saved
+    let saved = r#"{"t":"saved","p":{"json":"{\"tick\":1}"}}"#;
+    match parse_from_sim(saved).unwrap() {
+        FromSimJson::Saved(s) => assert!(s.json.contains("tick")),
+        other => panic!("Saved: {other:?}"),
+    }
+
+    // Replay
+    let replay = r#"{"t":"replay","p":{"seed":1,"difficulty":"normal","commandLog":[],"finalTick":10,"stateHash":0,"scoreHint":0.0}}"#;
+    match parse_from_sim(replay).unwrap() {
+        FromSimJson::Replay(r) => {
+            assert_eq!(r.seed, 1);
+            assert_eq!(r.final_tick, 10);
+        }
+        other => panic!("Replay: {other:?}"),
+    }
+
+    // Toast / Pong / Bye
+    match parse_from_sim(r#"{"t":"toast","p":{"message":"hi","tone":"info"}}"#).unwrap() {
+        FromSimJson::Toast(t) => assert_eq!(t.message, "hi"),
+        other => panic!("Toast: {other:?}"),
+    }
+    assert_eq!(
+        parse_from_sim(r#"{"t":"pong"}"#).unwrap(),
+        FromSimJson::Pong
+    );
+    assert_eq!(parse_from_sim(r#"{"t":"bye"}"#).unwrap(), FromSimJson::Bye);
+}
+
+#[test]
+fn from_sim_json_missing_payload_degrades_to_error() {
+    for t in [
+        "hello",
+        "ready",
+        "demand",
+        "ui",
+        "commandResult",
+        "trackCost",
+        "saved",
+        "replay",
+        "toast",
+    ] {
+        let json = format!(r#"{{"t":"{t}"}}"#);
+        let err = parse_from_sim(&json).expect_err("missing p must not panic");
+        match err {
+            mf_protocol::envelope::EnvelopeError::MissingPayload(name) => {
+                assert_eq!(name, t);
+            }
+            other => panic!("expected MissingPayload for {t}, got {other:?}"),
+        }
+    }
+    // Payloadless messages still succeed without `p`.
+    assert_eq!(
+        parse_from_sim(r#"{"t":"pong"}"#).unwrap(),
+        FromSimJson::Pong
+    );
+    assert_eq!(parse_from_sim(r#"{"t":"bye"}"#).unwrap(), FromSimJson::Bye);
+}
+
+#[test]
+fn from_sim_json_malformed_payload_degrades_to_error() {
+    // Wrong shape / missing required fields → BadPayload, never panic.
+    let cases = [
+        r#"{"t":"hello","p":{"protocolVersion":1}}"#, // missing cityList etc.
+        r#"{"t":"toast","p":{"message":"x"}}"#,       // missing tone
+        r#"{"t":"trackCost","p":{}}"#,                // missing cost
+        r#"{"t":"ui","p":{"tick":1}}"#,               // missing most UiState fields
+        r#"{"t":"demand","p":{"lines":"nope","maxWeight":1}}"#,
+    ];
+    for json in cases {
+        let err = parse_from_sim(json).expect_err("bad payload must not panic");
+        assert!(
+            matches!(err, mf_protocol::envelope::EnvelopeError::BadPayload(_, _)),
+            "expected BadPayload for {json}, got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn from_sim_json_unknown_type_degrades_to_error() {
+    let err = parse_from_sim(r#"{"t":"notARealMessage","p":{}}"#).unwrap_err();
+    match err {
+        mf_protocol::envelope::EnvelopeError::UnknownType(t) => {
+            assert_eq!(t, "notARealMessage");
+        }
+        other => panic!("expected UnknownType, got {other:?}"),
+    }
+}
+
+#[test]
+fn ui_state_omitted_optional_fields_default_not_panic() {
+    // Sim-depth optionals + failed/maxDay/eraLabel all default when absent.
+    let json = minimal_ui_state_json();
+    let ui: UiState = serde_json::from_str(json).expect("must accept legacy shape");
+    assert!(ui.failed.is_none());
+    assert!(ui.max_day.is_none());
+    assert!(ui.era_label.is_none());
+    assert!(ui.hour_of_day.is_none());
+    assert!(ui.demand_factor.is_none());
+    assert!(ui.districts.is_empty());
+    assert!(ui.overcrowded_routes.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Binary decoder fuzz-ish edge cases (truncated / zero / max counts)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn decode_binary_empty_and_unknown_msg_type() {
+    assert!(matches!(
+        decode_binary(&[]),
+        Err(BinaryError::TooShort { .. })
+    ));
+    assert!(matches!(
+        decode_binary(&[99]),
+        Err(BinaryError::UnknownMsgType(99))
+    ));
+}
+
+#[test]
+fn frame_snapshot_zero_counts_and_truncated() {
+    // Minimal valid frame: header only, all counts zero.
+    let mut b = vec![1u8, 1u8];
+    push_u16(&mut b, 0);
+    push_u32(&mut b, 7); // tick
+    push_u32(&mut b, 0); // vehicleCount
+    push_u32(&mut b, 0); // agentCount
+    push_u32(&mut b, 0); // colorTableLen
+    push_u32(&mut b, 0); // reserved
+    let decoded = FrameSnapshot::decode(&b).expect("zero-count frame");
+    assert_eq!(decoded.tick, 7);
+    assert!(decoded.vehicles.is_empty());
+    assert!(decoded.agents.is_empty());
+    assert!(decoded.color_table.is_empty());
+    assert_eq!(decoded.encode(), b);
+
+    // Truncated mid-header.
+    assert!(matches!(
+        FrameSnapshot::decode(&b[..10]),
+        Err(BinaryError::TooShort { .. })
+    ));
+
+    // Declares one vehicle but body is missing → TooShort, not panic.
+    let mut short = b.clone();
+    short[8..12].copy_from_slice(&1u32.to_le_bytes()); // vehicleCount = 1
+    assert!(matches!(
+        FrameSnapshot::decode(&short),
+        Err(BinaryError::TooShort { .. })
+    ));
+
+    // "Max" count relative to a tiny buffer: huge vehicleCount must fail
+    // closed on TooShort without attempting a giant allocation past the buf.
+    let mut huge = b.clone();
+    huge[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(matches!(
+        FrameSnapshot::decode(&huge),
+        Err(BinaryError::TooShort { .. })
+    ));
+}
+
+#[test]
+fn fields_zero_count_and_truncated() {
+    let mut b = vec![2u8, 1u8];
+    push_u16(&mut b, 0);
+    push_u32(&mut b, 1); // version
+    push_u32(&mut b, 0); // cellCount
+    push_u32(&mut b, 0);
+    let decoded = Fields::decode(&b).expect("zero cells");
+    assert_eq!(decoded.cell_count, 0);
+    assert!(decoded.terrain.is_empty());
+    assert!(decoded.water.is_empty());
+    assert_eq!(decoded.encode(), b);
+
+    assert!(matches!(
+        Fields::decode(&b[..8]),
+        Err(BinaryError::TooShort { .. })
+    ));
+
+    // cellCount=1 but no body.
+    let mut short = b.clone();
+    short[8..12].copy_from_slice(&1u32.to_le_bytes());
+    assert!(matches!(
+        Fields::decode(&short),
+        Err(BinaryError::TooShort { .. })
+    ));
+}
+
+#[test]
+fn traffic_zero_counts_and_truncated() {
+    let mut b = vec![3u8, 1u8];
+    push_u16(&mut b, 0); // hotspotCount
+    push_u32(&mut b, 0); // w
+    push_u32(&mut b, 0); // h
+    push_f32(&mut b, 50.0);
+    push_f32(&mut b, 0.0);
+    push_f32(&mut b, 0.0);
+    push_u32(&mut b, 0); // valueCount
+    push_u32(&mut b, 0);
+    let decoded = Traffic::decode(&b).expect("empty traffic");
+    assert!(decoded.values.is_empty());
+    assert!(decoded.hotspots.is_empty());
+    assert_eq!(decoded.encode(), b);
+
+    assert!(matches!(
+        Traffic::decode(&b[..16]),
+        Err(BinaryError::TooShort { .. })
+    ));
+
+    // hotspotCount=1 with no hotspot body.
+    let mut short = b.clone();
+    short[2..4].copy_from_slice(&1u16.to_le_bytes());
+    assert!(matches!(
+        Traffic::decode(&short),
+        Err(BinaryError::TooShort { .. })
+    ));
+}
+
+#[test]
+fn static_mask_zero_res_and_truncated() {
+    let mut b = vec![4u8, 1u8, 1u8, 0u8]; // which=park
+    push_u32(&mut b, 0); // res=0 → 0 bytes of mask
+    push_u32(&mut b, 0);
+    let decoded = StaticMask::decode(&b).expect("res=0");
+    assert_eq!(decoded.res, 0);
+    assert!(decoded.mask.is_empty());
+    assert_eq!(decoded.which, MaskWhich::Park);
+
+    // res=2 declares 4 bytes but none follow.
+    let mut short = vec![4u8, 1u8, 1u8, 0u8];
+    push_u32(&mut short, 2);
+    push_u32(&mut short, 0);
+    assert!(matches!(
+        StaticMask::decode(&short),
+        Err(BinaryError::TooShort { .. })
+    ));
+
+    // Unknown which value.
+    let mut bad_which = vec![4u8, 1u8, 99u8, 0u8];
+    push_u32(&mut bad_which, 0);
+    push_u32(&mut bad_which, 0);
+    assert!(matches!(
+        StaticMask::decode(&bad_which),
+        Err(BinaryError::UnknownMaskWhich(99))
+    ));
+}
+
+#[test]
+fn static_buildings_max_vertex_count_accepted_and_huge_count_truncates() {
+    // vertexCount=64 (the documented max) must decode.
+    let verts: Vec<(i16, i16)> = (0..64).map(|i| (i, i)).collect();
+    let mut b = vec![5u8, 1u8];
+    push_u16(&mut b, 0);
+    push_u32(&mut b, 1);
+    push_u32(&mut b, 64);
+    push_building(&mut b, 100, &verts);
+    let decoded = StaticBuildings::decode(&b).expect("64-vert building");
+    assert_eq!(decoded.buildings[0].verts.len(), 64);
+
+    // Hostile buildingCount with a tiny buffer: TooShort, not panic/OOM.
+    let mut hostile = vec![5u8, 1u8];
+    push_u16(&mut hostile, 0);
+    push_u32(&mut hostile, u32::MAX);
+    push_u32(&mut hostile, 0);
+    assert!(matches!(
+        StaticBuildings::decode(&hostile),
+        Err(BinaryError::TooShort { .. })
+    ));
+}
