@@ -116,7 +116,7 @@ pub const GOOD: egui::Color32 = egui::Color32::from_rgb(0x34, 0xc7, 0x59);
 pub const WARN: egui::Color32 = egui::Color32::from_rgb(0xff, 0x95, 0x00);
 pub const BAD: egui::Color32 = egui::Color32::from_rgb(0xff, 0x3b, 0x30);
 /// De-emphasized secondary text (same role as `hud.rs`'s `MUTED_TEXT`).
-pub const MUTED: egui::Color32 = egui::Color32::from_rgb(0x6b, 0x6d, 0x72);
+pub const MUTED: egui::Color32 = egui::Color32::from_rgb(0x5c, 0x5e, 0x63);
 
 /// Fill for an inactive/idle toggle-style control (`hud.rs` uses this same
 /// value for its speed/subway toggle buttons' resting state).
@@ -243,6 +243,22 @@ pub fn hover_bg() -> egui::Color32 {
 }
 pub fn border() -> egui::Color32 {
     current_colors().border
+}
+
+/// Full-screen pause/report/settings scrim — theme-aware so Dark/Purple
+/// don't get a Light-theme rich-black wash. Alpha ~0.55 keeps the diorama
+/// readable underneath while locking focus on the overlay card.
+pub fn scrim() -> egui::Color32 {
+    let c = current_colors().extreme_bg;
+    egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 140)
+}
+
+/// Soft menu wash over the attract diorama: enough contrast for body copy
+/// without painting an opaque slab over the white-city (art-direction:
+/// the world is the brand). Top/bottom chrome bars stay fully opaque.
+pub fn menu_wash() -> egui::Color32 {
+    let c = current_colors().panel_bg;
+    egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 38)
 }
 
 // ---------------------------------------------------------------------
