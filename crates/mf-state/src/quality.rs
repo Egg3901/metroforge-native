@@ -102,7 +102,16 @@ pub struct QualityKnobs {
     /// Shadow cascade map resolution; `None` means shadows off.
     pub shadow_map_size: Option<u32>,
     /// `true` = unlit (vertex-color-only) material, `false` = lit `StandardMaterial`.
+    /// Tier-wide flat-shade flag: also drives roads, agents, vehicles, trees,
+    /// transit stripes, and the fog-tier classification. Keep the rich-black
+    /// streets flat on the low tiers by leaving this `true` there.
     pub unlit_material: bool,
+    /// Cel-shade the *buildings* with a lit `StandardMaterial` so massing reads
+    /// by sun-angle face contrast at any zoom (art dir: cel look on every
+    /// tier). Independent of [`unlit_material`] so the low tiers can cel-light
+    /// buildings without also lighting the black road/vehicle materials. When
+    /// `false`, buildings fall back to the flat unlit-with-night-dim path.
+    pub building_lit: bool,
     /// Building draw distance in meters; `None` means unlimited ("full").
     pub building_draw_distance_m: Option<f32>,
     /// Max agents drawn from the latest frame (0 = none on Potato).
@@ -354,6 +363,11 @@ impl QualityTier {
                 msaa_samples: 1,
                 shadow_map_size: None,
                 unlit_material: true,
+                // Cel-light buildings (lit matte, no shadow pass on Potato):
+                // sun-angle face contrast so far-zoom massing reads without
+                // leaning on the distance-fading outline. Roads/vehicles stay
+                // unlit (flat black) via `unlit_material` above.
+                building_lit: true,
                 building_draw_distance_m: Some(3_000.0),
                 agent_cap: 0,
                 terrain_subdiv_divisor: 3,
@@ -387,8 +401,12 @@ impl QualityTier {
                 // step but too costly for the weak-GPU tier, so this stays 1
                 // (off); the outline crispness is the win, not AA.
                 msaa_samples: 1,
-                shadow_map_size: None,
+                // Cheap 1024 shadow map (Medium is 2048, High 4096): now that
+                // buildings are lit on Low, a small shadow map grounds them
+                // with contact shadows without paying the Medium cost.
+                shadow_map_size: Some(1024),
                 unlit_material: true,
+                building_lit: true,
                 building_draw_distance_m: Some(6_000.0),
                 agent_cap: 100,
                 terrain_subdiv_divisor: 2,
@@ -414,6 +432,7 @@ impl QualityTier {
                 msaa_samples: 4,
                 shadow_map_size: Some(2048),
                 unlit_material: false,
+                building_lit: true,
                 building_draw_distance_m: Some(12_000.0),
                 agent_cap: 250,
                 terrain_subdiv_divisor: 1,
@@ -440,6 +459,7 @@ impl QualityTier {
                 msaa_samples: 4,
                 shadow_map_size: Some(4096),
                 unlit_material: false,
+                building_lit: true,
                 building_draw_distance_m: None,
                 agent_cap: 400,
                 terrain_subdiv_divisor: 1,
@@ -636,6 +656,30 @@ mod tests {
         // Untouched knobs stay on the Potato preset.
         assert!(potato.unlit_material);
         assert_eq!(potato.shadow_map_size, None);
+    }
+
+    #[test]
+    fn buildings_are_cel_lit_on_every_tier() {
+        // Art direction: buildings read via sun-angle face contrast on every
+        // tier, so `building_lit` is on across the board even where the
+        // tier-wide `unlit_material` (roads/vehicles) stays flat.
+        for tier in [
+            QualityTier::Potato,
+            QualityTier::Low,
+            QualityTier::Medium,
+            QualityTier::High,
+        ] {
+            assert!(
+                tier.knobs().building_lit,
+                "{tier:?} should cel-light buildings"
+            );
+        }
+        // Cheaper shadows on the low tiers: Potato none, Low a small map,
+        // Medium/High progressively larger.
+        assert_eq!(QualityTier::Potato.knobs().shadow_map_size, None);
+        assert_eq!(QualityTier::Low.knobs().shadow_map_size, Some(1024));
+        assert_eq!(QualityTier::Medium.knobs().shadow_map_size, Some(2048));
+        assert_eq!(QualityTier::High.knobs().shadow_map_size, Some(4096));
     }
 
     #[test]

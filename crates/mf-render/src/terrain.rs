@@ -130,11 +130,22 @@ impl TerrainSampleData {
         }
         let gx = (x - self.origin_x) / self.cell_size;
         let gy = (z - self.origin_y) / self.cell_size;
+        let land_y = self.bilinear_f32(&self.terrain, gx, gy) * TERRAIN_Z_SCALE;
+        // Shoreline height blends across a band instead of a hard `> 0.5`
+        // cliff (#112): a binary cut on the bilinearly-interpolated water
+        // fraction snapped whole cells between land height and water level,
+        // giving a stair-stepped coast. Ease land -> water level across
+        // [0.4, 0.6] so the shore descends smoothly (beach/quay) and inland
+        // cells stay at true terrain height.
         let water_frac = self.bilinear_u8(&self.water, gx, gy);
-        if water_frac > 0.5 {
+        if water_frac <= 0.4 {
+            return land_y;
+        }
+        if water_frac >= 0.6 {
             return WATER_LEVEL_Y;
         }
-        self.bilinear_f32(&self.terrain, gx, gy) * TERRAIN_Z_SCALE
+        let t = smoothstep(0.4, 0.6, water_frac);
+        land_y + (WATER_LEVEL_Y - land_y) * t
     }
 }
 

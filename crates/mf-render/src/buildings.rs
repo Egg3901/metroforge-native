@@ -453,17 +453,28 @@ fn build_buildings_system(
                 )
             };
 
-            // Base at the footprint's LOWEST corner minus a 3m foundation
-            // skirt: a centroid-only sample let sloped terrain slice a
-            // white plane through one side of a prism while the other side
-            // floated (owner report). Sinking the base under the lowest
-            // point keeps every wall grounded on any slope the tamed
-            // terrain can produce.
-            let ground_y = ring
-                .iter()
-                .map(|v| height_at.sample(v.x, v.y))
-                .fold(height_at.sample(centroid.x, centroid.y), f32::min)
-                - 3.0;
+            // Ground the flat prism bottom on sloped terrain (#113). Sample
+            // the footprint's ground at every ring corner, every edge
+            // midpoint (a long wall can cross a dip lower than either corner),
+            // and the centroid; take the LOWEST. Then sink the base under it
+            // by a foundation skirt that grows with the footprint's own relief
+            // span (`hi - lo`), so the downhill edge stays buried instead of
+            // floating even between samples. Flat ground keeps the old 3m
+            // skirt. This robustness is what lets the relief cap rise later
+            // without prisms slicing through hillsides.
+            let mut lo = height_at.sample(centroid.x, centroid.y);
+            let mut hi = lo;
+            let n = ring.len();
+            for i in 0..n {
+                let a = ring[i];
+                let b = ring[(i + 1) % n];
+                for p in [a, (a + b) * 0.5] {
+                    let g = height_at.sample(p.x, p.y);
+                    lo = lo.min(g);
+                    hi = hi.max(g);
+                }
+            }
+            let ground_y = lo - (3.0 + (hi - lo) * 0.5);
             let (cx, cz) = chunk_index(centroid, world_size);
             // Same volume-argmax semantics as the mask path above (footprint
             // AREA x height, not lot count), real polygon area this time
@@ -761,15 +772,17 @@ fn build_buildings_system(
         }
     }
 
-    let unlit = effective.0.unlit_material;
-    // Facade window grids are Medium/High only (`!unlit_material` is exactly
-    // those two tiers in the knob table). Potato/Low keep flat cel masses.
-    let facade_enabled = !unlit;
-    // Night-dim only applies on unlit tiers (see `apply_night_dim_system`);
+    // Facade window grids stay Medium/High only (`!unlit_material` is exactly
+    // those two tiers). Building cel-lighting is a *separate* knob so the low
+    // tiers can light their masses without lighting the black road material.
+    let facade_enabled = !effective.0.unlit_material;
+    let building_unlit = !effective.0.building_lit;
+    // Night-dim only applies to unlit buildings (see `apply_night_dim_system`);
     // bake the *current* dim in at creation time so a mid-night rebuild
     // doesn't flash back to flat white until the next dim pass happens to
-    // run — the material starts already correct.
-    let base_color = if unlit {
+    // run — the material starts already correct. Lit buildings darken via the
+    // directional light instead, so they start plain white here.
+    let base_color = if building_unlit {
         Color::WHITE.mix(&palette::building_night(), day_night.night_factor)
     } else {
         Color::WHITE
@@ -785,7 +798,7 @@ fn build_buildings_system(
     let material = materials.add(BuildingMaterial {
         base: StandardMaterial {
             base_color,
-            unlit,
+            unlit: building_unlit,
             perceptual_roughness: 1.0,
             reflectance: 0.0,
             ..default()
@@ -809,7 +822,7 @@ fn build_buildings_system(
         },
     });
     state.material = Some(material.clone());
-    state.applied_night_factor_bucket = if unlit {
+    state.applied_night_factor_bucket = if building_unlit {
         Some(quantize_night_factor(day_night.night_factor))
     } else {
         None
@@ -911,10 +924,9 @@ fn apply_quality_to_buildings_material_system(
     let Some(handle) = &state.material else {
         return;
     };
-    let unlit = effective.0.unlit_material;
-    let facade_enabled = !unlit;
+    let facade_enabled = !effective.0.unlit_material;
     if let Some(mat) = materials.get_mut(handle) {
-        mat.base.unlit = unlit;
+        mat.base.unlit = !effective.0.building_lit;
         mat.extension.facade = Vec4::new(
             day_night.night_factor,
             if facade_enabled { 1.0 } else { 0.0 },
@@ -939,16 +951,16 @@ fn quantize_night_factor(v: f32) -> i32 {
 
 /// Night-dims the shared buildings material toward `palette::building_night`
 /// (art-direction §6: "night = ... buildings dim to #b9bec4"). Only needed
-/// on unlit tiers — lit tiers already darken naturally as the directional
-/// light's illuminance drops (`daynight.rs`), and stacking both would
-/// over-darken.
+/// for unlit buildings — lit buildings (every tier once `building_lit` is on)
+/// darken naturally as the directional light's illuminance drops
+/// (`daynight.rs`), and stacking both would over-darken.
 fn apply_night_dim_system(
     effective: Res<EffectiveKnobs>,
     day_night: Res<crate::daynight::DayNightState>,
     mut state: ResMut<BuildingsState>,
     mut materials: ResMut<Assets<BuildingMaterial>>,
 ) {
-    if !effective.0.unlit_material {
+    if effective.0.building_lit {
         return;
     }
     let Some(handle) = state.material.clone() else {
