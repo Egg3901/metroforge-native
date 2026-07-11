@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=MetroForge
+Comment=City-building game
+Exec=metroforge
+Icon=metroforge
+Terminal=false
+Categories=Game;Simulation;
