@@ -27,7 +27,8 @@ mod transit;
 mod trees;
 mod vehicles;
 
-use bevy::pbr::DirectionalLightShadowMap;
+use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::pbr::{DirectionalLightShadowMap, DistanceFog, FogFalloff};
 use bevy::prelude::*;
 
 use mf_state::{QualityTier, Theme};
@@ -79,7 +80,14 @@ impl Plugin for MfRenderPlugin {
             Update,
             (
                 sync_theme_system.before(MfRenderSet::Terrain),
-                apply_quality_render_settings_system.in_set(MfRenderSet::Dynamic),
+                // Runs before daynight's apply system (same `Dynamic` set)
+                // so a freshly-inserted `DistanceFog` gets its real
+                // day/night-matched color the same frame it's spawned,
+                // rather than showing one frame of the `Color::WHITE`
+                // placeholder default.
+                apply_quality_render_settings_system
+                    .in_set(MfRenderSet::Dynamic)
+                    .before(daynight::apply_day_night_system),
             ),
         );
     }
@@ -112,6 +120,7 @@ fn apply_quality_render_settings_system(
     mut commands: Commands,
     cameras: Query<Entity, With<Camera3d>>,
     cameras_missing_msaa: Query<Entity, (With<Camera3d>, Without<Msaa>)>,
+    cameras_missing_fog: Query<Entity, (With<Camera3d>, Without<DistanceFog>)>,
 ) {
     let knobs = quality.knobs();
     let msaa = match knobs.msaa_samples {
@@ -132,11 +141,56 @@ fn apply_quality_render_settings_system(
     for camera in &cameras_missing_msaa {
         commands.entity(camera).insert(msaa);
     }
+    // Same backfill problem for `DistanceFog` on tiers that want it
+    // (Potato/Low): a freshly spawned camera otherwise renders with no fog
+    // component at all until the tier changes. Color starts at the
+    // `Color::WHITE` default; `daynight::apply_day_night_system` (ordered
+    // right after this system, same frame) immediately overwrites it with
+    // the real sky-matched color, so there's no visible flash.
+    // Fog tiers also switch the camera to `Tonemapping::None`. Fog blends
+    // toward `fog.color` BEFORE the in-shader tonemapper runs, while the
+    // `ClearColor` sky behind it is written raw — so with the default
+    // TonyMcMapface curve a fully fogged fragment lands visibly darker/
+    // cooler than the sky it must merge into, drawing a hard seam along
+    // the horizon (measured: sky #DFE6EA vs fully-fogged terrain #B5BABC).
+    // The fog tiers are exactly the `unlit_material` tiers (Potato/Low),
+    // where every material is a flat artist-picked sRGB color and there is
+    // no HDR lighting to compress, so bypassing the tonemapper both fixes
+    // the seam exactly (fully-fogged pixel == sky pixel) and renders the
+    // palette faithfully. Lit tiers (Medium/High) keep Bevy's default.
+    if let Some((start, end)) = knobs.fog {
+        for camera in &cameras_missing_fog {
+            commands.entity(camera).insert((
+                DistanceFog {
+                    falloff: FogFalloff::Linear { start, end },
+                    ..default()
+                },
+                Tonemapping::None,
+            ));
+        }
+    }
     if !quality.is_changed() {
         return;
     }
     for camera in &cameras {
         commands.entity(camera).insert(msaa);
+        match knobs.fog {
+            Some((start, end)) => {
+                commands.entity(camera).insert((
+                    DistanceFog {
+                        falloff: FogFalloff::Linear { start, end },
+                        ..default()
+                    },
+                    Tonemapping::None,
+                ));
+            }
+            None => {
+                commands
+                    .entity(camera)
+                    .remove::<DistanceFog>()
+                    .insert(Tonemapping::default());
+            }
+        }
     }
     shadow_map.size = knobs.shadow_map_size.unwrap_or(2048) as usize;
 }

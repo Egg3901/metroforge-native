@@ -11,9 +11,7 @@
 //! volumetric fog needs directional shadow maps.
 
 use bevy::asset::RenderAssetUsages;
-use bevy::image::{
-    ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor,
-};
+use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::pbr::{FogVolume, VolumetricFog, VolumetricLight};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -110,8 +108,11 @@ fn setup_atmosphere_system(mut commands: Commands, mut images: ResMut<Assets<Ima
             light_intensity: 0.7,
             ..default()
         },
-        Transform::from_xyz(0.0, MIST_CENTER_Y_M, 0.0)
-            .with_scale(Vec3::new(20_000.0, MIST_THICKNESS_M, 20_000.0)),
+        Transform::from_xyz(0.0, MIST_CENTER_Y_M, 0.0).with_scale(Vec3::new(
+            20_000.0,
+            MIST_THICKNESS_M,
+            20_000.0,
+        )),
         Visibility::Hidden,
     ));
 
@@ -127,8 +128,11 @@ fn setup_atmosphere_system(mut commands: Commands, mut images: ResMut<Assets<Ima
             light_intensity: 1.0,
             ..default()
         },
-        Transform::from_xyz(0.0, CLOUD_CENTER_Y_M, 0.0)
-            .with_scale(Vec3::new(20_000.0, CLOUD_THICKNESS_M, 20_000.0)),
+        Transform::from_xyz(0.0, CLOUD_CENTER_Y_M, 0.0).with_scale(Vec3::new(
+            20_000.0,
+            CLOUD_THICKNESS_M,
+            20_000.0,
+        )),
         Visibility::Hidden,
     ));
 }
@@ -138,10 +142,8 @@ fn update_atmosphere_wind_system(time: Res<Time>, mut wind: ResMut<AtmosphereWin
     wind.heading = (wind.heading + WIND_HEADING_RATE * dt).rem_euclid(TAU);
     wind.gust_phase += WIND_GUST_RATE * dt;
     // Two incommensurate sines → irregular breathing, not a metronome.
-    let g = 0.5
-        + 0.5
-            * (0.65 * wind.gust_phase.sin()
-                + 0.35 * (wind.gust_phase * 1.73 + 1.1).sin());
+    let g =
+        0.5 + 0.5 * (0.65 * wind.gust_phase.sin() + 0.35 * (wind.gust_phase * 1.73 + 1.1).sin());
     wind.gust = 0.72 + g * 0.70;
 }
 
@@ -416,8 +418,7 @@ fn sync_atmosphere_system(
         },
     };
 
-    let haze_vis = HAZE_VISIBILITY_DAY_M
-        + (HAZE_VISIBILITY_NIGHT_M - HAZE_VISIBILITY_DAY_M) * n
+    let haze_vis = HAZE_VISIBILITY_DAY_M + (HAZE_VISIBILITY_NIGHT_M - HAZE_VISIBILITY_DAY_M) * n
         - twilight * 2_500.0;
     let haze_alpha = 0.42 + n * 0.30 + twilight * 0.12;
     let extinction = fog_color.mix(&twilight_fog, twilight * 0.5);
@@ -426,8 +427,7 @@ fn sync_atmosphere_system(
         .mix(&Color::srgb(0.35, 0.42, 0.65), n);
     let haze = DistanceFog {
         color: fog_color.with_alpha(haze_alpha),
-        directional_light_color: light_tint
-            .with_alpha(0.45 * (1.0 - n * 0.65) + twilight * 0.25),
+        directional_light_color: light_tint.with_alpha(0.45 * (1.0 - n * 0.65) + twilight * 0.25),
         directional_light_exponent: 18.0 + elev * 14.0,
         falloff: FogFalloff::from_visibility_colors(haze_vis.max(4_000.0), extinction, inscatter),
     };

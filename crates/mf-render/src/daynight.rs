@@ -14,7 +14,9 @@
 
 use std::f32::consts::PI;
 
-use bevy::pbr::{CascadeShadowConfig, CascadeShadowConfigBuilder, ShadowFilteringMethod};
+use bevy::pbr::{
+    CascadeShadowConfig, CascadeShadowConfigBuilder, DistanceFog, ShadowFilteringMethod,
+};
 use bevy::prelude::*;
 
 use mf_state::{LatestUi, QualityTier, Theme};
@@ -179,6 +181,7 @@ fn compute_day_night_system(
     state.target_night_factor = (-elevation * 1.2).clamp(0.0, 1.0);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_day_night_system(
     time: Res<Time>,
     mut state: ResMut<DayNightState>,
@@ -187,6 +190,7 @@ pub(crate) fn apply_day_night_system(
     quality: Res<QualityTier>,
     theme: Res<Theme>,
     mut suns: Query<(&mut DirectionalLight, &mut Transform), With<Sun>>,
+    mut fogs: Query<&mut DistanceFog, With<Camera3d>>,
 ) {
     let dt = time.delta_secs();
     // Ease displayed hour toward the sim target along the shortest wrap
@@ -215,8 +219,7 @@ pub(crate) fn apply_day_night_system(
     let night_bucket = (state.night_factor * 255.0).round() as u8;
     let hour_bucket = (state.hour / 24.0 * 1024.0).round() as u16;
     let quality_or_theme_changed = quality.is_changed() || theme.is_changed();
-    let night_dirty =
-        state.applied_night_bucket != Some(night_bucket) || quality_or_theme_changed;
+    let night_dirty = state.applied_night_bucket != Some(night_bucket) || quality_or_theme_changed;
     let hour_dirty = state.applied_hour_bucket != Some(hour_bucket) || quality_or_theme_changed;
     if !night_dirty && !hour_dirty {
         return;
@@ -234,9 +237,15 @@ pub(crate) fn apply_day_night_system(
             t.clamp(0.0, 1.0).powf(1.2)
         };
         let dusk = Color::srgb(0.92, 0.72, 0.55);
-        clear_color.0 = day_color
-            .mix(&dusk, twilight * 0.35)
-            .mix(&night_color, n);
+        clear_color.0 = day_color.mix(&dusk, twilight * 0.35).mix(&night_color, n);
+        // Distance fog (Potato/Low, quality sweep in lib.rs) must track the
+        // clear color exactly - including this same twilight/night lerp and
+        // the active theme - or the horizon shows a hard seam where fogged
+        // geometry meets open sky. Correct with `day_night_enabled: false`
+        // too: the fixed-noon branch still lands here with n=0.
+        for mut fog in &mut fogs {
+            fog.color = clear_color.0;
+        }
 
         // Cool ambient at night, warm kiss at twilight.
         ambient.color = Color::WHITE
@@ -344,10 +353,7 @@ fn adapt_shadow_cascades_system(
 fn ensure_shadow_filtering_system(
     quality: Res<QualityTier>,
     mut commands: Commands,
-    cameras: Query<
-        (Entity, Option<&ShadowFilteringMethod>),
-        With<Camera3d>,
-    >,
+    cameras: Query<(Entity, Option<&ShadowFilteringMethod>), With<Camera3d>>,
 ) {
     if quality.knobs().shadow_map_size.is_none() {
         return;
