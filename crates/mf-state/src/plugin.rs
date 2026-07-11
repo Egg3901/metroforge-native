@@ -14,6 +14,7 @@ use crate::height::HeightAt;
 use crate::overlay::OverlayState;
 use crate::quality::QualityTier;
 use crate::reveal::RevealState;
+use crate::route_focus::RouteFocus;
 use crate::subway::SubwayView;
 use crate::theme::Theme;
 use crate::ui::LatestUi;
@@ -34,6 +35,7 @@ impl Plugin for MfStatePlugin {
             .init_resource::<RevealState>()
             .init_resource::<LatestDemand>()
             .init_resource::<OverlayState>()
+            .init_resource::<RouteFocus>()
             .init_resource::<WeatherEffects>()
             // `add_event` is idempotent (it's an `init_resource` under the
             // hood), so it's safe whether or not `MfNetPlugin` was added

@@ -22,6 +22,7 @@ mod promo;
 mod quality_boot;
 mod report_ui;
 mod reveal_input;
+mod routes_panel;
 mod saves;
 mod state;
 mod theme_boot;
@@ -82,6 +83,7 @@ fn main() {
             command_bus::MfCommandBusPlugin,
             tools::MfToolsPlugin,
             build_ui::MfBuildUiPlugin,
+            routes_panel::MfRoutesPanelPlugin,
         ))
         // Bevy's Plugins tuple impl caps at 15 elements; second batch.
         .add_plugins((

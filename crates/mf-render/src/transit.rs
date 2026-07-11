@@ -13,7 +13,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use bevy::prelude::*;
 
 use mf_protocol::{TransitMode, UiState};
-use mf_state::{HeightAt, LatestUi, QualityTier, Theme};
+use mf_state::{HeightAt, LatestUi, QualityTier, RouteFocus, Theme};
 
 use crate::mesh_utils::{
     append_ribbon, arc_length_table, offset_polyline, point_along, MeshBuffers,
@@ -72,6 +72,9 @@ pub struct StationRing {
 #[derive(Component)]
 pub struct RouteStripe {
     pub mode: TransitMode,
+    /// Owning `UiRoute.id` — used by route-focus dimming so a selected
+    /// route stays vivid while siblings wash out.
+    pub route_id: i64,
     /// The route's vivid color as painted at rebuild, kept so overlay
     /// dimming can restore it exactly (owner rule: an active overlay
     /// reduces the network's color strength so the overlay owns the stage).
@@ -82,7 +85,16 @@ pub struct RouteStripe {
 /// (art-direction §7). One per metro route, initially hidden.
 #[derive(Component)]
 pub struct MetroBoldTube {
+    pub route_id: i64,
     /// See [`RouteStripe::color`].
+    pub color: Color,
+}
+
+/// Chevron accent mesh for a route stripe. Carries `route_id` so route-focus
+/// dimming can wash non-focused arrows the same way as the stripe itself.
+#[derive(Component)]
+pub struct RouteChevron {
+    pub route_id: i64,
     pub color: Color,
 }
 
@@ -582,6 +594,7 @@ fn rebuild_routes(
                 Visibility::default(),
                 RouteStripe {
                     mode: r.mode,
+                    route_id: r.id,
                     color,
                 },
                 Name::new(format!("route-stripe-{}", r.id)),
@@ -611,6 +624,10 @@ fn rebuild_routes(
                     MeshMaterial3d(chevron_mat),
                     Transform::IDENTITY,
                     Visibility::default(),
+                    RouteChevron {
+                        route_id: r.id,
+                        color: bright,
+                    },
                     Name::new(format!("route-chevrons-{}", r.id)),
                 ))
                 .id();
@@ -652,7 +669,10 @@ fn rebuild_routes(
                     MeshMaterial3d(bold_material),
                     Transform::IDENTITY,
                     Visibility::Hidden,
-                    MetroBoldTube { color },
+                    MetroBoldTube {
+                        route_id: r.id,
+                        color,
+                    },
                     Name::new(format!("route-metro-bold-{}", r.id)),
                 ))
                 .id();
@@ -661,21 +681,27 @@ fn rebuild_routes(
     }
 }
 
-/// Chevron arrows every ~120m along `path`, pointing along direction of
-/// travel (station order), same color 20% brighter (art-direction §3).
 /// Owner rule (issue #27): while any overlay mode is active, the transit
-/// network steps back so the overlay owns the stage. Stripes and bold tubes
-/// mix their painted color 60% toward white and drop emissive to 15%;
-/// restored exactly from the color stored on the component when the overlay
-/// turns off. Writes are gated on overlay-mode changes and fresh spawns
-/// (statics rebuild mid-overlay must inherit the dim) per the no-churn
-/// discipline.
-#[allow(clippy::type_complexity)]
+/// network steps back so the overlay owns the stage. Stripes, bold tubes,
+/// and chevrons mix their painted color 60% toward white and drop emissive
+/// to 15%; restored exactly from the color stored on the component when the
+/// overlay turns off.
+///
+/// Route-focus (routes panel selection) reuses the same wash: when a route
+/// is focused and no demand overlay is up, non-focused stripes/chevrons dim
+/// while the focused route stays vivid. An active demand overlay still wins
+/// (whole network dims) so the overlay keeps the stage.
+///
+/// Writes are gated on overlay/focus changes and fresh spawns (statics
+/// rebuild mid-overlay must inherit the dim) per the no-churn discipline.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn apply_overlay_dim_system(
     overlay: Res<mf_state::OverlayState>,
+    focus: Res<RouteFocus>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     stripes: Query<(&RouteStripe, &MeshMaterial3d<StandardMaterial>)>,
     tubes: Query<(&MetroBoldTube, &MeshMaterial3d<StandardMaterial>)>,
+    chevrons: Query<(&RouteChevron, &MeshMaterial3d<StandardMaterial>)>,
     tracks: Query<(&TrackRibbon, &MeshMaterial3d<StandardMaterial>)>,
     rings: Query<(&StationRing, &MeshMaterial3d<StandardMaterial>)>,
     fresh: Query<
@@ -683,17 +709,19 @@ fn apply_overlay_dim_system(
         Or<(
             Added<RouteStripe>,
             Added<MetroBoldTube>,
+            Added<RouteChevron>,
             Added<TrackRibbon>,
             Added<StationRing>,
         )>,
     >,
 ) {
-    if !overlay.is_changed() && fresh.is_empty() {
+    if !overlay.is_changed() && !focus.is_changed() && fresh.is_empty() {
         return;
     }
-    let dimmed = overlay.mode != mf_state::OverlayMode::Off;
-    let paint = |mat: &mut StandardMaterial, color: Color, emissive_strength: f32| {
-        if dimmed {
+    let overlay_dim = overlay.mode != mf_state::OverlayMode::Off;
+    let focused = focus.route_id;
+    let paint = |mat: &mut StandardMaterial, color: Color, emissive_strength: f32, dim: bool| {
+        if dim {
             mat.base_color = color.mix(&Color::WHITE, 0.6);
             mat.emissive = palette::emissive(color, emissive_strength * 0.15);
         } else {
@@ -702,38 +730,58 @@ fn apply_overlay_dim_system(
         }
     };
     // Preserve existing alpha on Blend track ribbons when dimming.
-    let paint_alpha = |mat: &mut StandardMaterial, color: Color, emissive_strength: f32| {
-        let a = mat.base_color.to_srgba().alpha;
-        if dimmed {
-            mat.base_color = color.mix(&Color::WHITE, 0.6).with_alpha(a);
-            mat.emissive = palette::emissive(color, emissive_strength * 0.15);
-        } else {
-            mat.base_color = color.with_alpha(a);
-            mat.emissive = palette::emissive(color, emissive_strength);
+    let paint_alpha =
+        |mat: &mut StandardMaterial, color: Color, emissive_strength: f32, dim: bool| {
+            let a = mat.base_color.to_srgba().alpha;
+            if dim {
+                mat.base_color = color.mix(&Color::WHITE, 0.6).with_alpha(a);
+                mat.emissive = palette::emissive(color, emissive_strength * 0.15);
+            } else {
+                mat.base_color = color.with_alpha(a);
+                mat.emissive = palette::emissive(color, emissive_strength);
+            }
+        };
+    let route_dim = |route_id: i64| -> bool {
+        if overlay_dim {
+            return true;
+        }
+        match focused {
+            Some(id) => id != route_id,
+            None => false,
         }
     };
     for (stripe, handle) in &stripes {
         if let Some(mat) = materials.get_mut(&handle.0) {
-            paint(mat, stripe.color, 0.45);
+            paint(mat, stripe.color, 0.45, route_dim(stripe.route_id));
         }
     }
     for (tube, handle) in &tubes {
         if let Some(mat) = materials.get_mut(&handle.0) {
-            paint(mat, tube.color, 0.8);
+            paint(mat, tube.color, 0.8, route_dim(tube.route_id));
+        }
+    }
+    for (chevron, handle) in &chevrons {
+        if let Some(mat) = materials.get_mut(&handle.0) {
+            paint(mat, chevron.color, 0.55, route_dim(chevron.route_id));
         }
     }
     for (track, handle) in &tracks {
         if let Some(mat) = materials.get_mut(&handle.0) {
-            paint_alpha(mat, track.color, 0.2);
+            // Tracks are shared infrastructure: dim only under a demand
+            // overlay, not under route focus (a focused route still rides
+            // the same ribbons as its siblings).
+            paint_alpha(mat, track.color, 0.2, overlay_dim);
         }
     }
     for (ring, handle) in &rings {
         if let Some(mat) = materials.get_mut(&handle.0) {
-            paint(mat, palette::mode_accent(ring.mode), 0.15);
+            paint(mat, palette::mode_accent(ring.mode), 0.15, overlay_dim);
         }
     }
 }
 
+/// Chevron arrows every ~120m along `path`, pointing along direction of
+/// travel (station order), same color 20% brighter (art-direction §3).
 fn append_chevrons(buf: &mut MeshBuffers, path: &[Vec2], height_at: &HeightAt, color: Color) {
     let (cum, total) = arc_length_table(path);
     if total < CHEVRON_SPACING {
