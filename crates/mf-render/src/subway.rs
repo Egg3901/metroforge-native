@@ -15,7 +15,7 @@ use mf_state::SubwayView;
 use crate::buildings::BuildingChunk;
 use crate::palette;
 use crate::roads::RoadSurface;
-use crate::transit::{MetroBoldTube, RouteStripe};
+use crate::transit::{MetroBoldTube, RouteStripe, TrackRibbon, TunnelBrightRibbon};
 
 /// Squashed building Y-scale at full subway view (art-direction §7).
 const SQUASH_SCALE_Y: f32 = 0.04;
@@ -41,6 +41,7 @@ impl Plugin for MfSubwayPlugin {
                     squash_buildings_system,
                     fade_road_and_stripe_alpha_system,
                     metro_bold_tube_visibility_system,
+                    tunnel_bright_visibility_system,
                     update_vignette_system,
                 )
                     .chain()
@@ -175,6 +176,42 @@ fn metro_bold_tube_visibility_system(
         } else {
             Visibility::Hidden
         };
+    }
+}
+
+/// Tunnel infrastructure: dashed/darkened overview ribbon hides once subway
+/// view takes over, replaced by the solid bright [`TunnelBrightRibbon`].
+fn tunnel_bright_visibility_system(
+    subway: Res<SubwayView>,
+    last_applied: Res<SubwayLastApplied>,
+    mut bright: Query<&mut Visibility, With<TunnelBrightRibbon>>,
+    tracks: Query<(Entity, &TrackRibbon)>,
+    fresh_bright: Query<Entity, Added<TunnelBrightRibbon>>,
+    fresh_tracks: Query<Entity, Added<TrackRibbon>>,
+    mut visibility: Query<&mut Visibility, Without<TunnelBrightRibbon>>,
+) {
+    if last_applied.t == Some(subway.t) && fresh_bright.is_empty() && fresh_tracks.is_empty() {
+        return;
+    }
+    let subway_on = subway.t > 0.5;
+    for mut vis in &mut bright {
+        *vis = if subway_on {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+    for (entity, track) in &tracks {
+        if track.grade != "tunnel" {
+            continue;
+        }
+        if let Ok(mut vis) = visibility.get_mut(entity) {
+            *vis = if subway_on {
+                Visibility::Hidden
+            } else {
+                Visibility::Visible
+            };
+        }
     }
 }
 
