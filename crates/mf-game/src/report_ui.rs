@@ -241,6 +241,7 @@ impl Plugin for MfReportUiPlugin {
             EguiPrimaryContextPass,
             report_ui_system
                 .run_if(in_state(AppState::InGame))
+                .run_if(crate::egui_idle::egui_content_active)
                 .run_if(|| !crate::design_system::hud_hidden()),
         );
     }
@@ -319,6 +320,12 @@ mod tests {
             max_day: None,
             era_label: None,
             command_count: 0,
+            hour_of_day: None,
+            demand_factor: None,
+            farebox_recovery: None,
+            lifetime: None,
+            districts: Vec::new(),
+            overcrowded_routes: Vec::new(),
         }
     }
 

@@ -17,7 +17,7 @@ use crate::campaign::{self, CampaignProgress};
 use crate::config::MfConfig;
 use crate::design_system as ds;
 use crate::goals::GoalsPanelOpen;
-use crate::saves::{self, SaveManager, SaveSlot};
+use crate::saves::{self, PlaytimeTracker, SaveManager, SaveMeta, SaveSlot};
 use crate::state::{toggle_pause, AppState, MenuScreen, PauseState, PendingInit, SimHello};
 
 const BAD: egui::Color32 = ds::BAD;
@@ -55,7 +55,21 @@ const SAVE_SLOT_COUNT: usize = saves::SLOT_COUNT as usize;
 #[derive(Resource, Default)]
 pub struct ToastLog(pub Vec<(String, ToastTone)>);
 
-const TOAST_LOG_CAP: usize = 20;
+/// Hard cap on [`ToastLog`] length. Every push path must trim to this —
+/// use [`ToastLog::push`] rather than writing `toasts.0` directly.
+pub const TOAST_LOG_CAP: usize = 20;
+
+impl ToastLog {
+    /// Append a toast and drain from the front so the log never exceeds
+    /// [`TOAST_LOG_CAP`]. The single entry point for every toast producer.
+    pub fn push(&mut self, message: String, tone: ToastTone) {
+        self.0.push((message, tone));
+        if self.0.len() > TOAST_LOG_CAP {
+            let excess = self.0.len() - TOAST_LOG_CAP;
+            self.0.drain(0..excess);
+        }
+    }
+}
 
 pub struct MfHudPlugin;
 
@@ -81,10 +95,12 @@ impl Plugin for MfHudPlugin {
                         .run_if(|| !ds::ui_gallery_enabled()),
                     in_game_hud_system
                         .run_if(in_state(AppState::InGame))
-                        .run_if(|| !ds::ui_gallery_enabled()),
+                        .run_if(|| !ds::ui_gallery_enabled())
+                        .run_if(crate::egui_idle::egui_content_active),
                     pause_overlay_system
                         .run_if(in_state(AppState::InGame))
-                        .run_if(|| !ds::ui_gallery_enabled()),
+                        .run_if(|| !ds::ui_gallery_enabled())
+                        .run_if(crate::egui_idle::egui_content_active),
                     fatal_banner_system.run_if(|| !ds::ui_gallery_enabled()),
                 )
                     .chain()
@@ -132,11 +148,7 @@ fn ui_gallery_system(mut contexts: EguiContexts) -> Result {
 fn collect_toasts_system(mut events: EventReader<SimEvent>, mut log: ResMut<ToastLog>) {
     for SimEvent(msg) in events.read() {
         if let FromSimMsg::Json(FromSimJson::Toast(toast)) = msg {
-            log.0.push((toast.message.clone(), toast.tone));
-            if log.0.len() > TOAST_LOG_CAP {
-                let excess = log.0.len() - TOAST_LOG_CAP;
-                log.0.drain(0..excess);
-            }
+            log.push(toast.message.clone(), toast.tone);
         }
     }
 }
@@ -343,6 +355,41 @@ fn draw_star(
     }
 }
 
+/// A small sun (day) or crescent moon (night) glyph for the top-bar clock,
+/// painted from primitives so it needs no font glyph the embedded Inter
+/// subset might lack. Day: filled amber disc with four short rays. Night: a
+/// crescent, cut by overpainting an offset disc in the panel fill color.
+fn draw_day_night_icon(painter: &egui::Painter, rect: egui::Rect, is_night: bool) {
+    let center = rect.center();
+    let r = rect.width().min(rect.height()) * 0.32;
+    if is_night {
+        let moon = egui::Color32::from_rgb(0xc7, 0xcb, 0xd6);
+        painter.circle_filled(center, r, moon);
+        // Bite out an offset disc in the panel color to leave a crescent.
+        painter.circle_filled(
+            center + egui::vec2(r * 0.55, -r * 0.2),
+            r * 0.95,
+            panel_bg(),
+        );
+    } else {
+        painter.circle_filled(center, r * 0.72, WARN);
+        for i in 0..4 {
+            let a = i as f32 * std::f32::consts::FRAC_PI_2 + std::f32::consts::FRAC_PI_4;
+            let dir = egui::vec2(a.cos(), a.sin());
+            painter.line_segment(
+                [center + dir * (r * 0.95), center + dir * (r * 1.35)],
+                egui::Stroke::new(1.4, WARN),
+            );
+        }
+    }
+}
+
+/// True when `hour` (0..24) falls in the night band the day/night rig treats
+/// as dark. Matches the sky's dusk/dawn feel: lamps on from 20:00 to 06:00.
+fn is_night_hour(hour: f64) -> bool {
+    !(6.0..20.0).contains(&hour)
+}
+
 /// A simple padlock silhouette (filled body + stroked shackle arc), sized
 /// for a locked city card. Deliberately separate from `build_ui.rs`'s
 /// smaller per-toolbar-button lock badge (that file isn't touched this
@@ -381,6 +428,16 @@ fn format_relative_time(saved_at_epoch_secs: u64) -> String {
         format!("{}h ago", elapsed / 3600)
     } else {
         format!("{}d ago", elapsed / 86_400)
+    }
+}
+
+fn format_playtime(secs: u64) -> String {
+    let hours = secs / 3600;
+    let mins = (secs % 3600) / 60;
+    if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else {
+        format!("{mins}m")
     }
 }
 
@@ -491,10 +548,10 @@ fn city_card(
     )
 }
 
-/// One row in the main menu's "Continue" section: an autosave or numbered
-/// slot, showing its city/day/cash/timestamp if occupied or "Empty"
-/// otherwise. Returns whether an occupied row was clicked (locked/empty
-/// rows are hover-only, same convention as [`city_card`]).
+/// One row in the save browser / Continue section: an autosave or numbered
+/// slot, showing city / sim day / network size / playtime / timestamp when
+/// occupied, or "Empty" otherwise. Returns whether an occupied row was
+/// clicked.
 fn continue_slot_row(
     ui: &mut egui::Ui,
     width: f32,
@@ -503,17 +560,15 @@ fn continue_slot_row(
     hovered: &mut Option<egui::Id>,
     sfx: &mut EventWriter<PlaySfx>,
 ) -> bool {
-    let title = match slot {
-        SaveSlot::Autosave => "Autosave".to_string(),
-        SaveSlot::Slot(n) => format!("Slot {n}"),
-    };
+    let title = slot.label();
     let occupied = meta.is_some();
     let sense = if occupied {
         egui::Sense::click()
     } else {
         egui::Sense::hover()
     };
-    let size = egui::vec2(width, 40.0);
+    let row_height = if occupied { 56.0 } else { 40.0 };
+    let size = egui::vec2(width, row_height);
     let (rect, response) = ui.allocate_exact_size(size, sense);
     if occupied {
         hover_tick(&response, hovered, sfx);
@@ -533,7 +588,34 @@ fn continue_slot_row(
         egui::StrokeKind::Inside,
     );
 
-    let content_rect = rect.shrink2(egui::vec2(12.0, 6.0));
+    // Cheap thumbnail affordance: a small color chip when a PNG is present,
+    // otherwise a muted placeholder block so the layout stays stable.
+    let thumb_size = egui::vec2(28.0, 28.0);
+    let thumb_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.left() + 10.0, rect.center().y - thumb_size.y * 0.5),
+        thumb_size,
+    );
+    if let Some(meta) = meta {
+        if meta.thumbnail_png_base64.is_some() {
+            painter.rect_filled(thumb_rect, egui::CornerRadius::same(2), accent());
+        } else {
+            painter.rect_filled(
+                thumb_rect,
+                egui::CornerRadius::same(2),
+                card_border().gamma_multiply(0.45),
+            );
+        }
+    }
+
+    let content_left = if occupied {
+        thumb_rect.right() + 10.0
+    } else {
+        rect.left() + 12.0
+    };
+    let content_rect = egui::Rect::from_min_max(
+        egui::pos2(content_left, rect.top() + 6.0),
+        egui::pos2(rect.right() - 12.0, rect.bottom() - 6.0),
+    );
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(content_rect)
@@ -560,11 +642,23 @@ fn continue_slot_row(
                 .city_label
                 .clone()
                 .unwrap_or_else(|| "Unknown city".to_string());
-            format!("{}  Day {}  {}", city, meta.day, format_cash(meta.cash))
+            format!(
+                "{city} · Day {} · {} stops · {}",
+                meta.day,
+                meta.network_size,
+                format_playtime(meta.playtime_secs)
+            )
         }
         None => "Empty".to_string(),
     };
     child.label(egui::RichText::new(subtitle).size(11.0).color(muted_text()));
+    if let Some(meta) = meta {
+        child.label(
+            egui::RichText::new(format_cash(meta.cash))
+                .size(11.0)
+                .color(muted_text()),
+        );
+    }
 
     occupied && response.clicked()
 }
@@ -583,6 +677,7 @@ fn main_menu_hud_system(
     screen: ResMut<MenuScreen>,
     sfx: EventWriter<PlaySfx>,
     exit: EventWriter<AppExit>,
+    playtime: ResMut<PlaytimeTracker>,
     hovered: Local<Option<egui::Id>>,
     slots_cache: Local<Option<Vec<saves::SlotEntry>>>,
 ) -> Result {
@@ -596,6 +691,17 @@ fn main_menu_hud_system(
             save_manager,
             toasts,
             state,
+            next_state,
+            screen,
+            sfx,
+            playtime,
+            hovered,
+            slots_cache,
+        )?,
+        MenuScreen::LoadGame => load_game_screen_ui(
+            contexts,
+            save_manager,
+            toasts,
             next_state,
             screen,
             sfx,
@@ -667,8 +773,9 @@ fn draw_logo(ui: &mut egui::Ui, size: f32) {
 }
 
 /// Title screen: full-bleed diorama, large wordmark, left-anchored menu
-/// column of borderless text buttons with accent-bar hover, version in the
-/// bottom corner.
+/// column of borderless text buttons (Play / Load Game / Settings / Quit)
+/// with accent-bar hover, version in the bottom corner. City picking, the
+/// save browser, and options each live one click away.
 fn title_screen_ui(
     mut contexts: EguiContexts,
     mut screen: ResMut<MenuScreen>,
@@ -722,6 +829,12 @@ fn title_screen_ui(
                         sfx.write(PlaySfx(Sfx::Confirm));
                         *screen = MenuScreen::CitySelect;
                     }
+                    let load = ds::menu_text_button(ui, "Load Game");
+                    hover_tick(&load, &mut hovered, &mut sfx);
+                    if load.clicked() {
+                        sfx.write(PlaySfx(Sfx::Confirm));
+                        *screen = MenuScreen::LoadGame;
+                    }
                     let settings = ds::menu_text_button(ui, "Settings");
                     hover_tick(&settings, &mut hovered, &mut sfx);
                     if settings.clicked() {
@@ -766,6 +879,7 @@ fn city_select_screen_ui(
     mut next_state: ResMut<NextState<AppState>>,
     mut screen: ResMut<MenuScreen>,
     mut sfx: EventWriter<PlaySfx>,
+    mut playtime: ResMut<PlaytimeTracker>,
     mut hovered: Local<Option<egui::Id>>,
     mut slots_cache: Local<Option<Vec<saves::SlotEntry>>>,
 ) -> Result {
@@ -991,6 +1105,7 @@ fn city_select_screen_ui(
 
     if start_pressed {
         sfx.write(PlaySfx(Sfx::Confirm));
+        saves::reset_playtime(&mut playtime);
         next_state.set(AppState::Loading);
     }
     if go_back {
@@ -1000,13 +1115,136 @@ fn city_select_screen_ui(
     Ok(())
 }
 
-/// Settings screen: quality tier + theme, the two overrides `config.rs`
-/// actually persists to `config.toml` (there's nothing else in that file
-/// to expose yet). Shared verbatim by the title screen's Settings button
-/// and the in-game pause menu's Settings button — both call sites own
-/// what "Back" means for them (return to `MenuScreen::Title` vs. close
-/// the pause-menu settings panel) via this function's `bool` return
-/// (true == Back was clicked this frame).
+/// Title-screen save browser: every autosave ring entry + numbered slot
+/// with city / sim day / network size / playtime / relative timestamp.
+#[allow(clippy::too_many_arguments)]
+fn load_game_screen_ui(
+    mut contexts: EguiContexts,
+    mut save_manager: ResMut<SaveManager>,
+    mut toasts: ResMut<ToastLog>,
+    mut next_state: ResMut<NextState<AppState>>,
+    mut screen: ResMut<MenuScreen>,
+    mut sfx: EventWriter<PlaySfx>,
+    mut hovered: Local<Option<egui::Id>>,
+    mut slots_cache: Local<Option<Vec<saves::SlotEntry>>>,
+) -> Result {
+    if slots_cache.is_none() {
+        *slots_cache = Some(saves::list());
+    }
+    // Refresh when re-entering this screen from Title.
+    if screen.is_changed() {
+        *slots_cache = Some(saves::list());
+    }
+    let slots = slots_cache.as_ref().expect("populated just above");
+
+    let ctx = contexts.ctx_mut()?;
+    let fade = ctx.animate_value_with_time(egui::Id::new("load_game_fade"), 1.0, 0.2);
+    let mut go_back = false;
+    let mut load_slot: Option<SaveSlot> = None;
+
+    egui::TopBottomPanel::bottom("load_game_back")
+        .frame(
+            egui::Frame::default()
+                .fill(panel_bg())
+                .inner_margin(egui::Margin::symmetric(16, 14)),
+        )
+        .show_separator_line(false)
+        .show(ctx, |ui| {
+            ui.set_opacity(fade);
+            ui.vertical_centered(|ui| {
+                let back = ui.add_sized(
+                    [220.0, 40.0],
+                    egui::Button::new(egui::RichText::new("Back").size(14.0))
+                        .corner_radius(crate::design_system::CORNER_RADIUS),
+                );
+                hover_tick(&back, &mut hovered, &mut sfx);
+                if back.clicked() {
+                    go_back = true;
+                }
+            });
+        });
+
+    egui::CentralPanel::default()
+        .frame(egui::Frame::default().fill(crate::design_system::menu_wash()))
+        .show(ctx, |ui| {
+            ui.set_opacity(fade);
+            ui.vertical_centered(|ui| {
+                ui.add_space(crate::design_system::SPACE_LG);
+                draw_logo(ui, 48.0);
+                ui.add_space(crate::design_system::SPACE_SM);
+                ui.label(crate::design_system::heading("Load Game").color(text_color()));
+                ui.add_space(crate::design_system::SPACE_XS);
+                ui.label(
+                    egui::RichText::new("Pick a slot to continue")
+                        .size(crate::design_system::TEXT_SM)
+                        .color(muted_text()),
+                );
+                ui.add_space(crate::design_system::SPACE_MD);
+
+                egui::ScrollArea::vertical()
+                    .max_height(ui.available_height() - 24.0)
+                    .show(ui, |ui| {
+                        ui.set_width(480.0);
+                        field_label(ui, "Autosaves");
+                        ui.add_space(4.0);
+                        for entry in slots
+                            .iter()
+                            .filter(|e| matches!(e.slot, SaveSlot::Autosave(_)))
+                        {
+                            let clicked = continue_slot_row(
+                                ui,
+                                460.0,
+                                entry.slot,
+                                entry.meta.as_ref(),
+                                &mut hovered,
+                                &mut sfx,
+                            );
+                            ui.add_space(6.0);
+                            if clicked {
+                                load_slot = Some(entry.slot);
+                            }
+                        }
+                        ui.add_space(12.0);
+                        field_label(ui, "Manual slots");
+                        ui.add_space(4.0);
+                        for entry in slots.iter().filter(|e| matches!(e.slot, SaveSlot::Slot(_))) {
+                            let clicked = continue_slot_row(
+                                ui,
+                                460.0,
+                                entry.slot,
+                                entry.meta.as_ref(),
+                                &mut hovered,
+                                &mut sfx,
+                            );
+                            ui.add_space(6.0);
+                            if clicked {
+                                load_slot = Some(entry.slot);
+                            }
+                        }
+                        ui.add_space(20.0);
+                    });
+            });
+        });
+
+    if let Some(slot) = load_slot {
+        if save_manager.load(slot, &mut toasts, &mut sfx).is_some() {
+            next_state.set(AppState::Loading);
+        }
+    }
+    if go_back {
+        sfx.write(PlaySfx(Sfx::Cancel));
+        *slots_cache = None;
+        *screen = MenuScreen::Title;
+    }
+    Ok(())
+}
+
+/// Settings screen: quality, theme, weather, autosave cadence — the
+/// overrides `config.rs` persists to `config.toml`. Shared verbatim by the
+/// title screen's Settings button and the in-game pause menu's Settings
+/// button — both call sites own what "Back" means for them (return to
+/// `MenuScreen::Title` vs. close the pause-menu settings panel) via this
+/// function's `bool` return (true == Back was clicked this frame).
 #[allow(clippy::too_many_arguments)]
 fn settings_screen_ui(
     mut contexts: EguiContexts,
@@ -1062,6 +1300,37 @@ fn settings_screen_ui(
                     sfx.write(PlaySfx(Sfx::Confirm));
                 }
             });
+
+            ui.add_space(14.0);
+            field_label(ui, "Autosave");
+            let interval_label = match settings.config.autosave_interval_days {
+                0 => "Off".to_string(),
+                n => format!("Every {n} sim-days"),
+            };
+            egui::ComboBox::from_id_salt("settings_autosave")
+                .selected_text(interval_label)
+                .width(300.0)
+                .show_ui(ui, |ui| {
+                    for days in [0_u32, 5, 10, 20, 30] {
+                        let label = if days == 0 {
+                            "Off".to_string()
+                        } else {
+                            format!("Every {days} sim-days")
+                        };
+                        let selected = settings.config.autosave_interval_days == days;
+                        if ui.selectable_label(selected, label).clicked()
+                            && settings.config.autosave_interval_days != days
+                        {
+                            settings.config.set_autosave_interval_days(days);
+                            sfx.write(PlaySfx(Sfx::Confirm));
+                        }
+                    }
+                });
+            ui.label(
+                egui::RichText::new("Keeps a ring of 3 autosaves")
+                    .size(ds::TEXT_XS)
+                    .color(muted_text()),
+            );
 
             ui.add_space(28.0);
             let replay = ds::button_sized(
@@ -1136,9 +1405,12 @@ fn in_game_hud_system(
     mut subway: ResMut<SubwayView>,
     toasts: Res<ToastLog>,
     mut goals_panel: ResMut<GoalsPanelOpen>,
+    mut route_panel: ResMut<crate::build_ui::RoutePanelState>,
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
+    mut egui_timer: Option<ResMut<crate::perf::EguiPerfTimer>>,
 ) -> Result {
+    let t0 = egui_timer.as_ref().map(|_| std::time::Instant::now());
     let ctx = contexts.ctx_mut()?;
 
     egui::TopBottomPanel::top("hud_top")
@@ -1169,8 +1441,14 @@ fn in_game_hud_system(
                     );
                     thin_separator(ui);
 
-                    const TICKS_PER_DAY: u64 = 1200;
-                    let hour = (state.tick % TICKS_PER_DAY) as f64 / TICKS_PER_DAY as f64 * 24.0;
+                    // Prefer the sidecar's sim `hourOfDay` (sim-depth, PR #31)
+                    // over the tick-derived clock so this readout stays
+                    // consistent with the day/night rig, which now reads the
+                    // same field. A small sun/moon glyph precedes the time.
+                    let hour = state.display_hour();
+                    let (icon_rect, _) =
+                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                    draw_day_night_icon(ui.painter(), icon_rect, is_night_hour(hour));
                     fixed_width_label(
                         ui,
                         egui::RichText::new(format!(
@@ -1180,7 +1458,7 @@ fn in_game_hud_system(
                             ((hour.fract()) * 60.0) as u32
                         ))
                         .monospace(),
-                        140.0,
+                        128.0,
                     );
                     thin_separator(ui);
 
@@ -1211,6 +1489,35 @@ fn in_game_hud_system(
                             .monospace(),
                         130.0,
                     );
+
+                    // Sim-depth (PR #31): a warning chip counting overcrowded
+                    // routes. Clicking it opens the route panel focused on the
+                    // first flagged route so the player can act on it. Only
+                    // shown when the sidecar reports any (old ones send none).
+                    let first_overcrowded = state
+                        .overcrowded_routes
+                        .iter()
+                        .find(|id| state.routes.iter().any(|r| r.id == **id))
+                        .copied();
+                    if let Some(route_id) = first_overcrowded {
+                        thin_separator(ui);
+                        let count = state.overcrowded_routes.len();
+                        let plural = if count == 1 { "" } else { "s" };
+                        let chip = egui::Button::new(
+                            egui::RichText::new(format!("{count} crowded route{plural}"))
+                                .color(egui::Color32::WHITE)
+                                .strong(),
+                        )
+                        .fill(WARN)
+                        .corner_radius(crate::design_system::CORNER_RADIUS);
+                        let resp = ui.add(chip).on_hover_text("Open the busiest crowded route");
+                        hover_tick(&resp, &mut hovered, &mut sfx);
+                        if resp.clicked() {
+                            route_panel.open = true;
+                            route_panel.selected = Some(route_id);
+                            sfx.write(PlaySfx(Sfx::Confirm));
+                        }
+                    }
                 } else {
                     ui.label("Connecting to city...");
                 }
@@ -1286,6 +1593,9 @@ fn in_game_hud_system(
                 });
             }
         });
+    if let (Some(t0), Some(timer)) = (t0, egui_timer.as_mut()) {
+        timer.0 = timer.0.saturating_add(t0.elapsed().as_micros() as u64);
+    }
     Ok(())
 }
 
@@ -1311,6 +1621,7 @@ fn pause_overlay_system(
     mut save_manager: ResMut<SaveManager>,
     mut toasts: ResMut<ToastLog>,
     pending: Res<PendingInit>,
+    playtime: Res<PlaytimeTracker>,
     mut exit: EventWriter<AppExit>,
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
@@ -1407,11 +1718,14 @@ fn pause_overlay_system(
                     hover_tick(&btn, &mut hovered, &mut sfx);
                     if btn.clicked() {
                         if let (Some(link), Some(state)) = (&link, &ui_state.0) {
+                            let meta = SaveMeta::from_ui(
+                                Some(pending.preset_key.clone()),
+                                state,
+                                playtime.whole_secs(),
+                            );
                             save_manager.request_save(
                                 SaveSlot::Slot(n),
-                                Some(pending.preset_key.clone()),
-                                state.day,
-                                state.cash,
+                                meta,
                                 link,
                                 &mut toasts,
                                 &mut sfx,

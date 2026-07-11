@@ -1,7 +1,7 @@
 // Building "reveal" dissolve — depth-prepass / shadow-pass fragment shader
 // (issue #18). `bevy_pbr`'s shadow map rendering reuses `PrepassPipeline<M>`
 // (see vendored `bevy_pbr::render::light::specialize_shadows`/
-// `queue_shadows`), so WITHOUT this file matching reveal.wgsl's discard
+// `queue_shadows`), so WITHOUT this file matching facade.wgsl's discard
 // test, a "dissolved" building would still fully occlude the depth buffer
 // and cast a full shadow — visible as a building you can see through still
 // blocking the sun. `RevealExtension::alpha_mode()` (`AlphaMode::Mask`) is
@@ -14,7 +14,9 @@
 // quality tier turns on normal-prepass/motion-vector-prepass consumers
 // (SSAO, TAA) — neither is wired up anywhere in this codebase today, so
 // those two branches are unexercised in practice; the discard test itself
-// (the actual point of this file) does not depend on either.
+// (the actual point of this file) does not depend on either. Discard logic
+// is duplicated from facade.wgsl (WGSL has no cheap path to `#import` our
+// own non-bevy_pbr module without a third embedded asset).
 
 #import bevy_pbr::{
     prepass_io::{VertexOutput, FragmentOutput},
@@ -24,11 +26,13 @@
     pbr_prepass_functions,
 }
 
-// Identical layout to reveal.wgsl's `RevealUniform` — same binding, same
-// buffer, both shaders just read it.
+// Identical layout to facade.wgsl's `RevealUniform` — same binding, same
+// buffer. Prepass only reads `reveal`/`params` for the discard test; the
+// `facade` field must still be present so the uniform struct size matches.
 struct RevealUniform {
     reveal: vec4<f32>,
     params: vec4<f32>,
+    facade: vec4<f32>,
 }
 
 @group(2) @binding(100)
@@ -47,9 +51,10 @@ fn reveal_bayer_threshold(frag_xy: vec2<f32>) -> f32 {
     return BAYER_4X4[iy * 4u + ix];
 }
 
-// Deliberately duplicated from reveal.wgsl — see that file's matching
-// comment for why (no cross-module `#import` path for our own shader code
-// without a third embedded asset).
+// Deliberately duplicated from facade.wgsl — see that file's matching
+// reveal helpers. WGSL has no path to `#import` our own non-`bevy_pbr`
+// module without registering a third embedded shader asset purely to hold
+// ~10 lines, which is more ceremony than the duplication it would save.
 fn reveal_should_discard(world_xz: vec2<f32>, frag_xy: vec2<f32>) -> bool {
     let dist = distance(world_xz, reveal_uniform.reveal.xy);
     let t_geom = smoothstep(reveal_uniform.reveal.z, reveal_uniform.reveal.w, dist);
