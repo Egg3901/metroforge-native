@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 /// literal in menus / HUD / tutorial / goals / settings / toasts / errors
 /// should live here as a field (or a format helper on this struct).
 #[derive(Debug)]
+#[allow(dead_code)] // exhaustive copy table; some consumers not yet keyed
 pub struct Strings {
     // --- Brand / chrome -------------------------------------------------
     pub brand: &'static str,
@@ -277,7 +278,7 @@ pub static EN: Strings = Strings {
     could_not_start_sim_prefix: "Could not start the simulation: ",
     starting_simulation: "Starting the simulation...",
     starting_simulation_attempt_prefix: "Starting the simulation (attempt ",
-    starting_simulation_attempt_of: " of 5)...",
+    starting_simulation_attempt_of: " of ",
     loading_city: "Loading city",
     ready: "ready",
     waiting: "waiting",
@@ -524,10 +525,11 @@ pub fn reset_to_en() {
     CURRENT.store(std::ptr::null_mut(), Ordering::Release);
 }
 
+#[allow(dead_code)] // format helpers for entries whose consumers are not yet keyed
 impl Strings {
-    pub fn starting_simulation_attempt(&self, attempt: u32) -> String {
+    pub fn starting_simulation_attempt(&self, attempt: u32, max: u32) -> String {
         format!(
-            "{}{attempt}{}",
+            "{}{attempt}{}{max})...",
             self.starting_simulation_attempt_prefix, self.starting_simulation_attempt_of
         )
     }

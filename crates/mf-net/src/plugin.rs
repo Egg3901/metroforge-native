@@ -13,13 +13,11 @@ use crate::sidecar::SidecarProcess;
 use crate::transport::SimTransport;
 use crate::ws_transport::WsTransport;
 
-/// Spec §1.4: "Client pings every 5 s; sidecar pongs." Without this, an idle
+/// Client pings at half the websocket liveness window so an idle-but-healthy
 /// connection (e.g. sitting at `MainMenu` before `init`, where the sidecar
-/// has no game running yet and so sends nothing) would see zero inbound
-/// traffic for >10s and `is_alive()` would (correctly, per its own contract)
-/// declare it dead, triggering a spurious reconnect. Pinging on this cadence
-/// keeps genuinely-idle-but-healthy connections under the liveness window.
-const PING_INTERVAL: Duration = Duration::from_secs(5);
+/// has no game running yet and so sends nothing) stays under the 5 s silence
+/// threshold. Without this, an idle menu screen would spuriously look dead.
+const PING_INTERVAL: Duration = Duration::from_millis(2500);
 
 /// `mf-protocol` is deliberately Bevy-free, so `FromSimMsg` can't derive
 /// `Event` there (and `mf-net` can't `impl Event for FromSimMsg` either —
@@ -52,6 +50,14 @@ impl SimLink {
             transport: Box::new(transport),
             sidecar: Some(sidecar),
         })
+    }
+
+    /// Test/harness helper: force-kill the owned sidecar process (if any)
+    /// without dropping the transport first. Used by `MF_TEST_KILL_SIDECAR`.
+    pub fn kill_sidecar_for_test(&mut self) {
+        if let Some(sidecar) = self.sidecar.as_mut() {
+            sidecar.kill_now();
+        }
     }
 }
 
@@ -86,9 +92,9 @@ impl Plugin for MfNetPlugin {
     }
 }
 
-/// Sends `ToSim::Ping` on a wall-clock cadence (spec §1.4). Uses
-/// `std::time::Instant` via a system-local rather than Bevy's `Time`
-/// resource so `mf-net` doesn't need a `bevy_time` dependency just for this.
+/// Sends `ToSim::Ping` on a wall-clock cadence. Uses `std::time::Instant`
+/// via a system-local rather than Bevy's `Time` resource so `mf-net`
+/// doesn't need a `bevy_time` dependency just for this.
 fn ping_system(link: Option<Res<SimLink>>, mut last_ping: Local<Option<Instant>>) {
     let Some(link) = link else {
         return;

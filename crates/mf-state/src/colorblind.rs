@@ -12,6 +12,7 @@ use bevy_ecs::prelude::*;
 /// keeps the theme's authored route/accent colors unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Resource, Default)]
 pub enum ColorblindMode {
+    /// No remapping: the theme's authored colors as-is.
     #[default]
     Off,
     /// Red-green (deuteranopia): green-weak / green-blind.
@@ -23,6 +24,7 @@ pub enum ColorblindMode {
 }
 
 impl ColorblindMode {
+    /// Every mode, in the order the Settings selector lists them.
     pub const ALL: [ColorblindMode; 4] = [
         ColorblindMode::Off,
         ColorblindMode::Deuteranopia,
@@ -40,6 +42,7 @@ impl ColorblindMode {
         }
     }
 
+    /// Parse a config/serde key (accepts a few aliases); `None` if unknown.
     pub fn from_str_key(raw: &str) -> Option<Self> {
         match raw.trim().to_lowercase().as_str() {
             "off" | "none" => Some(ColorblindMode::Off),

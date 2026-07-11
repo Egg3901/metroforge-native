@@ -444,15 +444,11 @@ fn overlay_toggle_system(
     let s = crate::strings::current();
     match overlay.mode {
         OverlayMode::Demand if !*demand_toast_shown => {
-            toasts
-                .0
-                .push((s.demand_overlay_toast.to_string(), ToastTone::Info));
+            toasts.push(s.demand_overlay_toast.to_string(), ToastTone::Info);
             *demand_toast_shown = true;
         }
         OverlayMode::Unserved if !*unserved_toast_shown => {
-            toasts
-                .0
-                .push((s.unserved_overlay_toast.to_string(), ToastTone::Info));
+            toasts.push(s.unserved_overlay_toast.to_string(), ToastTone::Info);
             *unserved_toast_shown = true;
         }
         _ => {}

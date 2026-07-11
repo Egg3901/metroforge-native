@@ -15,7 +15,7 @@ use mf_state::SubwayView;
 use crate::buildings::BuildingChunk;
 use crate::palette;
 use crate::roads::RoadSurface;
-use crate::transit::{MetroBoldTube, RouteStripe};
+use crate::transit::{MetroBoldTube, RouteStripe, TrackRibbon, TunnelBrightRibbon};
 
 /// Squashed building Y-scale at full subway view (art-direction §7).
 const SQUASH_SCALE_Y: f32 = 0.04;
@@ -41,6 +41,7 @@ impl Plugin for MfSubwayPlugin {
                     squash_buildings_system,
                     fade_road_and_stripe_alpha_system,
                     metro_bold_tube_visibility_system,
+                    tunnel_bright_visibility_system,
                     update_vignette_system,
                 )
                     .chain()
@@ -92,10 +93,14 @@ fn fade_road_and_stripe_alpha_system(
     mut materials: ResMut<Assets<StandardMaterial>>,
     roads: Query<&MeshMaterial3d<StandardMaterial>, With<RoadSurface>>,
     stripes: Query<(&RouteStripe, &MeshMaterial3d<StandardMaterial>)>,
-    terrain: Query<&MeshMaterial3d<StandardMaterial>, With<crate::terrain::TerrainSurface>>,
+    terrain: Query<
+        &MeshMaterial3d<crate::terrain_material::TerrainMaterial>,
+        With<crate::terrain::TerrainSurface>,
+    >,
     fresh_roads: Query<Entity, Added<RoadSurface>>,
     fresh_stripes: Query<Entity, Added<RouteStripe>>,
     fresh_terrain: Query<Entity, Added<crate::terrain::TerrainSurface>>,
+    mut terrain_materials: ResMut<Assets<crate::terrain_material::TerrainMaterial>>,
 ) {
     // Roads, terrain and route stripes are each independently rebuilt
     // (despawn+respawn with brand-new materials) by their own modules; a
@@ -128,8 +133,8 @@ fn fade_road_and_stripe_alpha_system(
     // `AlphaMode` is untouched (it's created, and stays, `Opaque`).
     let dim = 1.0 - subway.t * GROUND_DIM;
     for handle in &terrain {
-        if let Some(mat) = materials.get_mut(&handle.0) {
-            mat.base_color = Color::srgb(dim, dim, dim);
+        if let Some(mat) = terrain_materials.get_mut(&handle.0) {
+            mat.base.base_color = Color::srgb(dim, dim, dim);
         }
     }
     for (stripe, handle) in &stripes {
@@ -171,6 +176,42 @@ fn metro_bold_tube_visibility_system(
         } else {
             Visibility::Hidden
         };
+    }
+}
+
+/// Tunnel infrastructure: dashed/darkened overview ribbon hides once subway
+/// view takes over, replaced by the solid bright [`TunnelBrightRibbon`].
+fn tunnel_bright_visibility_system(
+    subway: Res<SubwayView>,
+    last_applied: Res<SubwayLastApplied>,
+    mut bright: Query<&mut Visibility, With<TunnelBrightRibbon>>,
+    tracks: Query<(Entity, &TrackRibbon)>,
+    fresh_bright: Query<Entity, Added<TunnelBrightRibbon>>,
+    fresh_tracks: Query<Entity, Added<TrackRibbon>>,
+    mut visibility: Query<&mut Visibility, Without<TunnelBrightRibbon>>,
+) {
+    if last_applied.t == Some(subway.t) && fresh_bright.is_empty() && fresh_tracks.is_empty() {
+        return;
+    }
+    let subway_on = subway.t > 0.5;
+    for mut vis in &mut bright {
+        *vis = if subway_on {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+    for (entity, track) in &tracks {
+        if track.grade != "tunnel" {
+            continue;
+        }
+        if let Ok(mut vis) = visibility.get_mut(entity) {
+            *vis = if subway_on {
+                Visibility::Hidden
+            } else {
+                Visibility::Visible
+            };
+        }
     }
 }
 
