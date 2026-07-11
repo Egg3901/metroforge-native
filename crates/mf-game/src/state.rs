@@ -148,6 +148,7 @@ impl Plugin for MfGameStatePlugin {
             .add_systems(OnEnter(AppState::InGame), on_enter_ingame_system)
             .add_systems(OnExit(AppState::InGame), on_exit_ingame_system)
             .add_systems(Update, net_status_watchdog)
+            .add_systems(Update, sync_day_night_pref_system)
             .add_systems(
                 Update,
                 connecting_sim_system.run_if(in_state(AppState::ConnectingSim)),
@@ -235,6 +236,18 @@ fn boot_system(
         }
     }
     next_state.set(AppState::ConnectingSim);
+}
+
+/// Keep the shared `DayNightEnabled` resource (read by `mf-render`'s daynight
+/// system) in sync with the player's `config.day_night` preference. Cheap;
+/// `mf-render` cannot read `mf-game`'s config directly.
+fn sync_day_night_pref_system(
+    config: Res<crate::config::MfConfig>,
+    mut pref: ResMut<mf_state::DayNightEnabled>,
+) {
+    if pref.enabled != config.day_night {
+        pref.enabled = config.day_night;
+    }
 }
 
 fn on_enter_ingame_system(

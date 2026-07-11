@@ -237,6 +237,11 @@ struct ConfigFile {
     /// explicit volumetric_clouds delta wins.
     #[serde(default = "default_weather_effects")]
     weather_effects: bool,
+    /// Animated day/night cycle. Defaults on; when off, the sky/light hold at
+    /// noon (on tiers that support the cycle). Present for absent keys so old
+    /// config.toml files keep the cycle.
+    #[serde(default = "default_day_night")]
+    day_night: bool,
     /// Advanced graphics deltas on top of the selected quality preset.
     #[serde(default, skip_serializing_if = "GraphicsOverridesFile::is_empty")]
     graphics: GraphicsOverridesFile,
@@ -297,6 +302,10 @@ struct ConfigFile {
     pause_on_start: bool,
 }
 
+fn default_day_night() -> bool {
+    true
+}
+
 fn default_weather_effects() -> bool {
     true
 }
@@ -332,6 +341,7 @@ impl Default for ConfigFile {
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
+            day_night: true,
             graphics: GraphicsOverridesFile::default(),
             show_fps: false,
             borderless_fullscreen: false,
@@ -366,6 +376,8 @@ pub struct MfConfig {
     /// Player preference for atmospheric weather (fog/cloud). Still gated
     /// by quality tier / graphics overrides at render time.
     pub weather_effects: bool,
+    /// Animated day/night cycle preference.
+    pub day_night: bool,
     /// Advanced graphics deltas (mirrors `[graphics]` in config.toml).
     pub graphics: QualityOverrides,
     /// On-screen FPS counter toggle.
@@ -414,6 +426,7 @@ impl Default for MfConfig {
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
+            day_night: true,
             graphics: QualityOverrides::default(),
             show_fps: false,
             borderless_fullscreen: false,
@@ -459,6 +472,7 @@ impl MfConfig {
             theme_override: file.theme_override.map(Theme::from),
             tutorial_completed: file.tutorial_completed,
             weather_effects: file.weather_effects,
+            day_night: file.day_night,
             graphics: file.graphics.to_overrides(),
             show_fps: file.show_fps,
             borderless_fullscreen: file.borderless_fullscreen,
@@ -494,6 +508,7 @@ impl MfConfig {
             theme_override: self.theme_override.map(ConfigTheme::from),
             tutorial_completed: self.tutorial_completed,
             weather_effects: self.weather_effects,
+            day_night: self.day_night,
             graphics: GraphicsOverridesFile::from_overrides(&self.graphics),
             show_fps: self.show_fps,
             borderless_fullscreen: self.borderless_fullscreen,
@@ -536,6 +551,14 @@ impl MfConfig {
     /// passes `false` to re-arm it on the next city load.
     pub fn set_tutorial_completed(&mut self, completed: bool) {
         self.tutorial_completed = completed;
+        if let Err(e) = self.save() {
+            tracing::warn!("mf-game: failed to persist config.toml: {e}");
+        }
+    }
+
+    /// Persist the day/night-cycle preference (Settings checkbox).
+    pub fn set_day_night(&mut self, on: bool) {
+        self.day_night = on;
         if let Err(e) = self.save() {
             tracing::warn!("mf-game: failed to persist config.toml: {e}");
         }
@@ -654,6 +677,7 @@ mod tests {
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
+            day_night: true,
             graphics: GraphicsOverridesFile::default(),
             show_fps: false,
             borderless_fullscreen: false,
@@ -797,6 +821,7 @@ mod tests {
             theme_override: None,
             tutorial_completed: false,
             weather_effects: true,
+            day_night: true,
             graphics: GraphicsOverridesFile {
                 shadows: Some(ConfigShadowQuality::Off),
                 draw_distance_m: Some(8_000.0),

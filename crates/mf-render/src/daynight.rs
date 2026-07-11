@@ -147,6 +147,7 @@ fn compute_day_night_system(
     theme: Res<Theme>,
     photo: Res<PhotoModeRender>,
     attract: Res<AttractLighting>,
+    day_night_pref: Res<mf_state::DayNightEnabled>,
     mut state: ResMut<DayNightState>,
 ) {
     // Photo-mode scrubber: local hour override, does not touch the sim clock.
@@ -179,7 +180,8 @@ fn compute_day_night_system(
         state.target_night_factor = night;
         return;
     }
-    if !effective.0.day_night_enabled {
+    // Tier pins noon (Potato), OR the player turned the cycle off in Settings.
+    if !effective.0.day_night_enabled || !day_night_pref.enabled {
         state.target_hour = 12.0;
         state.target_night_factor = 0.0;
         return;

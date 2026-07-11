@@ -1177,6 +1177,12 @@ fn settings_screen_ui(
                 }
             });
 
+            let mut dn = settings.config.day_night;
+            if ui.checkbox(&mut dn, s.day_night).changed() {
+                settings.config.set_day_night(dn);
+                sfx.write(PlaySfx(Sfx::Confirm));
+            }
+
             ui.add_space(14.0);
             field_label(ui, s.autosave);
             let interval_label = match settings.config.autosave_interval_days {
