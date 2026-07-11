@@ -58,6 +58,52 @@ impl MeshBuffers {
         }
     }
 
+    /// Clear lengths but keep capacity — for hot-path scratch buffers
+    /// (agents rebuild ~20 Hz) that would otherwise reallocate every tick.
+    pub fn clear(&mut self) {
+        self.positions.clear();
+        self.normals.clear();
+        self.colors.clear();
+        self.indices.clear();
+    }
+
+    /// Grow capacities if needed without discarding existing contents.
+    pub fn ensure_capacity(&mut self, vertex_capacity: usize, index_capacity: usize) {
+        if self.positions.capacity() < vertex_capacity {
+            self.positions
+                .reserve(vertex_capacity - self.positions.len());
+        }
+        if self.normals.capacity() < vertex_capacity {
+            self.normals.reserve(vertex_capacity - self.normals.len());
+        }
+        if self.colors.capacity() < vertex_capacity {
+            self.colors.reserve(vertex_capacity - self.colors.len());
+        }
+        if self.indices.capacity() < index_capacity {
+            self.indices.reserve(index_capacity - self.indices.len());
+        }
+    }
+
+    /// Move attributes into `mesh`, then re-reserve the previous capacities
+    /// so the next `clear`+fill cycle does not reallocate.
+    pub fn apply_to_mesh(&mut self, mesh: &mut Mesh) {
+        let pos_cap = self.positions.capacity();
+        let nrm_cap = self.normals.capacity();
+        let col_cap = self.colors.capacity();
+        let idx_cap = self.indices.capacity();
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            std::mem::take(&mut self.positions),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, std::mem::take(&mut self.normals));
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, std::mem::take(&mut self.colors));
+        mesh.insert_indices(Indices::U32(std::mem::take(&mut self.indices)));
+        self.positions = Vec::with_capacity(pos_cap);
+        self.normals = Vec::with_capacity(nrm_cap);
+        self.colors = Vec::with_capacity(col_cap);
+        self.indices = Vec::with_capacity(idx_cap);
+    }
+
     /// One quad (p0..p3 wound counter-clockwise when viewed from `normal`),
     /// one color per corner (lets callers bake a cheap top-to-base gradient
     /// instead of flat-shading every face).
