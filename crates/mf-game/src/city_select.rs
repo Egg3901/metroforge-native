@@ -151,7 +151,7 @@ pub fn city_select_screen_ui(
             ui.set_opacity(fade);
             ui.horizontal(|ui| {
                 let back = ui.add(egui::Button::new(
-                    egui::RichText::new("< Back").size(ds::TEXT_SM),
+                    egui::RichText::new(crate::strings::current().back_arrow).size(ds::TEXT_SM),
                 ));
                 hover_tick(&back, &mut hovered, &mut sfx);
                 if back.clicked() {
@@ -161,7 +161,7 @@ pub fn city_select_screen_ui(
                 draw_logo(ui, 28.0);
                 ui.add_space(ds::SPACE_XS);
                 ui.label(
-                    egui::RichText::new("MetroForge")
+                    egui::RichText::new(crate::strings::current().brand)
                         .size(ds::TEXT_SM)
                         .strong()
                         .color(ds::text()),
@@ -174,11 +174,8 @@ pub fn city_select_screen_ui(
         .find(|c| c.key == pending.preset_key)
         .map(|c| c.label.clone())
         .unwrap_or_else(|| capitalize(&pending.preset_key));
-    let start_caption = format!(
-        "Start — {} ({})",
-        selected_label,
-        pending.difficulty.label()
-    );
+    let start_caption =
+        crate::strings::current().start_city(&selected_label, pending.difficulty.label());
 
     egui::TopBottomPanel::bottom("city_select_bottom")
         .frame(
@@ -231,11 +228,9 @@ pub fn city_select_screen_ui(
                                     .map(|&key| progress.stars(key) as u32)
                                     .sum();
 
-                                field_label(ui, "City");
+                                field_label(ui, crate::strings::current().city);
                                 ui.add_space(ds::SPACE_XXS);
-                                ui.label(ds::label_muted(
-                                    "Arrows move. Enter plays. Hover for the accent edge.",
-                                ));
+                                ui.label(ds::label_muted(crate::strings::current().city_select_hint));
                                 ui.add_space(ds::SPACE_SM);
 
                                 // Ensure preview textures exist for every city we show.
@@ -340,7 +335,7 @@ pub fn city_select_screen_ui(
                                 ui.add_space(ds::SPACE_MD);
                                 thin_separator(ui);
                                 ui.add_space(ds::SPACE_XS);
-                                field_label(ui, "Difficulty");
+                                field_label(ui, crate::strings::current().difficulty);
                                 egui::ComboBox::from_id_salt("difficulty_picker")
                                     .selected_text(pending.difficulty.label())
                                     .width(300.0)
@@ -682,9 +677,8 @@ fn city_card(
             let (lock_rect, _) =
                 ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
             draw_lock(&ui.painter_at(lock_rect), lock_rect, ds::muted());
-            let plural = if stars_needed == 1 { "" } else { "s" };
             ui.label(
-                egui::RichText::new(format!("Earn {stars_needed} more star{plural}"))
+                egui::RichText::new(crate::strings::current().earn_more_stars(stars_needed))
                     .size(ds::TEXT_XS)
                     .color(ds::muted()),
             );
@@ -763,7 +757,7 @@ fn continue_city_card(
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     child.label(
-        egui::RichText::new("Continue")
+        egui::RichText::new(crate::strings::current().continue_label)
             .size(ds::TEXT_XS)
             .strong()
             .color(ds::accent()),
@@ -777,7 +771,8 @@ fn continue_city_card(
     child.add_space(ds::SPACE_XXS);
     child.label(
         egui::RichText::new(format!(
-            "Day {} · {}",
+            "{}{} · {}",
+            crate::strings::current().day_prefix,
             meta.day,
             format_playtime(meta.playtime_secs)
         ))

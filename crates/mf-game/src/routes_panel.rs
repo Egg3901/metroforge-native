@@ -41,10 +41,11 @@ pub enum RouteSortKey {
 
 impl RouteSortKey {
     fn label(self) -> &'static str {
+        let s = crate::strings::current();
         match self {
-            RouteSortKey::Crowding => "Crowding",
-            RouteSortKey::Riders => "Riders",
-            RouteSortKey::NetIncome => "Net income",
+            RouteSortKey::Crowding => s.sort_crowding,
+            RouteSortKey::Riders => s.sort_riders,
+            RouteSortKey::NetIncome => s.sort_net_income,
         }
     }
 }
@@ -168,11 +169,12 @@ fn format_fare(value: f64) -> String {
 }
 
 fn mode_word(mode: TransitMode) -> &'static str {
+    let s = crate::strings::current();
     match mode {
-        TransitMode::Bus => "bus",
-        TransitMode::Tram => "tram",
-        TransitMode::Metro => "metro",
-        TransitMode::Rail => "rail",
+        TransitMode::Bus => s.mode_bus,
+        TransitMode::Tram => s.mode_tram,
+        TransitMode::Metro => s.mode_metro,
+        TransitMode::Rail => s.mode_rail,
     }
 }
 
@@ -345,10 +347,11 @@ fn route_panel_system(
         .min_width(260.0)
         .resizable(true)
         .show(ctx, |ui| {
+            let s = crate::strings::current();
             ui.horizontal(|ui| {
-                ui.label(ds::heading("Routes"));
+                ui.label(ds::heading(s.routes));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let close = ui.small_button("Close");
+                    let close = ui.small_button(s.close);
                     hover_tick(&close, &mut hovered, &mut sfx);
                     if close.clicked() {
                         panel.open = false;
@@ -359,13 +362,9 @@ fn route_panel_system(
             ui.add_space(ds::SPACE_XS);
 
             if state.routes.is_empty() {
-                ui.label(ds::label_muted(
-                    "No routes yet. Place two stations and press R.",
-                ));
+                ui.label(ds::label_muted(s.no_routes_panel_hint));
                 ui.add_space(ds::SPACE_XS);
-                ui.label(ds::label_small(
-                    "Shift click stations to multi select, then Enter to connect.",
-                ));
+                ui.label(ds::label_small(s.multi_select_hint));
                 return;
             }
 
@@ -377,7 +376,7 @@ fn route_panel_system(
 
             // Sort controls
             ui.horizontal(|ui| {
-                ui.label(ds::label_muted("Sort"));
+                ui.label(ds::label_muted(s.sort));
                 for key in [
                     RouteSortKey::Crowding,
                     RouteSortKey::Riders,
@@ -453,7 +452,7 @@ fn draw_route_row(
         );
 
         let display_name = if route.name.trim().is_empty() {
-            format!("Line {}", list_idx + 1)
+            crate::strings::current().line(list_idx + 1)
         } else {
             route.name.clone()
         };
@@ -477,19 +476,19 @@ fn draw_route_row(
                     egui::CornerRadius::same(5),
                     ds::crowding_color(crowding),
                 );
-                dot_resp
-                    .on_hover_text(format!("Crowding {:.0}%", crowding.clamp(0.0, 1.0) * 100.0));
+                dot_resp.on_hover_text(
+                    crate::strings::current().crowding_pct(crowding.clamp(0.0, 1.0) * 100.0),
+                );
             }
         });
     });
 
     let paused = route.vehicle_count == 0;
-    ui.label(ds::label_small(format!(
-        "{} stops · {} riders/day · {}{}",
+    ui.label(ds::label_small(crate::strings::current().route_row_subtitle(
         route.station_ids.len(),
-        format_thousands(route.daily_ridership),
+        &format_thousands(route.daily_ridership),
         mode_word(route.mode),
-        if paused { " · paused" } else { "" },
+        paused,
     )));
 
     if is_selected {
@@ -540,9 +539,10 @@ fn route_editor(
     ds::route_line_diagram(ui, color, &labels, &loads);
     ui.add_space(ds::SPACE_XXS);
 
+    let s = crate::strings::current();
     if let Some(crowding) = route.live_crowding {
         ui.horizontal(|ui| {
-            ui.label(ds::label_muted("Live crowding"));
+            ui.label(ds::label_muted(s.live_crowding));
             let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
             ui.painter().rect_filled(
                 dot,
@@ -557,13 +557,13 @@ fn route_editor(
     }
     if let Some(farebox) = route.farebox {
         ui.horizontal(|ui| {
-            ui.label(ds::label_muted("Farebox / day"));
+            ui.label(ds::label_muted(s.farebox_per_day));
             ui.label(ds::value_strong(format_cash(farebox)).color(ds::GOOD));
         });
     }
     if let Some(cost) = route.operating_cost {
         ui.horizontal(|ui| {
-            ui.label(ds::label_muted("Operating cost / day"));
+            ui.label(ds::label_muted(s.operating_cost_per_day));
             ui.label(ds::value_strong(format_cash(cost)).color(ds::BAD));
         });
     }
@@ -572,7 +572,7 @@ fn route_editor(
         let good = net >= 0.0;
         let prefix = if good { "+" } else { "-" };
         ui.horizontal(|ui| {
-            ui.label(ds::label_muted("Net / day"));
+            ui.label(ds::label_muted(s.net_per_day));
             ui.label(
                 ds::value_strong(format!("{prefix}{}", format_cash(net.abs()))).color(if good {
                     ds::GOOD
@@ -585,16 +585,14 @@ fn route_editor(
     ui.add_space(ds::SPACE_XXS);
 
     // Stop list with drag reorder + numbered stops
-    ui.label(ds::label_muted("Stops"));
-    ui.label(ds::label_small(
-        "Click a station in the world to add or remove. Drag rows to reorder.",
-    ));
+    ui.label(ds::label_muted(s.stops));
+    ui.label(ds::label_small(s.stops_edit_hint));
     draw_stop_list(ui, route, stations, panel, hovered, sfx);
     if panel.stops_dirty(route) {
         ui.horizontal(|ui| {
             let apply = ui.add(
                 egui::Button::new(
-                    egui::RichText::new("Apply stop order").color(egui::Color32::WHITE),
+                    egui::RichText::new(s.apply_stop_order).color(egui::Color32::WHITE),
                 )
                 .fill(ds::accent())
                 .corner_radius(ds::CORNER_RADIUS),
@@ -603,7 +601,7 @@ fn route_editor(
             if apply.clicked() {
                 apply_stop_order(panel, route, tracks, bus, link, sfx);
             }
-            let revert = ui.small_button("Revert");
+            let revert = ui.small_button(s.revert);
             hover_tick(&revert, hovered, sfx);
             if revert.clicked() {
                 panel.edit_stops = None;
@@ -616,7 +614,7 @@ fn route_editor(
     // Enter world edit mode: Route tool seeded with current stops so clicks
     // toggle membership against the draft.
     ui.horizontal(|ui| {
-        let edit_world = ui.small_button("Edit stops in world");
+        let edit_world = ui.small_button(s.edit_stops_in_world);
         hover_tick(&edit_world, hovered, sfx);
         if edit_world.clicked() {
             let stops = panel.stops_for(route).to_vec();
@@ -632,7 +630,7 @@ fn route_editor(
 
     // Vehicles
     ui.horizontal(|ui| {
-        ui.label(ds::label_muted("Vehicles"));
+        ui.label(ds::label_muted(s.vehicles));
         let minus = ui.small_button("-");
         hover_tick(&minus, hovered, sfx);
         if minus.clicked() && route.vehicle_count > 0 {
@@ -664,7 +662,7 @@ fn route_editor(
 
     // Fare
     ui.horizontal(|ui| {
-        ui.label(ds::label_muted("Fare"));
+        ui.label(ds::label_muted(s.fare));
         let resp = ui.add(
             egui::DragValue::new(&mut panel.fare_edit)
                 .range(0.0..=50.0)
@@ -683,12 +681,12 @@ fn route_editor(
                 },
             );
         }
-        ui.label(ds::label_small(format!("now {}", format_fare(route.fare))));
+        ui.label(ds::label_small(s.now_fare(&format_fare(route.fare))));
     });
 
     // Name
     ui.horizontal(|ui| {
-        ui.label(ds::label_muted("Name"));
+        ui.label(ds::label_muted(s.name));
         let resp = ui.add(egui::TextEdit::singleline(&mut panel.name_edit).desired_width(140.0));
         if resp.lost_focus() {
             let trimmed = panel.name_edit.trim();
@@ -711,7 +709,7 @@ fn route_editor(
     // Bulk actions: pause/resume, color, delete
     ui.horizontal(|ui| {
         let paused = route.vehicle_count == 0;
-        let pause_label = if paused { "Resume" } else { "Pause" };
+        let pause_label = if paused { s.resume } else { s.pause };
         let pause_resp = ui.small_button(pause_label);
         hover_tick(&pause_resp, hovered, sfx);
         if pause_resp.clicked() {
@@ -743,7 +741,7 @@ fn route_editor(
             sfx.write(PlaySfx(Sfx::Confirm));
         }
 
-        let color_resp = ui.small_button("Next color");
+        let color_resp = ui.small_button(s.next_color);
         hover_tick(&color_resp, hovered, sfx);
         if color_resp.clicked() {
             let next = next_color_index(&route.color, list_idx);
@@ -765,9 +763,9 @@ fn route_editor(
     let delete_resp = ui.add(
         egui::Button::new(
             egui::RichText::new(if armed {
-                "Confirm delete"
+                s.confirm_delete
             } else {
-                "Delete route"
+                s.delete_route
             })
             .color(if armed {
                 egui::Color32::WHITE
@@ -1009,10 +1007,11 @@ fn route_panel_feedback_system(
                     CmdMeta::EditRoute { .. } | CmdMeta::CreateRoute { .. }
                 );
             if ours {
-                let detail = fb.error.as_deref().unwrap_or("unknown error");
+                let s = crate::strings::current();
+                let detail = fb.error.as_deref().unwrap_or(s.unknown_error);
                 push_toast(
                     &mut toasts,
-                    format!("Route update failed: {detail}"),
+                    s.route_update_failed(detail),
                     ToastTone::Warn,
                 );
                 sfx.write(PlaySfx(Sfx::Error));
