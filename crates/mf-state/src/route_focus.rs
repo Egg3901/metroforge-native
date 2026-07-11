@@ -26,6 +26,7 @@ impl RouteFocus {
         self.editing = false;
     }
 
+    /// Focus `route_id`, optionally entering edit mode.
     pub fn focus(&mut self, route_id: i64, editing: bool) {
         self.route_id = Some(route_id);
         self.editing = editing;
