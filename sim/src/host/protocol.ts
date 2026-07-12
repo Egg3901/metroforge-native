@@ -129,7 +129,16 @@ export interface StaticCity {
   buildingMask?: Uint8Array | undefined;
   maskRes?: number | undefined;
   labels?: import('@core/city/osmCity').MapLabel[] | undefined;
-  roads: { cls: string; points: number[] }[];
+  roads: {
+    cls: string;
+    points: number[];
+    /** grade-separation level (signed int; 0 = ground). */
+    gradeLevel?: number;
+    /** segment is a bridge deck. */
+    isBridge?: boolean;
+    /** segment is a tunnel. */
+    isTunnel?: boolean;
+  }[];
 }
 
 export interface FieldsPayload {

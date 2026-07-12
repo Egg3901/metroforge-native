@@ -519,7 +519,11 @@ export function generateCity(seed: number, difficulty: Difficulty, opts: Generat
       const pl: Vec2[] = [];
       for (let i = 0; i + 1 < r.pts.length; i += 2) pl.push(vec(r.pts[i] as number, r.pts[i + 1] as number));
       const cls: RoadEdge['cls'] = r.cls === 'arterial' || r.cls === 'collector' ? r.cls : 'local';
-      roads.push({ id: roadId++, cls, polyline: makePolyline(pl) });
+      const edge: RoadEdge = { id: roadId++, cls, polyline: makePolyline(pl) };
+      if (r.g) edge.gradeLevel = r.g;
+      if (r.br) edge.isBridge = true;
+      if (r.tn) edge.isTunnel = true;
+      roads.push(edge);
     }
   } else {
   const arterialSeeds: Vec2[] = [cbd, ...subcenters];

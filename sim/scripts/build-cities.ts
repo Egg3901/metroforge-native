@@ -510,6 +510,21 @@ const CLASS: Record<string, 'arterial' | 'collector' | 'local'> = {
   residential: 'local', living_street: 'local', unclassified: 'local',
 };
 
+/** Grade separation from OSM tags. `layer` (signed int) is authoritative; if
+ *  absent, a bridge falls back to +1 and a tunnel to -1 so stacked/underground
+ *  segments still separate vertically. Static per-segment data — never enters
+ *  the sim stateHash (roads are not hashed), so it cannot perturb determinism. */
+function roadGrade(tags: Record<string, string>): { g: number; br: boolean; tn: boolean } {
+  const br = tags.bridge !== undefined && tags.bridge !== 'no';
+  const tn = tags.tunnel !== undefined && tags.tunnel !== 'no';
+  const layer = leadingFloat(tags.layer);
+  let g = 0;
+  if (layer !== undefined) g = Math.round(layer);
+  else if (br) g = 1;
+  else if (tn) g = -1;
+  return { g, br, tn };
+}
+
 function build(cfg: CityCfg): void {
   // expand the configured bbox to a square (in meters) around its centroid
   // before doing anything else — Overpass queries, ocean-polygon lookup, and
@@ -573,10 +588,14 @@ function build(cfg: CityCfg): void {
   const P = (ll: LL): [number, number] => [mx(ll) * scale, -my(ll) * scale]; // world: y down, north up
 
   // ── roads: classify, project, simplify ──
-  const outRoads: { cls: string; pts: number[] }[] = [];
+  // `g` gradeLevel (int), `br` isBridge, `tn` isTunnel — grade-separation flags
+  // per segment. Emitted only when non-default to keep the bundle compact
+  // (additive; older readers ignore the extra keys).
+  const outRoads: { cls: string; pts: number[]; g?: number; br?: boolean; tn?: boolean }[] = [];
   for (const way of roads) {
     const cls = CLASS[way.tags.highway ?? ''];
     if (!cls) continue;
+    const { g, br, tn } = roadGrade(way.tags);
     const pts = way.geometry.map(P);
     const simp = simplify(pts, 5);
     if (simp.length < 2) continue;
@@ -584,7 +603,14 @@ function build(cfg: CityCfg): void {
     // fetched area; clip to the world square so no road point/segment can
     // render off the map edge, splitting into sub-polylines as needed.
     for (const seg of clipPolylineToBox(simp, HALF)) {
-      outRoads.push({ cls, pts: seg.flatMap(([x, y]) => [Math.round(x), Math.round(y)]) });
+      const rec: { cls: string; pts: number[]; g?: number; br?: boolean; tn?: boolean } = {
+        cls,
+        pts: seg.flatMap(([x, y]) => [Math.round(x), Math.round(y)]),
+      };
+      if (g !== 0) rec.g = g;
+      if (br) rec.br = true;
+      if (tn) rec.tn = true;
+      outRoads.push(rec);
     }
   }
 

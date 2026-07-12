@@ -1394,6 +1394,9 @@ mod tests {
         RoadDto {
             cls: "local".to_string(),
             points,
+            grade_level: 0,
+            is_bridge: false,
+            is_tunnel: false,
         }
     }
 

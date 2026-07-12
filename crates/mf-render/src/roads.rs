@@ -10,7 +10,7 @@ use bevy::render::mesh::MeshAabb;
 
 use mf_state::{CurrentCity, EffectiveKnobs, HeightAt, Theme};
 
-use crate::mesh_utils::{append_ribbon, MeshBuffers};
+use crate::mesh_utils::MeshBuffers;
 use crate::palette;
 use crate::RenderCacheStats;
 
@@ -26,6 +26,16 @@ pub(crate) const ROAD_Y_OFFSET: f32 = 2.0;
 /// sliver mid-river (owner-flagged on the East River bridges). A flat
 /// causeway a few meters up reads as a bridge at city zoom.
 pub(crate) const BRIDGE_DECK_Y: f32 = 8.0;
+/// Vertical separation per grade level (spec: "~6m above terrain per level").
+/// A `gradeLevel` of N lifts the deck `N * GRADE_STEP_Y` above ground (N<0 for
+/// tunnels/underpasses dips it below), so stacked interchange layers separate.
+pub(crate) const GRADE_STEP_Y: f32 = 6.0;
+/// Length (meters) over which a bridge deck ramps from ground up to its full
+/// grade lift at each end (the approach ramps).
+const RAMP_M: f32 = 40.0;
+/// A road segment whose peak deck sits at least this far above ground gets a
+/// slab skirt + blob shadow (avoids skirting near-ground micro-lifts).
+const ELEVATED_EPS: f32 = 1.5;
 /// Widths per spec §3.3 (already includes `roadScale` multiplication).
 // Widened ~1.5x from real-world-ish 40/24/13: at overview zoom the true
 // widths are a few pixels and vanish into the bright ground (the oldest
@@ -43,6 +53,144 @@ const LOCAL_ROAD_LOD_HEIGHT: f32 = 4_000.0;
 /// Collectors hide above this height (arterials stay for skyline structure).
 const COLLECTOR_ROAD_LOD_HEIGHT: f32 = 8_000.0;
 
+/// Scale a color's RGB toward black by `k` (keeps alpha), for the darker slab
+/// skirt / portal marks — no NEW hue is introduced (art direction §2).
+fn scale_rgb(c: Color, k: f32) -> Color {
+    let s = c.to_srgba();
+    Color::srgba(s.red * k, s.green * k, s.blue * k, s.alpha)
+}
+
+/// Per-vertex absolute deck Y for a road polyline: ground/water base plus the
+/// grade lift (`gradeLevel * GRADE_STEP_Y`), ramped in over `RAMP_M` from each
+/// end so a bridge deck rises from and settles back to the ground at its
+/// approaches rather than stepping vertically.
+fn deck_heights(pts: &[Vec2], grade: i32, sample: &impl Fn(f32, f32) -> f32) -> Vec<f32> {
+    let full_lift = grade as f32 * GRADE_STEP_Y;
+    let n = pts.len();
+    // Cumulative arc length so the ramp is measured in true meters.
+    let mut cum = vec![0.0_f32; n];
+    for i in 1..n {
+        cum[i] = cum[i - 1] + pts[i - 1].distance(pts[i]);
+    }
+    let total = cum[n - 1];
+    pts.iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let base = sample(p.x, p.y);
+            let from_start = cum[i];
+            let from_end = total - cum[i];
+            // 0 at the very ends, 1 once past RAMP_M in from both ends.
+            let ramp = (from_start.min(from_end) / RAMP_M).clamp(0.0, 1.0);
+            base + full_lift * ramp
+        })
+        .collect()
+}
+
+/// Vertical slab-edge skirts down both sides of an elevated deck: a thin
+/// darker quad from the deck edge down to the surface below, so the deck reads
+/// as a solid slab rather than a floating ribbon.
+fn append_deck_skirt(
+    buf: &mut MeshBuffers,
+    pts: &[Vec2],
+    heights: &[f32],
+    width: f32,
+    y_offset: f32,
+    sample: &impl Fn(f32, f32) -> f32,
+    color: Color,
+) {
+    let half = width * 0.5;
+    for i in 0..pts.len() - 1 {
+        let a = pts[i];
+        let b = pts[i + 1];
+        let dir = (b - a).normalize_or_zero();
+        if dir == Vec2::ZERO {
+            continue;
+        }
+        let perp = Vec2::new(-dir.y, dir.x) * half;
+        let ya = heights[i] + y_offset;
+        let yb = heights[i + 1] + y_offset;
+        // Skirt bottom hugs a bit under the deck (capped so it reads as a slab
+        // edge, not a full pier wall).
+        let ba = (heights[i] - sample(a.x, a.y)).clamp(0.0, 6.0);
+        let bb = (heights[i + 1] - sample(b.x, b.y)).clamp(0.0, 6.0);
+        let ya_b = ya - ba;
+        let yb_b = yb - bb;
+        for s in [1.0_f32, -1.0] {
+            let pa = Vec3::new(a.x + perp.x * s, ya, a.y + perp.y * s);
+            let pb = Vec3::new(b.x + perp.x * s, yb, b.y + perp.y * s);
+            let pa_b = Vec3::new(a.x + perp.x * s, ya_b, a.y + perp.y * s);
+            let pb_b = Vec3::new(b.x + perp.x * s, yb_b, b.y + perp.y * s);
+            // Two-sided-ish vertical quad; normal is nominal (unlit material).
+            let nrm = Vec3::new(perp.x * s, 0.0, perp.y * s).normalize_or_zero();
+            buf.push_flat_quad(pa, pb, pb_b, pa_b, nrm, color);
+        }
+    }
+}
+
+/// A cheap projected blob shadow: a dark translucent ribbon laid on the
+/// surface directly beneath an elevated deck (straight-down projection, no
+/// shadow-map cost).
+fn append_blob_shadow(
+    buf: &mut MeshBuffers,
+    pts: &[Vec2],
+    heights: &[f32],
+    width: f32,
+    sample: &impl Fn(f32, f32) -> f32,
+    color: Color,
+) {
+    let half = width * 0.5 * 1.15; // a touch wider than the deck
+    for i in 0..pts.len() - 1 {
+        let a = pts[i];
+        let b = pts[i + 1];
+        // Only shadow where the deck is actually lifted above the ground here.
+        if heights[i] - sample(a.x, a.y) <= ELEVATED_EPS
+            && heights[i + 1] - sample(b.x, b.y) <= ELEVATED_EPS
+        {
+            continue;
+        }
+        let dir = (b - a).normalize_or_zero();
+        if dir == Vec2::ZERO {
+            continue;
+        }
+        let perp = Vec2::new(-dir.y, dir.x) * half;
+        let ya = sample(a.x, a.y) + ROAD_Y_OFFSET * 0.5;
+        let yb = sample(b.x, b.y) + ROAD_Y_OFFSET * 0.5;
+        let a0 = Vec3::new(a.x + perp.x, ya, a.y + perp.y);
+        let a1 = Vec3::new(a.x - perp.x, ya, a.y - perp.y);
+        let b0 = Vec3::new(b.x + perp.x, yb, b.y + perp.y);
+        let b1 = Vec3::new(b.x - perp.x, yb, b.y - perp.y);
+        buf.push_flat_quad(a0, b0, b1, a1, Vec3::Y, color);
+    }
+}
+
+/// Short dark portal rectangles laid on the ground at each end of a tunnel, so
+/// the suppressed surface road reads as diving into / out of a portal mouth.
+fn append_tunnel_portals(
+    buf: &mut MeshBuffers,
+    pts: &[Vec2],
+    width: f32,
+    sample: &impl Fn(f32, f32) -> f32,
+) {
+    let portal_color = Color::srgb(0.02, 0.02, 0.02);
+    let half = width * 0.5;
+    let ends: [(Vec2, Vec2); 2] = [(pts[0], pts[1]), (pts[pts.len() - 1], pts[pts.len() - 2])];
+    for (mouth, inward) in ends {
+        let dir = (inward - mouth).normalize_or_zero();
+        if dir == Vec2::ZERO {
+            continue;
+        }
+        let perp = Vec2::new(-dir.y, dir.x) * half;
+        // A short rectangle spanning the road width, ~width/2 deep.
+        let depth = dir * (half * 0.8);
+        let y = sample(mouth.x, mouth.y) + ROAD_Y_OFFSET + 0.1;
+        let p0 = Vec3::new(mouth.x + perp.x, y, mouth.y + perp.y);
+        let p1 = Vec3::new(mouth.x - perp.x, y, mouth.y - perp.y);
+        let p2 = Vec3::new(mouth.x - perp.x + depth.x, y, mouth.y - perp.y + depth.y);
+        let p3 = Vec3::new(mouth.x + perp.x + depth.x, y, mouth.y + perp.y + depth.y);
+        buf.push_flat_quad(p0, p1, p2, p3, Vec3::Y, portal_color);
+    }
+}
+
 pub struct MfRoadsPlugin;
 
 impl Plugin for MfRoadsPlugin {
@@ -53,6 +201,7 @@ impl Plugin for MfRoadsPlugin {
                 build_roads_system.in_set(crate::MfRenderSet::Statics),
                 road_lod_system.in_set(crate::MfRenderSet::Dynamic),
                 apply_quality_to_roads_material_system.in_set(crate::MfRenderSet::Dynamic),
+                road_tunnel_subway_visibility_system.in_set(crate::MfRenderSet::Dynamic),
             ),
         );
     }
@@ -83,6 +232,28 @@ struct RoadsState {
     /// Scratch buffers kept across rebuilds so vertex Vecs retain capacity.
     scratch_class: [MeshBuffers; 3],
     scratch_edge: MeshBuffers,
+    /// Bridge-deck slab skirts (vertical edge quads) + tunnel portal marks —
+    /// all rendered in one darker-than-road material so the deck reads as a
+    /// slab and the portals read as mouths. Geometry-only (cheap): kept even
+    /// on Potato.
+    scratch_detail: MeshBuffers,
+    detail_entity: Option<Entity>,
+    detail_mesh: Option<Handle<Mesh>>,
+    detail_material: Option<Handle<StandardMaterial>>,
+    /// Soft blob shadows projected straight down from elevated decks onto the
+    /// surface below (dark translucent quads). Skipped on the unlit tiers
+    /// (Potato/Low) per the potato-tier budget.
+    scratch_shadow: MeshBuffers,
+    shadow_entity: Option<Entity>,
+    shadow_mesh: Option<Handle<Mesh>>,
+    shadow_material: Option<Handle<StandardMaterial>>,
+    /// Underground tunnel bodies — hidden in the normal view (surface road is
+    /// suppressed between portals), shown as dark tubes at depth in subway
+    /// (Tab) view, mirroring the transit tunnel/tube treatment.
+    scratch_tunnel: MeshBuffers,
+    tunnel_entity: Option<Entity>,
+    tunnel_mesh: Option<Handle<Mesh>>,
+    tunnel_material: Option<Handle<StandardMaterial>>,
     /// Tracked so `road_lod_system` can hide the arterial mesh once the
     /// camera climbs above the active tier's fog `end` — above that height the
     /// whole network is fully fogged to the sky color anyway, so hiding it is
@@ -109,6 +280,13 @@ pub struct RoadSurface;
 /// materials whose `unlit` should track the tier.
 #[derive(Component)]
 struct RoadClassSurface;
+
+/// Marker on the underground road-tunnel body mesh — hidden in the normal
+/// view, revealed at depth in subway (Tab) view by
+/// [`road_tunnel_subway_visibility_system`], mirroring the transit tube
+/// treatment.
+#[derive(Component)]
+struct RoadTunnelSurface;
 
 #[allow(clippy::too_many_arguments)]
 fn build_roads_system(
@@ -159,26 +337,38 @@ fn build_roads_system(
         buf.clear();
     }
     state.scratch_edge.clear();
+    state.scratch_detail.clear();
+    state.scratch_shadow.clear();
+    state.scratch_tunnel.clear();
+
+    // Slightly-darker-than-road slab / portal color (no NEW colors per art
+    // direction §2 — just the road black scaled down a touch).
+    let detail_color = scale_rgb(road_color, 0.55);
+    // Cheap projected blob shadow: pure black, low alpha.
+    let shadow_color = Color::srgba(0.0, 0.0, 0.0, 0.22);
+    // Blob shadows are a Medium/High nicety; the unlit tiers (Potato/Low) keep
+    // only the geometry (Z offsets + skirts) per the potato-tier budget.
+    let shadows_enabled = !unlit;
 
     for road in &city_json.roads {
-        let pts: Vec<Vec2> = road
+        let raw: Vec<Vec2> = road
             .points
             .chunks_exact(2)
             .map(|c| Vec2::new(c[0] as f32, c[1] as f32))
             .collect();
-        if pts.len() < 2 {
+        if raw.len() < 2 {
             continue;
         }
         // Follow the terrain, not just the sparse simplified vertices.
         // Step is tiered: Potato/Low use coarser densify to cut rebuild
         // vertices and draw cost.
-        let pts = crate::mesh_utils::densify_polyline(&pts, densify_step);
+        let pts = crate::mesh_utils::densify_polyline(&raw, densify_step);
         let (idx, width) = match road.cls.as_str() {
             "arterial" => (0usize, ARTERIAL_WIDTH as f32 * road_scale),
             "collector" => (1usize, COLLECTOR_WIDTH as f32 * road_scale),
             _ => (2usize, LOCAL_WIDTH as f32 * road_scale),
         };
-        let deck_height = |x: f32, z: f32| {
+        let sample = |x: f32, z: f32| {
             let h = height_at.sample(x, z);
             if h <= crate::terrain::WATER_LEVEL_Y + 0.01 {
                 BRIDGE_DECK_Y
@@ -186,23 +376,77 @@ fn build_roads_system(
                 h
             }
         };
-        append_ribbon(
+
+        // Per-vertex deck heights: ground/water base + grade lift, ramped up
+        // over `RAMP_M` at each end (bridges) so the deck meets the ground at
+        // the approaches instead of stepping vertically.
+        let grade = road.grade_level;
+        let heights = deck_heights(&pts, grade, &sample);
+
+        if road.is_tunnel {
+            // Surface road is hidden between portals; render a portal mark at
+            // each end on the ground, and the tunnel body as a dark tube shown
+            // only in subway view.
+            append_tunnel_portals(&mut state.scratch_detail, &pts, width, &sample);
+            // Body at depth (grade is negative for tunnels): a dashed dark
+            // ribbon reads as underground infrastructure at overview zoom.
+            crate::mesh_utils::append_ribbon_at_heights(
+                &mut state.scratch_tunnel,
+                &pts,
+                &heights,
+                ROAD_Y_OFFSET,
+                width,
+                detail_color,
+            );
+            continue;
+        }
+
+        crate::mesh_utils::append_ribbon_at_heights(
             &mut state.scratch_class[idx],
             &pts,
+            &heights,
             ROAD_Y_OFFSET,
             width,
             road_color,
-            deck_height,
         );
         if idx == 0 {
-            append_ribbon(
+            crate::mesh_utils::append_ribbon_at_heights(
                 &mut state.scratch_edge,
                 &pts,
+                &heights,
                 ROAD_Y_OFFSET + 0.05,
                 width + 2.0,
                 palette::road_edge(),
-                deck_height,
             );
+        }
+
+        // Slab skirt + blob shadow for elevated (bridge / raised) decks.
+        let peak_lift = heights
+            .iter()
+            .zip(pts.iter())
+            .map(|(h, p)| h - sample(p.x, p.y))
+            .fold(0.0_f32, f32::max);
+        if peak_lift > ELEVATED_EPS {
+            append_deck_skirt(
+                &mut state.scratch_detail,
+                &pts,
+                &heights,
+                width,
+                ROAD_Y_OFFSET,
+                &sample,
+                detail_color,
+            );
+            if shadows_enabled {
+                // Projected straight down onto the surface below.
+                append_blob_shadow(
+                    &mut state.scratch_shadow,
+                    &pts,
+                    &heights,
+                    width,
+                    &sample,
+                    shadow_color,
+                );
+            }
         }
     }
 
@@ -382,8 +626,159 @@ fn build_roads_system(
         state.edge_mesh = None;
         state.edge_material = None;
     }
+    // ── grade-separation aux meshes: deck skirts + tunnel portals, blob
+    //    shadows, and (subway-view) tunnel bodies. Each is a single merged
+    //    mesh, upserted with a stable material. ──
+    let detail_mat = state
+        .detail_material
+        .get_or_insert_with(|| {
+            materials.add(StandardMaterial {
+                base_color: detail_color,
+                unlit: true,
+                alpha_mode: AlphaMode::Blend,
+                perceptual_roughness: 1.0,
+                reflectance: 0.0,
+                ..default()
+            })
+        })
+        .clone();
+    if let Some(mat) = materials.get_mut(&detail_mat) {
+        mat.base_color = detail_color;
+    }
+    let st = &mut *state;
+    let detail_id = upsert_aux_mesh(
+        &mut commands,
+        &mut meshes,
+        &mut st.scratch_detail,
+        &mut st.detail_mesh,
+        &mut st.detail_entity,
+        detail_mat,
+        "roads-grade-detail",
+    );
+    // Skirts fade with the rest of the road surface in subway view.
+    if let Some(e) = detail_id {
+        if let Ok(mut ec) = commands.get_entity(e) {
+            ec.insert(RoadSurface);
+        }
+    }
+
+    let shadow_mat = state
+        .shadow_material
+        .get_or_insert_with(|| {
+            materials.add(StandardMaterial {
+                base_color: shadow_color,
+                unlit: true,
+                alpha_mode: AlphaMode::Blend,
+                perceptual_roughness: 1.0,
+                reflectance: 0.0,
+                ..default()
+            })
+        })
+        .clone();
+    let st = &mut *state;
+    upsert_aux_mesh(
+        &mut commands,
+        &mut meshes,
+        &mut st.scratch_shadow,
+        &mut st.shadow_mesh,
+        &mut st.shadow_entity,
+        shadow_mat,
+        "roads-grade-shadow",
+    );
+
+    let tunnel_mat = state
+        .tunnel_material
+        .get_or_insert_with(|| {
+            materials.add(StandardMaterial {
+                base_color: detail_color,
+                unlit: true,
+                alpha_mode: AlphaMode::Blend,
+                perceptual_roughness: 1.0,
+                reflectance: 0.0,
+                ..default()
+            })
+        })
+        .clone();
+    let st = &mut *state;
+    let tunnel_id = upsert_aux_mesh(
+        &mut commands,
+        &mut meshes,
+        &mut st.scratch_tunnel,
+        &mut st.tunnel_mesh,
+        &mut st.tunnel_entity,
+        tunnel_mat,
+        "roads-tunnel-body",
+    );
+    // Tunnel bodies are hidden in the normal view; a dedicated system reveals
+    // them at depth in subway view. Start hidden on (re)spawn.
+    if let Some(e) = tunnel_id {
+        if let Ok(mut ec) = commands.get_entity(e) {
+            ec.insert((RoadTunnelSurface, Visibility::Hidden));
+        }
+    }
+
     stats.road_entities = state.class_entities.iter().filter(|e| e.is_some()).count()
-        + usize::from(state.edge_entity.is_some());
+        + usize::from(state.edge_entity.is_some())
+        + usize::from(state.detail_entity.is_some())
+        + usize::from(state.shadow_entity.is_some())
+        + usize::from(state.tunnel_entity.is_some());
+}
+
+/// Upsert a single merged aux mesh (skirts / shadows / tunnel bodies): despawn
+/// when empty, otherwise (re)apply the scratch buffer to a long-lived mesh and
+/// (re)bind it to a reused entity. Returns the live entity, if any.
+fn upsert_aux_mesh(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    buf: &mut MeshBuffers,
+    mesh_slot: &mut Option<Handle<Mesh>>,
+    entity_slot: &mut Option<Entity>,
+    material: Handle<StandardMaterial>,
+    name: &'static str,
+) -> Option<Entity> {
+    if buf.is_empty() {
+        if let Some(e) = entity_slot.take() {
+            commands.entity(e).despawn();
+        }
+        *mesh_slot = None;
+        return None;
+    }
+    let mesh_handle = mesh_slot
+        .get_or_insert_with(|| {
+            meshes.add(Mesh::new(
+                bevy::render::mesh::PrimitiveTopology::TriangleList,
+                bevy::render::render_asset::RenderAssetUsages::default(),
+            ))
+        })
+        .clone();
+    let aabb = {
+        let mesh = meshes.get_mut(&mesh_handle).expect("aux road mesh");
+        buf.apply_to_mesh(mesh);
+        mesh.compute_aabb().unwrap_or_default()
+    };
+    if let Some(e) = *entity_slot {
+        if let Ok(mut ec) = commands.get_entity(e) {
+            ec.insert((
+                Mesh3d(mesh_handle),
+                MeshMaterial3d(material),
+                aabb,
+                Visibility::Visible,
+            ));
+            return Some(e);
+        }
+    }
+    let id = commands
+        .spawn((
+            Mesh3d(mesh_handle),
+            MeshMaterial3d(material),
+            Transform::IDENTITY,
+            Visibility::default(),
+            aabb,
+            Name::new(name),
+        ))
+        .id();
+    *entity_slot = Some(id);
+    Some(id)
 }
 
 /// Hide local/collector road meshes once the camera climbs above their LOD
@@ -461,6 +856,28 @@ fn road_lod_system(
 /// see the `append_ribbon` comment in mesh_utils.rs). The arterial edge
 /// deliberately stays out of this (`RoadClassSurface` excludes it) since
 /// it's always lit by design, independent of tier.
+/// Reveal underground road-tunnel bodies only in subway (Tab) view: hidden at
+/// `t == 0` (normal view, where the surface road is suppressed between
+/// portals), visible once the view eases toward subway — the road analog of
+/// the transit tunnel/tube reveal in `subway.rs`.
+fn road_tunnel_subway_visibility_system(
+    subway: Res<mf_state::SubwayView>,
+    tunnels: Query<Entity, With<RoadTunnelSurface>>,
+    mut visibility: Query<&mut Visibility>,
+    counters: Res<crate::perf::PerfCounters>,
+) {
+    let want = if subway.t > 0.02 {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for e in &tunnels {
+        if let Ok(mut v) = visibility.get_mut(e) {
+            crate::perf::set_visibility_if_changed(&mut v, want, Some(&counters));
+        }
+    }
+}
+
 fn apply_quality_to_roads_material_system(
     effective: Res<EffectiveKnobs>,
     roads: Query<&MeshMaterial3d<StandardMaterial>, With<RoadClassSurface>>,

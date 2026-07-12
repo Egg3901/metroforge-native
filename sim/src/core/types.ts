@@ -32,6 +32,14 @@ export interface RoadEdge {
   id: number;
   cls: RoadClass;
   polyline: Polyline;
+  /** grade-separation level (signed; 0 = ground, +N up, -N below). Static
+   *  presentation data from OSM bridge/tunnel/layer tags; not part of
+   *  stateHash. Absent = 0. */
+  gradeLevel?: number;
+  /** segment is an OSM bridge (deck). Absent = false. */
+  isBridge?: boolean;
+  /** segment is an OSM tunnel. Absent = false. */
+  isTunnel?: boolean;
 }
 
 /** Demand aggregation unit: a cluster of field cells. */
