@@ -23,7 +23,10 @@ export interface OsmCityData {
   /** base64 little-endian Int16 grid of real meters, row-major over the world
    *  square (row 0 = north edge, same convention as the masks) */
   elevation?: string;
-  roads: { cls: string; pts: number[] }[];
+  /** `g` gradeLevel (signed int; 0 = ground), `br` isBridge, `tn` isTunnel —
+   *  grade-separation flags from OSM bridge/tunnel/layer tags, per segment.
+   *  Omitted when default (0/false) to keep bundles compact. */
+  roads: { cls: string; pts: number[]; g?: number; br?: boolean; tn?: boolean }[];
   /** real OSM place names for map labels */
   labels?: MapLabel[];
 }

@@ -79,7 +79,14 @@ export function serialize(state: GameState): string {
       ...persist,
       fields: fieldsToJSON(state.fields),
       // polylines: store points only; cumulative lengths rebuilt on load
-      roads: state.roads.map((r) => ({ id: r.id, cls: r.cls, points: r.polyline.points })),
+      roads: state.roads.map((r) => ({
+        id: r.id,
+        cls: r.cls,
+        points: r.polyline.points,
+        ...(r.gradeLevel ? { gradeLevel: r.gradeLevel } : {}),
+        ...(r.isBridge ? { isBridge: true as const } : {}),
+        ...(r.isTunnel ? { isTunnel: true as const } : {}),
+      })),
       tracks: state.tracks.map((t) => ({
         id: t.id,
         mode: t.mode,
@@ -111,7 +118,14 @@ export function deserialize(json: string): GameState {
   }
   const s = raw.state as unknown as Omit<GameState, 'fields' | 'roads' | 'tracks'> & {
     fields: Parameters<typeof fieldsFromJSON>[0];
-    roads: { id: number; cls: RoadEdge['cls']; points: { x: number; y: number }[] }[];
+    roads: {
+      id: number;
+      cls: RoadEdge['cls'];
+      points: { x: number; y: number }[];
+      gradeLevel?: number;
+      isBridge?: boolean;
+      isTunnel?: boolean;
+    }[];
     tracks: (Omit<TrackSegment, 'polyline'> & { points: { x: number; y: number }[] })[];
   };
   const restored: GameState = {
@@ -126,7 +140,13 @@ export function deserialize(json: string): GameState {
     bankruptDays: s.bankruptDays ?? raw.bankruptDays ?? 0,
     failed: s.failed ?? null,
     fields: fieldsFromJSON(s.fields),
-    roads: s.roads.map((r) => ({ id: r.id, cls: r.cls, polyline: makePolyline(r.points) })),
+    roads: s.roads.map((r) => {
+      const edge: RoadEdge = { id: r.id, cls: r.cls, polyline: makePolyline(r.points) };
+      if (r.gradeLevel) edge.gradeLevel = r.gradeLevel;
+      if (r.isBridge) edge.isBridge = true;
+      if (r.isTunnel) edge.isTunnel = true;
+      return edge;
+    }),
     tracks: s.tracks.map((t) => ({
       id: t.id,
       mode: t.mode,

@@ -760,6 +760,11 @@ pub fn densify_polyline(pts: &[Vec2], step: f32) -> Vec<Vec2> {
     out
 }
 
+/// Ribbon that samples a height closure per vertex. Retained as the general
+/// terrain-draping primitive (and referenced by the grade-aware variants
+/// below); roads now bake per-vertex deck heights via
+/// [`append_ribbon_at_heights`] to support bridge/tunnel grade separation.
+#[allow(dead_code)]
 pub fn append_ribbon(
     buf: &mut MeshBuffers,
     points: &[Vec2],

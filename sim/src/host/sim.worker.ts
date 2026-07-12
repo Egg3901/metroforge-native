@@ -61,6 +61,9 @@ function sendStatic(s: GameState): void {
       roads: s.roads.map((r) => ({
         cls: r.cls,
         points: r.polyline.points.flatMap((p) => [p.x, p.y]),
+        gradeLevel: r.gradeLevel ?? 0,
+        isBridge: r.isBridge ?? false,
+        isTunnel: r.isTunnel ?? false,
       })),
     },
   });
