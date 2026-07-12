@@ -62,6 +62,12 @@ pub struct SimHello(pub Option<HelloInfo>);
 pub struct PendingInit {
     pub preset_key: String,
     pub difficulty: mf_protocol::Difficulty,
+    /// Explicit shareable seed (#140): the world seed the player picked (or
+    /// the random default), carried into the `Loading` state's `init`
+    /// message alongside city/difficulty so re-inits (menu Play, mid-game
+    /// sidecar reconnect) reuse the same world rather than silently
+    /// re-rolling `rand_seed()` underneath the player.
+    pub seed: u64,
 }
 
 impl Default for PendingInit {
@@ -70,6 +76,7 @@ impl Default for PendingInit {
         PendingInit {
             preset_key: "nyc".to_string(),
             difficulty: mf_protocol::Difficulty::Normal,
+            seed: rand_seed(),
         }
     }
 }
@@ -450,7 +457,7 @@ fn stage_session_restore(saves: &mut SaveManager, pending: &PendingInit, link: O
         pending.preset_key
     );
     let _ = link.transport.send(ToSim::Init(InitPayload {
-        seed: rand_seed(),
+        seed: pending.seed,
         difficulty: pending.difficulty,
         size: None,
         preset_key: Some(pending.preset_key.clone()),
@@ -506,7 +513,7 @@ fn send_init_system(
         attract.inited_preset = None;
     }
     let _ = link.transport.send(ToSim::Init(InitPayload {
-        seed: rand_seed(),
+        seed: pending.seed,
         difficulty: pending.difficulty,
         size: None,
         preset_key: Some(pending.preset_key.clone()),

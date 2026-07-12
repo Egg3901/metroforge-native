@@ -690,6 +690,13 @@ fn continue_slot_row(
                 .size(11.0)
                 .color(muted_text()),
         );
+        if let Some(seed) = meta.seed {
+            child.label(
+                egui::RichText::new(format!("{}{}", s.seed_prefix, seed))
+                    .size(10.0)
+                    .color(muted_text()),
+            );
+        }
     }
 
     occupied && response.clicked()
@@ -1832,6 +1839,16 @@ fn in_game_hud_system(
 /// layer at the cursor), so `camera.rs`'s existing egui-capture check keeps
 /// world drag/zoom from leaking through while paused, with no change to
 /// that file.
+/// Extra pause-overlay locals bundled together (#140 seed copy flash) so
+/// adding this feature doesn't push `pause_overlay_system` past Bevy's
+/// 16-parameter `System` limit (see `slot_occupied_cache` above, which hit
+/// the same constraint on `main_menu_hud_system`).
+#[derive(Default)]
+struct PauseOverlayExtra {
+    settings_open: bool,
+    seed_copied_flash: Option<std::time::Instant>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn pause_overlay_system(
     contexts: EguiContexts,
@@ -1848,9 +1865,13 @@ fn pause_overlay_system(
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
     mut slot_occupied_cache: Local<Option<[bool; SAVE_SLOT_COUNT]>>,
-    mut pause_settings_open: Local<bool>,
+    mut pause_extra: Local<PauseOverlayExtra>,
     rigs: Query<&mut CameraRig>,
 ) -> Result {
+    let PauseOverlayExtra {
+        settings_open: pause_settings_open,
+        seed_copied_flash,
+    } = &mut *pause_extra;
     if !pause.active {
         return Ok(());
     }
@@ -1921,6 +1942,22 @@ fn pause_overlay_system(
             }
 
             ui.add_space(14.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{}{}", s.seed_prefix, pending.seed))
+                        .size(12.0)
+                        .color(muted_text()),
+                );
+                if ds::button(ui, s.copy_seed, ds::ButtonKind::Ghost).clicked() {
+                    ui.ctx().copy_text(pending.seed.to_string());
+                    *seed_copied_flash = Some(std::time::Instant::now());
+                    sfx.write(PlaySfx(Sfx::Confirm));
+                }
+            });
+            if seed_copied_flash.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2)) {
+                ui.label(egui::RichText::new(s.copied).size(11.0).color(GOOD));
+            }
+            ui.add_space(10.0);
             field_label(ui, s.save_game);
             ui.horizontal(|ui| {
                 for n in 1..=saves::SLOT_COUNT {
@@ -1946,6 +1983,7 @@ fn pause_overlay_system(
                                 Some(pending.preset_key.clone()),
                                 state,
                                 playtime.whole_secs(),
+                                Some(pending.seed),
                             );
                             save_manager.request_save(
                                 SaveSlot::Slot(n),

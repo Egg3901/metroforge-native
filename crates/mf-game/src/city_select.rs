@@ -56,6 +56,16 @@ pub struct CitySelectLocals {
     pub slots_cache: Option<Vec<SlotEntry>>,
     pub preview_cache: PreviewCache,
     pub focus_idx: usize,
+    /// Text buffer for the seed row's numeric input (#140). Kept as a raw
+    /// `String` (not `pending.seed` directly) so the player can freely edit
+    /// / clear the field without every keystroke needing to parse to a
+    /// valid `u64`; `parse_seed_input` reconciles it back into
+    /// `pending.seed` only on a successful parse.
+    pub seed_input: String,
+    /// Whether `seed_input` has been seeded from `pending.seed` yet — only
+    /// happens once, on first render, so the field doesn't stomp on
+    /// whatever the player is mid-typing every frame.
+    pub seed_input_init: bool,
 }
 
 /// City-select screen system — called from `hud::main_menu_hud_system`.
@@ -75,6 +85,10 @@ pub fn city_select_screen_ui(
     mut hovered: Local<Option<egui::Id>>,
     mut locals: Local<CitySelectLocals>,
 ) -> Result {
+    if !locals.seed_input_init {
+        locals.seed_input = pending.seed.to_string();
+        locals.seed_input_init = true;
+    }
     if state.is_changed() || locals.slots_cache.is_none() {
         locals.slots_cache = Some(saves::list());
         locals.preview_cache.textures.clear();
@@ -352,6 +366,30 @@ pub fn city_select_screen_ui(
                                             );
                                         }
                                     });
+                                ui.add_space(ds::SPACE_XS);
+                                field_label(ui, crate::strings::current().seed);
+                                ui.horizontal(|ui| {
+                                    let response = ui.add(
+                                        egui::TextEdit::singleline(&mut locals.seed_input)
+                                            .desired_width(180.0),
+                                    );
+                                    if response.changed() {
+                                        if let Some(seed) = parse_seed_input(&locals.seed_input) {
+                                            pending.seed = seed;
+                                        }
+                                    }
+                                    if ds::button(
+                                        ui,
+                                        crate::strings::current().randomize,
+                                        ds::ButtonKind::Ghost,
+                                    )
+                                    .clicked()
+                                    {
+                                        pending.seed = crate::state::rand_seed();
+                                        locals.seed_input = pending.seed.to_string();
+                                        sfx.write(PlaySfx(Sfx::Confirm));
+                                    }
+                                });
                                 ui.add_space(ds::SPACE_MD);
                             });
                         });
@@ -788,4 +826,59 @@ fn continue_city_card(
     );
 
     response.clicked()
+}
+
+/// Pure parse for the explicit-shareable-seed input (#140): the seed row's
+/// `TextEdit` buffer is free-form text (the player might be mid-edit, or
+/// paste in a shared seed with whitespace around it), so this is the only
+/// place that decides whether a keystroke actually updates
+/// `PendingInit::seed` — trims, rejects empty/non-digit input, and rejects
+/// anything that doesn't fit in a `u64` (rather than silently truncating or
+/// panicking) so a pasted-in garbage/oversized value just leaves the last
+/// good seed in place.
+pub fn parse_seed_input(input: &str) -> Option<u64> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<u64>().ok()
+}
+
+#[cfg(test)]
+mod seed_input_tests {
+    use super::parse_seed_input;
+
+    #[test]
+    fn empty_is_none() {
+        assert_eq!(parse_seed_input(""), None);
+        assert_eq!(parse_seed_input("   "), None);
+    }
+
+    #[test]
+    fn garbage_is_none() {
+        assert_eq!(parse_seed_input("abc"), None);
+        assert_eq!(parse_seed_input("12.5"), None);
+        assert_eq!(parse_seed_input("-1"), None);
+        assert_eq!(parse_seed_input("1 2"), None);
+    }
+
+    #[test]
+    fn max_u64_parses() {
+        assert_eq!(
+            parse_seed_input(u64::MAX.to_string().as_str()),
+            Some(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn overflow_is_none() {
+        let too_big = format!("{}0", u64::MAX);
+        assert_eq!(parse_seed_input(&too_big), None);
+    }
+
+    #[test]
+    fn leading_zeros_parse() {
+        assert_eq!(parse_seed_input("000042"), Some(42));
+        assert_eq!(parse_seed_input("  0007  "), Some(7));
+    }
 }
