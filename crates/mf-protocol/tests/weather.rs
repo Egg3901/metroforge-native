@@ -20,8 +20,8 @@ fn legacy_ui_state_json() -> &'static str {
 
 #[test]
 fn legacy_payload_without_weather_still_parses() {
-    let state: UiState = serde_json::from_str(legacy_ui_state_json())
-        .expect("legacy payload must deserialize");
+    let state: UiState =
+        serde_json::from_str(legacy_ui_state_json()).expect("legacy payload must deserialize");
     assert_eq!(state.weather_state, None);
     assert_eq!(state.weather_intensity, None);
     assert_eq!(state.weather_season, None);

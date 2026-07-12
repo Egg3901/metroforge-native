@@ -19,7 +19,7 @@ use bevy::render::render_resource::{
 };
 use std::f32::consts::TAU;
 
-use mf_state::{EffectiveKnobs, QualityTier, SubwayView, WeatherEffects};
+use mf_state::{EffectiveKnobs, QualityTier, SubwayView, WeatherEffects, WeatherRender};
 
 use crate::daynight::DayNightState;
 use crate::palette;
@@ -192,13 +192,19 @@ fn setup_atmosphere_system(
     }
 }
 
-fn update_atmosphere_wind_system(time: Res<Time>, mut wind: ResMut<AtmosphereWind>) {
+fn update_atmosphere_wind_system(
+    time: Res<Time>,
+    weather: Res<WeatherRender>,
+    mut wind: ResMut<AtmosphereWind>,
+) {
     let dt = time.delta_secs();
     wind.heading = (wind.heading + WIND_HEADING_RATE * dt).rem_euclid(TAU);
-    wind.gust_phase += WIND_GUST_RATE * dt;
+    // Storm drives the cloud/shadow scroll harder — the existing shared wind
+    // field is exactly the "stronger wind on the cloud wind field" hook.
+    wind.gust_phase += WIND_GUST_RATE * (1.0 + weather.storm * 1.4) * dt;
     let g =
         0.5 + 0.5 * (0.65 * wind.gust_phase.sin() + 0.35 * (wind.gust_phase * 1.73 + 1.1).sin());
-    wind.gust = 0.72 + g * 0.70;
+    wind.gust = (0.72 + g * 0.70) * (1.0 + weather.storm * 0.8);
 }
 
 /// Soft radial blob for cloud-card alpha (empty edges = clear air).
@@ -329,6 +335,7 @@ fn wrap_xz(pos: Vec2, cam: Vec2, half: f32) -> Vec2 {
 fn sync_atmosphere_system(
     effective: Res<EffectiveKnobs>,
     weather: Res<WeatherEffects>,
+    weather_render: Res<WeatherRender>,
     day_night: Res<DayNightState>,
     subway: Res<SubwayView>,
     mut shadows: ResMut<CloudShadowParams>,
@@ -372,24 +379,43 @@ fn sync_atmosphere_system(
         let c = palette::sky_night().to_srgba();
         Vec3::new(c.red, c.green, c.blue).lerp(Vec3::new(0.35, 0.42, 0.58), 0.35)
     };
-    let rgb = day_col
+    let mut rgb = day_col
         .lerp(golden_col, golden * 0.85)
         .lerp(night_col, n * 0.75);
-    // Alpha reacts gently but is HARD-CLAMPED so cards never hide the city.
-    let alpha = ((0.38 + golden * 0.12 + n * 0.08) * (1.0 - subway.t)).min(CLOUD_ALPHA_MAX);
+    // Weather grade: overcast/storm pull the cloud deck toward a flat cool
+    // grey (never a coloured wash — art direction); a lightning flash bleaches
+    // the cards white for its brief pulse.
+    let ov = weather_render.overcast;
+    let storm = weather_render.storm;
+    let fog_w = weather_render.fog;
+    let overcast_grey = Vec3::new(0.62, 0.65, 0.70);
+    let storm_grey = Vec3::new(0.34, 0.37, 0.44);
+    rgb = rgb
+        .lerp(overcast_grey, ov * 0.55)
+        .lerp(storm_grey, storm * 0.55);
+    rgb = rgb.lerp(Vec3::splat(1.0), weather_render.lightning * 0.6);
+    // Alpha reacts gently but is HARD-CLAMPED so cards never hide the city;
+    // heavy fog raises the ceiling so the mist can actually thicken.
+    let ceiling = (CLOUD_ALPHA_MAX + fog_w * 0.28 + ov * 0.12).min(0.9);
+    let weather_alpha = ov * 0.14 + fog_w * 0.22 + storm * 0.12;
+    let alpha = ((0.38 + golden * 0.12 + n * 0.08 + weather_alpha) * (1.0 - subway.t)).min(ceiling);
 
     for (blob, handle, mut vis) in &mut volumes {
         *vis = Visibility::Visible;
         let jitter = 1.0 - (blob.index as f32) * 0.05;
         if let Some(mat) = materials.get_mut(&handle.0) {
-            mat.color = Vec4::new(rgb.x, rgb.y, rgb.z, (alpha * jitter).min(CLOUD_ALPHA_MAX));
+            mat.color = Vec4::new(rgb.x, rgb.y, rgb.z, (alpha * jitter).min(ceiling));
         }
     }
 
+    // Diffuse overcast/storm light softens cast shadows: flatten the scrolling
+    // ground shadow as the sky closes up.
+    let flatten = 1.0 - (ov * 0.5 + storm * 0.3).clamp(0.0, 0.75);
     shadows.strength =
         (SHADOW_STRENGTH_DAY * (1.0 - n * 0.55) + SHADOW_STRENGTH_NIGHT * n + golden * 0.08)
             .clamp(0.0, 0.48)
-            * (1.0 - subway.t);
+            * (1.0 - subway.t)
+            * flatten;
 }
 
 fn drift_cloud_volumes_system(

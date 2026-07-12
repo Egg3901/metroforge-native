@@ -68,4 +68,4 @@ pub use subway::{SubwayView, SUBWAY_TRANSITION_SECS};
 pub use theme::Theme;
 pub use traffic::LatestTraffic;
 pub use ui::LatestUi;
-pub use weather::WeatherEffects;
+pub use weather::{parse_forced_weather, WeatherEffects, WeatherRender, WEATHER_TRANSITION_SECS};
