@@ -13,7 +13,7 @@
  * decodes it to a per-pixel elevation grid, and offers a bilinear sampler
  * keyed on (lat, lon).
  */
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { inflateSync } from 'node:zlib';
 

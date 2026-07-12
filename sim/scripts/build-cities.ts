@@ -750,7 +750,12 @@ function build(cfg: CityCfg): void {
       const wx = -HALF + (c + 0.5) * cellE;
       const lon = lon0 + wx * invLon;
       const m = dem.sample(lon, lat);
-      const clamped = Math.max(-32768, Math.min(32767, Math.round(m)));
+      // Floor at sea level (0): terrarium encodes deep ocean bathymetry, which
+      // would otherwise drag shoreline land vertices sharply negative through
+      // bilinear sampling. Water renders flat via the mask, so clamping the
+      // floor to 0 loses nothing visible and keeps coasts meeting the water
+      // plane cleanly.
+      const clamped = Math.max(0, Math.min(32767, Math.round(m)));
       elev[r * ELEV_RES + c] = clamped;
       if (m < eMin) eMin = m;
       if (m > eMax) eMax = m;
