@@ -3,13 +3,15 @@
  * call applyCommand. Validation lives here so every client (web, future
  * native) enforces identical rules.
  */
-import { MAX_HEADWAY, MODES, REFUND_FRACTION, ROUTE_COLORS, WATER_CROSSING_MULT } from './constants';
+import { MAX_HEADWAY, MODES, REFUND_FRACTION, ROUTE_COLORS, WATER_CROSSING_MULT, WORLD_SIZE } from './constants';
 import { isWaterAt } from './fields';
 import { findRoadPath, nearestRoadPoint } from './transit/roadGraph';
 import { dist, makePolyline } from './geometry';
 import { weatherBuildCostMult } from './weatherEffects';
+import { columnAt } from './geology';
+import { DEFAULT_TUNNEL_DEPTH, RIVER_TUNNEL_DEPTH, stationDepthSurcharge, undergroundSegmentCost } from './geologyCost';
 import type { Vec2 } from './geometry';
-import type { Command, CommandResult, GameState, TrackSegment, TransitMode } from './types';
+import type { Command, CommandResult, GameState, TrackCostBreakdown, TrackSegment, TransitMode } from './types';
 
 const STATION_NAMES = [
   'Central', 'Riverside', 'Oakwood', 'Hillcrest', 'Harborview', 'Elmgate', 'Northfield',
@@ -26,28 +28,88 @@ function nextStationName(state: GameState): string {
   return `Station ${state.stations.length + 1}`;
 }
 
-/** Cost of a track polyline given mode/grade and water crossings. */
-export function trackCost(state: GameState, mode: TransitMode, grade: 'surface' | 'elevated' | 'tunnel', points: Vec2[]): number {
+/** Default tunnel depth (m) at a world point: deeper under water (dips below
+ *  the river/bay bed), the land default otherwise. */
+export function tunnelDepthAt(state: GameState, p: Vec2): number {
+  return isWaterAt(state.fields, p) ? RIVER_TUNNEL_DEPTH : DEFAULT_TUNNEL_DEPTH;
+}
+
+/** Cost of a track polyline given mode/grade — plus a full v0.8 breakdown. For
+ *  surface/elevated the geology model is inert (the historic per-metre × water
+ *  crossing × weather formula is preserved bit-for-bit); tunnels are priced
+ *  through the strata model in geologyCost.ts. */
+export function trackCostDetailed(
+  state: GameState,
+  mode: TransitMode,
+  grade: 'surface' | 'elevated' | 'tunnel',
+  points: Vec2[],
+): { cost: number; breakdown: TrackCostBreakdown } {
   const cfg = MODES[mode];
+  const surfacePerM = cfg.trackCostPerMeter * cfg.gradeCostMult.surface;
+  const elevatedPerM = cfg.trackCostPerMeter * cfg.gradeCostMult.elevated;
   const perMeter = cfg.trackCostPerMeter * cfg.gradeCostMult[grade];
+
   let cost = 0;
+  let surfaceRef = 0;
+  let elevatedRef = 0;
+  let cutCover = 0;
+  let bored = 0;
+  let belowWaterTable = false;
+  const strataSeen = new Set<string>();
+
   for (let i = 1; i < points.length; i++) {
     const a = points[i - 1] as Vec2;
     const b = points[i] as Vec2;
     const len = dist(a, b);
-    // sample midpoints for water (tunnels don't pay the bridge premium)
-    let waterFrac = 0;
     const samples = Math.max(2, Math.ceil(len / 120));
-    for (let s = 0; s <= samples; s++) {
-      const t = s / samples;
-      if (isWaterAt(state.fields, { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })) waterFrac += 1 / (samples + 1);
+
+    if (grade === 'tunnel') {
+      // price each sub-sample through its own strata column, average per-metre
+      let perMSum = 0;
+      for (let s = 0; s < samples; s++) {
+        const t = (s + 0.5) / samples;
+        const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+        const col = columnAt(state.cityKey, state.seed, WORLD_SIZE, state.osmElevation, state.osmElevRes, p);
+        const seg = undergroundSegmentCost(surfacePerM, 1, col, tunnelDepthAt(state, p));
+        perMSum += seg.costPerM;
+        strataSeen.add(seg.stratum);
+        if (seg.belowWaterTable) belowWaterTable = true;
+        if (seg.method === 'cutCover') cutCover += seg.costPerM * (len / samples);
+        else bored += seg.costPerM * (len / samples);
+      }
+      cost += (perMSum / samples) * len;
+    } else {
+      // surface / elevated: unchanged historic formula (water bridge premium)
+      let waterFrac = 0;
+      for (let s = 0; s <= samples; s++) {
+        const t = s / samples;
+        if (isWaterAt(state.fields, { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })) waterFrac += 1 / (samples + 1);
+      }
+      const waterMult = 1 + waterFrac * (WATER_CROSSING_MULT - 1);
+      cost += len * perMeter * waterMult;
     }
-    const waterMult = grade === 'tunnel' ? 1 : 1 + waterFrac * (WATER_CROSSING_MULT - 1);
-    cost += len * perMeter * waterMult;
+    surfaceRef += len * surfacePerM;
+    elevatedRef += len * elevatedPerM;
   }
+
   // pouring track in rain or snow costs more (tunnels are sheltered → no surcharge)
   const weatherMult = grade === 'tunnel' ? 1 : weatherBuildCostMult(state.weather);
-  return Math.round(cost * weatherMult);
+  cost = Math.round(cost * weatherMult);
+
+  const breakdown: TrackCostBreakdown = {
+    surface: Math.round(surfaceRef),
+    elevated: Math.round(elevatedRef),
+    cutCover: Math.round(cutCover),
+    bored: Math.round(bored),
+    strata: strataSeen.size ? [...strataSeen].join('/') : grade,
+    belowWaterTable,
+  };
+  return { cost, breakdown };
+}
+
+/** Cost of a track polyline given mode/grade and water/strata. */
+export function trackCost(state: GameState, mode: TransitMode, grade: 'surface' | 'elevated' | 'tunnel', points: Vec2[]): number {
+  return trackCostDetailed(state, mode, grade, points).cost;
 }
 
 export function stationCost(mode: TransitMode): number {
@@ -124,7 +186,20 @@ function applyCommandInner(state: GameState, cmd: Command): CommandResult {
         }
         if (allFound && routed.length >= 2) points = routed;
       }
-      const cost = trackCost(state, cmd.mode, cmd.grade, points);
+      let cost = trackCost(state, cmd.mode, cmd.grade, points);
+      // Underground track sinks its end stations to the line's depth here and
+      // charges the incremental station-deepening surcharge (deeper = pricier).
+      if (cmd.grade === 'tunnel') {
+        const base = MODES[cmd.mode].stationCost;
+        for (const st of [from, to]) {
+          const newDepth = tunnelDepthAt(state, st.pos);
+          const prevDepth = st.depth ?? 0;
+          if (newDepth > prevDepth) {
+            cost += Math.round(stationDepthSurcharge(base, newDepth) - stationDepthSurcharge(base, prevDepth));
+            st.depth = newDepth;
+          }
+        }
+      }
       if (state.budget.cash < cost) return { ok: false, error: 'Insufficient funds' };
       // surface/elevated track cannot terminate mid-water; sampled cost already
       // prices crossings, so no hard block on crossing.

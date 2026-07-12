@@ -4,7 +4,7 @@
  */
 import type { ScenarioRules } from '@core/scenarioRules';
 import type { Command, CommandResult, Difficulty, TransitMode } from '@core/types';
-import type { DemandPayload, FieldsPayload, FrameSnapshot, FromSim, ReplayPayload, StaticCity, ToSim, TrafficPayload, UiState } from './protocol';
+import type { DemandPayload, FieldsPayload, FrameSnapshot, FromSim, ReplayPayload, StaticCity, StrataProbeResult, ToSim, TrafficPayload, UiState } from './protocol';
 import type { HeatmapPayload } from '@core/analytics';
 
 export interface SimEvents {
@@ -71,6 +71,10 @@ export class SimClient {
           this.pending.get(msg.requestId)?.(msg.cost);
           this.pending.delete(msg.requestId);
           break;
+        case 'strataProbe':
+          this.pending.get(msg.requestId)?.(msg.probe);
+          this.pending.delete(msg.requestId);
+          break;
       }
     };
   }
@@ -130,6 +134,15 @@ export class SimClient {
     return new Promise((resolve) => {
       this.pending.set(requestId, (v) => resolve(v as number));
       this.send({ type: 'queryTrackCost', requestId, mode, grade, points });
+    });
+  }
+
+  /** Probe the subsurface at a world point for the cross-section UI. */
+  strataProbe(x: number, y: number): Promise<StrataProbeResult> {
+    const requestId = this.nextRequestId++;
+    return new Promise((resolve) => {
+      this.pending.set(requestId, (v) => resolve(v as StrataProbeResult));
+      this.send({ type: 'strataProbe', requestId, x, y });
     });
   }
 }

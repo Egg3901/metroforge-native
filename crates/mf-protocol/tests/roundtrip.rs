@@ -704,9 +704,14 @@ fn from_sim_json_every_variant_roundtrips() {
     // TrackCost
     let tc = r#"{"t":"trackCost","seq":3,"p":{"cost":1234.5}}"#;
     match parse_from_sim(tc).unwrap() {
-        FromSimJson::TrackCost { seq, cost } => {
+        FromSimJson::TrackCost {
+            seq,
+            cost,
+            breakdown,
+        } => {
             assert_eq!(seq, Some(3));
             assert!((cost - 1234.5).abs() < 1e-9);
+            assert!(breakdown.is_none());
         }
         other => panic!("TrackCost: {other:?}"),
     }

@@ -11,6 +11,7 @@ import { CROWD_KNEE, CROWD_PENALTY_MIN, MODES, TRANSFER_PENALTY_MIN, WALK_SPEED 
 import { dist } from '../geometry';
 import { eventDemandMult } from '../events';
 import { weatherCarPenaltyMin, weatherDemandMult, weatherWalkMult } from '../weatherEffects';
+import { stationDepthAccessPenaltySec } from '../geologyCost';
 import type { District, FlowResult, GameState, RouteDef, Station } from '../types';
 
 const CAR_SPEED = 8.3; // m/s effective urban driving
@@ -83,9 +84,12 @@ function buildGraph(stations: Station[], routes: RouteDef[]): AssignmentGraph {
       const street = streetNodeOf.get(sid);
       const rn = routeNode.get(`${sid}:${r.id}`);
       if (street === undefined || rn === undefined) continue;
+      // deep underground stations add access time (stairs/escalators/lifts):
+      // +30 s per 10 m below 10 m (see geologyCost.ts). Surface stops pay 0.
+      const depthAccessMin = stationDepthAccessPenaltySec(stationById.get(sid)?.depth) / 60;
       // boarding cost carries the transfer penalty + crowding discomfort; one
       // transfer penalty is refunded at the end (first boarding isn't a transfer)
-      edges[street]!.push({ to: rn, cost: waitMin + TRANSFER_PENALTY_MIN + crowdMin, routeId: r.id });
+      edges[street]!.push({ to: rn, cost: waitMin + TRANSFER_PENALTY_MIN + crowdMin + depthAccessMin, routeId: r.id });
       edges[rn]!.push({ to: street, cost: 0.1, routeId: -1 });
     }
     // ride edges (both directions — vehicles run out-and-back)

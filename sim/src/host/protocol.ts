@@ -3,7 +3,7 @@
  * FFI surface a native core would expose: JSON control messages + typed-array
  * render snapshots.
  */
-import type { Command, CommandResult, Difficulty, GameState, TransitMode } from '@core/types';
+import type { Command, CommandResult, Difficulty, GameState, TrackCostBreakdown, TransitMode } from '@core/types';
 
 export interface UiStation {
   id: number;
@@ -189,7 +189,16 @@ export type ToSim =
   | { type: 'setSpeed'; speed: number }
   | { type: 'command'; requestId: number; cmd: Command }
   | { type: 'queryTrackCost'; requestId: number; mode: TransitMode; grade: 'surface' | 'elevated' | 'tunnel'; points: { x: number; y: number }[] }
+  | { type: 'strataProbe'; requestId: number; x: number; y: number }
   | { type: 'requestReplay' };
+
+/** A subsurface probe result for the (future) cross-section UI. */
+export interface StrataProbeResult {
+  bands: { kind: string; top: number; bottom: number }[];
+  waterTable: number;
+  rockHardness: number;
+  surfaceElevation: number;
+}
 
 export interface TrafficPayload {
   w: number;
@@ -217,7 +226,8 @@ export type FromSim =
   | { type: 'frame'; snapshot: FrameSnapshot }
   | { type: 'ui'; ui: UiState }
   | { type: 'commandResult'; requestId: number; result: CommandResult }
-  | { type: 'trackCost'; requestId: number; cost: number }
+  | { type: 'trackCost'; requestId: number; cost: number; breakdown?: TrackCostBreakdown }
+  | { type: 'strataProbe'; requestId: number; probe: StrataProbeResult }
   | { type: 'saved'; json: string }
   | { type: 'replay'; payload: ReplayPayload }
   | { type: 'toast'; message: string; tone: 'info' | 'warn' | 'good' };
