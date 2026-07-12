@@ -7,6 +7,7 @@ import { MAX_HEADWAY, MODES, REFUND_FRACTION, ROUTE_COLORS, WATER_CROSSING_MULT 
 import { isWaterAt } from './fields';
 import { findRoadPath, nearestRoadPoint } from './transit/roadGraph';
 import { dist, makePolyline } from './geometry';
+import { weatherBuildCostMult } from './weatherEffects';
 import type { Vec2 } from './geometry';
 import type { Command, CommandResult, GameState, TrackSegment, TransitMode } from './types';
 
@@ -44,7 +45,9 @@ export function trackCost(state: GameState, mode: TransitMode, grade: 'surface' 
     const waterMult = grade === 'tunnel' ? 1 : 1 + waterFrac * (WATER_CROSSING_MULT - 1);
     cost += len * perMeter * waterMult;
   }
-  return Math.round(cost);
+  // pouring track in rain or snow costs more (tunnels are sheltered → no surcharge)
+  const weatherMult = grade === 'tunnel' ? 1 : weatherBuildCostMult(state.weather);
+  return Math.round(cost * weatherMult);
 }
 
 export function stationCost(mode: TransitMode): number {

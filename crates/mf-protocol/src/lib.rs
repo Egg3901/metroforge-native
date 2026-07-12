@@ -31,8 +31,9 @@ pub use envelope::{
 pub use types::{
     ActiveEventDto, CityListEntry, CityMapPreview, CitySize, Command, CommandLogEntry,
     CommandResult, DayLedger, DemandLine, DemandPayload, Difficulty, FailReason, HelloInfo,
-    MapLabel, MapLabelKind, ReplayPayload, RoadDto, ScenarioRules, StaticCityJson, ToastTone,
-    TrackGrade, TransitMode, UiDistrict, UiRoute, UiState, UiStation, UiTrack, Vec2,
+    MapLabel, MapLabelKind, ReplayPayload, RoadDto, ScenarioRules, Season, StaticCityJson,
+    ToastTone, TrackGrade, TransitMode, UiDistrict, UiRoute, UiState, UiStation, UiTrack, Vec2,
+    WeatherEvent, WeatherState,
 };
 
 use std::sync::Arc;

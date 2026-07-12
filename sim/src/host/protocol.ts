@@ -93,6 +93,15 @@ export interface UiState {
   districts?: { id: number; name: string; x: number; y: number; population: number; jobs: number }[];
   /** count of routes over capacity (crowding > 1) */
   overcrowdedRoutes?: number;
+  // ── optional, additive (v0.7 weather); older clients ignore these ──
+  /** current weather state: clear|overcast|rain|fog|snow|storm */
+  weatherState?: string;
+  /** weather intensity 0..1 (rainfall/snowfall strength; heat for clear) */
+  weatherIntensity?: number;
+  /** season derived from the sim date: winter|spring|summer|autumn */
+  weatherSeason?: string;
+  /** headline weather event, when active: blizzard|heatwave */
+  weatherEvent?: string;
   /** cumulative lifetime ledger, once at least one day has closed */
   lifetime?: import('@core/types').LifetimeLedger;
   /**
