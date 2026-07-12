@@ -255,10 +255,14 @@ fn build_terrain_system(
             let world_size = city_json.world_size as f32;
             let cell = world_size / res as f32;
             let origin = -world_size / 2.0 + cell * 0.5;
+            // Re-base to the city's lowest sample so inland cities (Cleveland
+            // ~172m ASL, Atlanta ~156m) sit on the y=0 water/ground plane like
+            // the coastal ones, instead of floating on an absolute-ASL plateau.
+            let base_m = elev.heights.iter().copied().min().unwrap_or(0) as f32;
             let heights: Vec<f32> = elev
                 .heights
                 .iter()
-                .map(|&m| m as f32 * TERRAIN_VERTICAL_EXAGGERATION)
+                .map(|&m| (m as f32 - base_m) * TERRAIN_VERTICAL_EXAGGERATION)
                 .collect();
             (
                 GridSpace {
