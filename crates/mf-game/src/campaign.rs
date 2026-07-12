@@ -479,6 +479,10 @@ mod tests {
 
     fn base_ui() -> UiState {
         UiState {
+            weather_state: None,
+            weather_intensity: None,
+            weather_season: None,
+            weather_event: None,
             tick: 0,
             insights: Vec::new(),
             day: 1,

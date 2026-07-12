@@ -372,6 +372,10 @@ mod tests {
 
     fn base_state() -> UiState {
         UiState {
+            weather_state: None,
+            weather_intensity: None,
+            weather_season: None,
+            weather_event: None,
             tick: 0,
             insights: vec![],
             day: 1,
