@@ -13,10 +13,15 @@ import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { encodePng } from './png';
 import { expandBboxToSquare } from './geo-utils';
+import { DemSampler } from './dem';
 
 const WORLD = 12000; // fit each city into a 12km square (matches medium map)
 const HALF = WORLD / 2;
 const MASK_RES = 640; // water/park bitmask resolution over the world square (~19m/cell)
+/** Real-elevation heightfield resolution over the world square (~47m/cell).
+ *  Shipped as a dedicated i16-meters channel decoupled from the coarse 96²
+ *  sim field — see the `elevation` bundle field / scripts/dem.ts. */
+const ELEV_RES = 256;
 
 /** Pack a 0/1 mask to 1 bit per cell, base64. */
 function packMask(bits: Uint8Array): string {
@@ -722,6 +727,40 @@ function build(cfg: CityCfg): void {
   // ── preview PNG ──
   writePreview(cfg.key, outRoads, bits, parkBits);
 
+  // ── real elevation (terrarium DEM) ──
+  // Bake an ELEV_RES² grid of real meters over the world square. Each cell
+  // center is inverse-projected (undo the equirectangular P() above) back to
+  // lon/lat, then sampled from the AWS Terrain Tiles DEM (scripts/dem.ts).
+  // This is a STATIC per-city channel, decoupled from the coarse sim field —
+  // identical across runs (baked into committed JSON), so it never perturbs
+  // determinism/stateHash. Water cells keep their sampled seabed/shore value;
+  // the renderer clamps them to sea level via the authoritative water mask.
+  const dem = new DemSampler(cfg.bbox, 30);
+  const cosLat0 = Math.cos((lat0 * Math.PI) / 180);
+  const invLon = 1 / (cosLat0 * 111320 * scale);
+  const invLat = 1 / (110540 * scale);
+  const cellE = WORLD / ELEV_RES;
+  const elev = new Int16Array(ELEV_RES * ELEV_RES);
+  let eMin = Infinity;
+  let eMax = -Infinity;
+  for (let r = 0; r < ELEV_RES; r++) {
+    const wy = -HALF + (r + 0.5) * cellE; // world y (south positive, y-down)
+    const lat = lat0 - wy * invLat;
+    for (let c = 0; c < ELEV_RES; c++) {
+      const wx = -HALF + (c + 0.5) * cellE;
+      const lon = lon0 + wx * invLon;
+      const m = dem.sample(lon, lat);
+      const clamped = Math.max(-32768, Math.min(32767, Math.round(m)));
+      elev[r * ELEV_RES + c] = clamped;
+      if (m < eMin) eMin = m;
+      if (m > eMax) eMax = m;
+    }
+  }
+  const elevB64 = Buffer.from(elev.buffer, elev.byteOffset, elev.byteLength).toString('base64');
+  console.log(
+    `${cfg.key}: elevation ${ELEV_RES}² @ z${dem.zoom} → ${eMin.toFixed(0)}..${eMax.toFixed(0)} m (${(elevB64.length / 1024) | 0} KB b64)`,
+  );
+
   // ── bundle ──
   const bundle = {
     key: cfg.key,
@@ -732,6 +771,10 @@ function build(cfg: CityCfg): void {
     parkMask: packMask(parkBits),
     buildingMask: packMask(buildingBits),
     maskPacked: true,
+    elevRes: ELEV_RES,
+    /** base64 little-endian Int16 grid of real meters, row-major over the
+     *  world square (row 0 = north edge, matching the mask convention). */
+    elevation: elevB64,
     roads: outRoads,
     labels,
   };

@@ -18,6 +18,11 @@ export interface OsmCityData {
   buildingMask?: string;
   /** masks are 1-bit-per-cell packed (vs legacy 1-byte-per-cell) */
   maskPacked?: boolean;
+  /** real-elevation heightfield side length (elevRes×elevRes), if baked */
+  elevRes?: number;
+  /** base64 little-endian Int16 grid of real meters, row-major over the world
+   *  square (row 0 = north edge, same convention as the masks) */
+  elevation?: string;
   roads: { cls: string; pts: number[] }[];
   /** real OSM place names for map labels */
   labels?: MapLabel[];
@@ -46,6 +51,19 @@ export function decodeB64Mask(b64: string, n?: number, packed = true): Uint8Arra
   const count = n ?? bin.length * 8;
   const out = new Uint8Array(count);
   for (let i = 0; i < count; i++) out[i] = (bin.charCodeAt(i >> 3) >> (i & 7)) & 1;
+  return out;
+}
+
+/** Decode a base64 little-endian Int16 elevation grid to an Int16Array of
+ *  `res*res` meters (row-major, row 0 = north edge). */
+export function decodeElevation(b64: string, res: number): Int16Array {
+  const bin = atob(b64);
+  const out = new Int16Array(res * res);
+  for (let i = 0; i < out.length; i++) {
+    const lo = bin.charCodeAt(i * 2) & 0xff;
+    const hi = bin.charCodeAt(i * 2 + 1) & 0xff;
+    out[i] = ((hi << 8) | lo) << 16 >> 16; // sign-extend
+  }
   return out;
 }
 

@@ -273,6 +273,36 @@ export function encodeStaticBuildings(f: StaticBuildingsInput): ArrayBuffer {
   return buf;
 }
 
+// ── msgType=7 StaticElevation ─────────────────────────────────────────────────
+
+/** header (12 B): msgType u8=7 | version u8=1 | reserved u16 | res u32 |
+ *  reserved u32. Body: i16[res*res] real meters, little-endian, row-major
+ *  (row 0 = north edge, same footprint as StaticMask over the world square).
+ *
+ *  A dedicated static heightfield channel, decoupled from the coarse sim
+ *  `fields.terrain` (96²): elevation is real DEM data, static per city, and
+ *  not gameplay-coupled, so it ships as its own hi-res raster in true meters
+ *  rather than riding the normalized 0..1 sim field. Same additive/optional
+ *  class as StaticMask/StaticBuildings — a client that ignores msgType=7
+ *  simply falls back to the sim field's terrain, so this does NOT bump
+ *  PROTOCOL_VERSION (mirrors the msgType=5 buildings precedent). */
+export function encodeStaticElevation(res: number, elev: Int16Array): ArrayBuffer {
+  const headerLen = 12;
+  const buf = new ArrayBuffer(headerLen + res * res * 2);
+  const dv = new DataView(buf);
+  dv.setUint8(0, 7);
+  dv.setUint8(1, 1);
+  dv.setUint16(2, 0, true);
+  dv.setUint32(4, res >>> 0, true);
+  dv.setUint32(8, 0, true);
+  let off = headerLen;
+  for (let i = 0; i < res * res; i++) {
+    dv.setInt16(off, elev[i] as number, true);
+    off += 2;
+  }
+  return buf;
+}
+
 // ── msgType=6 HeatmapPayload (ridership analytics) ────────────────────────────
 //
 // Byte layout is owned by `@core/analytics` (encodeHeatmapPayload). Re-exported

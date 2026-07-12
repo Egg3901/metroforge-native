@@ -6,6 +6,10 @@ Cargo.lock.bak
 metroforge-sidecar
 metroforge-sidecar.exe
 
+# DEM terrain-tile cache (build-cities.ts elevation ingest) + private cargo target
+sim/.cache/
+target-local/
+
 # editor/OS cruft
 .DS_Store
 *.swp

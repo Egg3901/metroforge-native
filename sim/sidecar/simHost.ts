@@ -24,7 +24,7 @@ import { EVENT_DEFS } from '@core/events';
 import { pointAlong } from '@core/geometry';
 import { newGame } from '@core/newGame';
 import { deserialize, serialize, stateHash } from '@core/save';
-import { decodeB64Mask } from '@core/city/osmCity';
+import { decodeB64Mask, decodeElevation } from '@core/city/osmCity';
 import type { ScenarioRules } from '@core/scenarioRules';
 import { playableScenario, type ScenarioDef } from '@core/scenario';
 import { simTick } from '@core/sim';
@@ -40,6 +40,7 @@ import {
   encodeFields,
   encodeFrame,
   encodeStaticBuildings,
+  encodeStaticElevation,
   encodeStaticMask,
   encodeTraffic,
   jsonMessage,
@@ -210,6 +211,10 @@ export class SimHost {
         state.osmParkMask = osm.parkMask ? decodeB64Mask(osm.parkMask, n, packed) : undefined;
         state.osmBuildingMask = osm.buildingMask ? decodeB64Mask(osm.buildingMask, n, packed) : undefined;
         state.osmMaskRes = osm.maskRes;
+        if (osm.elevation && osm.elevRes) {
+          state.osmElevation = decodeElevation(osm.elevation, osm.elevRes);
+          state.osmElevRes = osm.elevRes;
+        }
         state.osmLabels = osm.labels;
       }
       this.state = state;
@@ -282,6 +287,11 @@ export class SimHost {
       if (s.osmWaterMask) this.send(binaryMessage('staticMask', encodeStaticMask(0, res, s.osmWaterMask)));
       if (s.osmParkMask) this.send(binaryMessage('staticMask', encodeStaticMask(1, res, s.osmParkMask)));
       if (s.osmBuildingMask) this.send(binaryMessage('staticMask', encodeStaticMask(2, res, s.osmBuildingMask)));
+    }
+    // dedicated real-elevation channel (msgType=7), decoupled from the sim
+    // field; optional/additive like the masks above (see wire.ts).
+    if (s.osmElevation && s.osmElevRes) {
+      this.send(binaryMessage('staticElevation', encodeStaticElevation(s.osmElevRes, s.osmElevation)));
     }
     // real per-building footprint polygons + heights (optional; only cities
     // with a generated buildings file have one — see sidecar/cities.ts)

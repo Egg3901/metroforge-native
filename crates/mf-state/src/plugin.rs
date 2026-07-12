@@ -107,6 +107,9 @@ fn apply_sim_events_system(
             FromSimMsg::Buildings(buildings) => {
                 city.apply_buildings(buildings.clone());
             }
+            FromSimMsg::Elevation(e) => {
+                city.apply_elevation((**e).clone());
+            }
             FromSimMsg::Fields(f) => {
                 // Arc clone — Fields arrays are large; avoid deep-copying
                 // every 7 sim-days on NYC-scale grids.

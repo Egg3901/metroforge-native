@@ -21,6 +21,8 @@ export function serialize(state: GameState): string {
     osmParkMask: _p,
     osmBuildingMask: _b,
     osmMaskRes: _r,
+    osmElevation: _e,
+    osmElevRes: _er,
     osmLabels: _l,
     instanceId: _i,
     ...persist

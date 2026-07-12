@@ -8,7 +8,7 @@
  */
 import { WORLD_SIZE } from '../constants';
 import { presetByKey, type CityPreset } from './presets';
-import { decodeB64Mask, maskAt, type OsmCityData, type MapLabel } from './osmCity';
+import { decodeB64Mask, decodeElevation, maskAt, type OsmCityData, type MapLabel } from './osmCity';
 import { cellCenter, cellIndexAt, createFieldGrid } from '../fields';
 import { Noise2D, clamp, makePolyline, vec } from '../geometry';
 import type { Vec2 } from '../geometry';
@@ -40,6 +40,10 @@ export interface GeneratedCity {
   parkMaskHi?: Uint8Array | undefined;
   buildingMaskHi?: Uint8Array | undefined;
   maskRes?: number | undefined;
+  /** real-elevation heightfield (meters, elevRes²) for the static elevation
+   *  channel, if a real city baked one */
+  elevationHi?: Int16Array | undefined;
+  elevRes?: number | undefined;
   labels?: MapLabel[] | undefined;
 }
 
@@ -89,6 +93,7 @@ export function generateCity(seed: number, difficulty: Difficulty, opts: Generat
   const waterDir = vec(Math.cos(waterAngle), Math.sin(waterAngle));
   const waterOffset = w.coastInset * HALF;
 
+  let osmElevationHi: Int16Array | undefined;
   let osmWaterHi: Uint8Array | undefined;
   let osmParkHi: Uint8Array | undefined;
   let osmBuildingHi: Uint8Array | undefined;
@@ -101,6 +106,7 @@ export function generateCity(seed: number, difficulty: Difficulty, opts: Generat
     osmWaterHi = mask;
     osmParkHi = pmask ?? undefined;
     osmBuildingHi = osm.buildingMask ? decodeB64Mask(osm.buildingMask, n, packed) : undefined;
+    if (osm.elevation && osm.elevRes) osmElevationHi = decodeElevation(osm.elevation, osm.elevRes);
     // The coarse 125 m field grid (fields.w×fields.h) is what the native
     // terrain mesh bilinearly samples + thresholds at water_frac>0.5. Taking a
     // single CENTER point-sample of the ~19 m OSM mask per field cell quantizes
@@ -611,5 +617,5 @@ export function generateCity(seed: number, difficulty: Difficulty, opts: Generat
     (districts[i] as District).name = names[i] as string;
   }
 
-  return { fields, roads, districts, cbd, waterMaskHi: osmWaterHi, parkMaskHi: osmParkHi, buildingMaskHi: osmBuildingHi, maskRes: osm ? osm.maskRes : undefined, labels: osm ? osm.labels : undefined };
+  return { fields, roads, districts, cbd, waterMaskHi: osmWaterHi, parkMaskHi: osmParkHi, buildingMaskHi: osmBuildingHi, maskRes: osm ? osm.maskRes : undefined, elevationHi: osmElevationHi, elevRes: osm && osm.elevRes ? osm.elevRes : undefined, labels: osm ? osm.labels : undefined };
 }

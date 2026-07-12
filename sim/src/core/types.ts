@@ -202,6 +202,10 @@ export interface GameState {
   osmParkMask?: Uint8Array | undefined;
   osmBuildingMask?: Uint8Array | undefined;
   osmMaskRes?: number | undefined;
+  /** transient: real-elevation heightfield (meters, row-major, elevRes²) for
+   *  the dedicated static elevation channel; real cities only (not saved) */
+  osmElevation?: Int16Array | undefined;
+  osmElevRes?: number | undefined;
   osmLabels?: import('./city/osmCity').MapLabel[] | undefined;
   budget: Budget;
   stats: CityStats;
