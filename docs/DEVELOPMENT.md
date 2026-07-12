@@ -101,6 +101,27 @@ straight to `Loading` with that city on Normal difficulty: this box has no displ
 to click an egui menu through, and it doubles as a fast-boot path for screenshots
 and scripted smoke tests.
 
+### Forcing a weather state (`MF_FORCE_WEATHER`)
+
+`MF_FORCE_WEATHER=<state>[:intensity]` pins the render-side weather (v0.7)
+regardless of what the sim rolls, so you can frame / smoke-test a specific look
+without waiting for the sim's seeded climate machine to happen to produce it.
+
+- `<state>` is one of `clear`, `overcast`, `rain`, `fog`, `snow`, `storm`.
+- optional `:intensity` is `0.0..1.0` (precip strength), e.g. `rain:0.8`.
+
+It overrides only the `WeatherRender` resource (the eased weights the renderer
+and the HUD chip both read), not the sim's own `UiState`; season / headline
+event still come from the sim. Unknown values are ignored. Pair with
+`MF_THEME=dark` to hold night and capture the rain-at-night / storm look, and
+with `MF_VERIFY_DIR` + `MF_VERIFY_NETWORK` for wet-street + glowing-stripe
+screenshots. Example:
+
+```sh
+MF_AUTOSTART=nyc MF_FORCE_WEATHER=rain MF_THEME=dark MF_VERIFY_DIR=/tmp/wx \
+  MF_VERIFY_NETWORK=1 cargo run -p mf-game
+```
+
 ### Sidecar crash-recovery harness
 
 `MF_TEST_KILL_SIDECAR=<seconds>` (e.g. `30`) kills the owned sidecar that many

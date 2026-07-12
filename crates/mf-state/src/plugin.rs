@@ -24,7 +24,7 @@ use crate::subway::SubwayView;
 use crate::theme::Theme;
 use crate::traffic::LatestTraffic;
 use crate::ui::LatestUi;
-use crate::weather::WeatherEffects;
+use crate::weather::{WeatherEffects, WeatherRender};
 
 /// Registers shared sim-mirror resources and applies inbound `SimEvent`s.
 pub struct MfStatePlugin;
@@ -49,6 +49,7 @@ impl Plugin for MfStatePlugin {
             .init_resource::<OverlayState>()
             .init_resource::<RouteFocus>()
             .init_resource::<WeatherEffects>()
+            .init_resource::<WeatherRender>()
             .init_resource::<DayNightEnabled>()
             .init_resource::<AttractLighting>()
             // `add_event` is idempotent (it's an `init_resource` under the

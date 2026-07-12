@@ -20,6 +20,7 @@ mod outline;
 pub mod palette;
 pub mod perf;
 mod photomode;
+mod precip;
 mod reveal;
 mod roads;
 mod sky;
@@ -32,6 +33,7 @@ mod transit;
 mod trees;
 mod vehicles;
 mod water;
+mod weather_render;
 
 pub use stats::RenderCacheStats;
 
@@ -40,7 +42,7 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::pbr::{DirectionalLightShadowMap, DistanceFog, FogFalloff};
 use bevy::prelude::*;
 
-use mf_state::{ColorblindMode, EffectiveKnobs, QualityTier, Theme};
+use mf_state::{ColorblindMode, EffectiveKnobs, QualityTier, Theme, WeatherRender};
 
 use crate::daynight::DayNightState;
 
@@ -104,6 +106,8 @@ impl Plugin for MfRenderPlugin {
                 atmosphere::MfAtmospherePlugin,
                 subway::MfSubwayPlugin,
                 outline::MfOutlinePlugin,
+                weather_render::MfWeatherRenderPlugin,
+                precip::MfPrecipPlugin,
             ),
         ))
         .add_plugins(photomode::MfPhotoModeRenderPlugin)
@@ -181,6 +185,7 @@ fn fog_falloff_matches(falloff: &FogFalloff, start: f32, end: f32) -> bool {
 fn apply_quality_render_settings_system(
     effective: Res<EffectiveKnobs>,
     quality: Res<QualityTier>,
+    weather: Res<WeatherRender>,
     mut shadow_map: ResMut<DirectionalLightShadowMap>,
     mut commands: Commands,
     cameras: Query<Entity, With<Camera3d>>,
@@ -201,6 +206,19 @@ fn apply_quality_render_settings_system(
         8 => Msaa::Sample8,
         _ => Msaa::Sample4,
     };
+    // Potato/Low express weather as fog density ONLY (art direction §4: no
+    // particles / wet look on the fog tiers). Thicken the tier's fog knob by
+    // pulling `end` (and a little of `start`) inward as fog/overcast/storm
+    // rise, so the white city hazes off closer under bad weather. Medium/High
+    // have `knobs.fog == None` and take the atmosphere/particle path instead.
+    let weather_fog =
+        (weather.fog * 0.7 + weather.overcast * 0.35 + weather.storm * 0.25).clamp(0.0, 1.0);
+    let fog_knob = knobs.fog.map(|(start, end)| {
+        (
+            start * (1.0 - weather_fog * 0.3),
+            end * (1.0 - weather_fog * 0.55),
+        )
+    });
     // `mf-game`'s camera.rs spawns `Camera3d` only on `OnEnter(InGame)`,
     // which happens well after `EffectiveKnobs`'s one-time "just inserted"
     // change-detection tick has already passed — so a plain
@@ -243,7 +261,7 @@ fn apply_quality_render_settings_system(
     // falloff (and `Tonemapping::None`, see note above) on EVERY camera every
     // frame when the tier wants fog — cheap, one camera — so the knob is
     // authoritative regardless of any spawn-time or Medium-default fog.
-    if let Some((start, end)) = knobs.fog {
+    if let Some((start, end)) = fog_knob {
         for (camera, mut fog, tonemapping) in &mut cameras_with_fog {
             if !fog_falloff_matches(&fog.falloff, start, end) {
                 fog.falloff = FogFalloff::Linear { start, end };
@@ -291,7 +309,7 @@ fn apply_quality_render_settings_system(
     }
     for camera in &cameras {
         commands.entity(camera).insert(msaa);
-        match knobs.fog {
+        match fog_knob {
             Some((start, end)) => {
                 commands.entity(camera).insert((
                     DistanceFog {

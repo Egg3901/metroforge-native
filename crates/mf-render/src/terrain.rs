@@ -439,6 +439,7 @@ fn build_terrain_system(
                 cloud_shadows.strength,
                 cloud_shadows.inv_scale,
             ),
+            weather: Vec4::ZERO,
             cloud_noise: Some(cloud_shadows.texture.clone()),
         },
     });
