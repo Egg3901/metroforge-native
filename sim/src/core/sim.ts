@@ -25,8 +25,47 @@ import { evaluateScenarioDay } from './scenario';
 import { getRoutePath } from './transit/routePath';
 import { routeOperatingCost } from './economy';
 import { diurnalDemand, diurnalFactor } from './timeOfDay';
+import { climateTable, weatherAt, type WeatherEvent } from './weather';
+import { weatherSpeedMult } from './weatherEffects';
 import type { Vec2 } from './geometry';
 import type { GameState, RouteDef, Station } from './types';
+
+/** Ticks per game-hour: weather is refreshed at most this often (it is a cheap
+ *  pure function of the tick, so an hourly cadence keeps its cost negligible). */
+const TICKS_PER_HOUR = TICKS_PER_DAY / 24;
+
+/** Player copy for weather-event toasts. No em/en dashes, no filler. */
+const WEATHER_EVENT_COPY: Record<WeatherEvent, { start: string; end: string; tone: 'warn' | 'info' }> = {
+  blizzard: {
+    start: 'Blizzard warning. Surface lines are crawling, but the underground keeps moving.',
+    end: 'The blizzard has passed. Surface service is recovering.',
+    tone: 'warn',
+  },
+  heatwave: {
+    start: 'Heat wave. Riders are staying home and rail speeds are restricted.',
+    end: 'The heat wave has broken. Rail speed limits are lifted.',
+    tone: 'warn',
+  },
+};
+
+/** Refresh the cached sky (pure fn of seed+tick+city) and emit begin/end toasts
+ *  when a headline weather event starts or clears. */
+function updateWeather(state: GameState, events: TickEvents): void {
+  const table = climateTable(state.cityKey);
+  const next = weatherAt(state.seed, state.tick, table);
+  const prevEvent = state.lastWeatherEvent ?? null;
+  const nextEvent = next.event ?? null;
+  state.weather = next;
+  if (nextEvent !== prevEvent) {
+    const toasts = events.toasts ?? (events.toasts = []);
+    if (prevEvent) toasts.push({ message: WEATHER_EVENT_COPY[prevEvent].end, tone: 'info' });
+    if (nextEvent) {
+      const c = WEATHER_EVENT_COPY[nextEvent];
+      toasts.push({ message: c.start, tone: c.tone });
+    }
+    state.lastWeatherEvent = nextEvent;
+  }
+}
 
 /**
  * Coarse spatial bucket over stations, sized so a 3×3 neighborhood covers the
@@ -116,6 +155,9 @@ export function simTick(state: GameState): TickEvents {
   const events: TickEvents = { messages: [] };
   if (state.failed || state.scenarioWon) return events;
   state.tick += 1;
+
+  // refresh the sky once per game-hour (and on the very first tick)
+  if (state.tick % TICKS_PER_HOUR === 0 || !state.weather) updateWeather(state, events);
 
   moveVehicles(state);
 
@@ -227,8 +269,10 @@ function moveVehicles(state: GameState): void {
       stopMemo.set(route.id, stops);
     }
     // Advance segment-by-segment toward the next stop so we never overshoot
-    // a dwell point on long ticks / high speeds.
-    let remaining = cfg.speed;
+    // a dwell point on long ticks / high speeds. Weather slows surface running;
+    // a fully-underground route (surfaceExposure 0) is immune.
+    const speedMult = weatherSpeedMult(state.weather, route.mode, route.surfaceExposure ?? 1);
+    let remaining = cfg.speed * speedMult;
     let guard = 0;
     while (remaining > 1e-6 && guard++ < 8) {
       const nextStop = nextStopAhead(stops, v.along, path.length);
@@ -340,6 +384,10 @@ export function refreshAssignment(state: GameState): void {
   state.stats.dailyCarTrips = result.dailyCarTrips;
   const total = result.dailyTransitTrips + result.dailyCarTrips;
   state.stats.transitShare = total > 0 ? result.dailyTransitTrips / total : 0;
+  // per-route surface exposure (fraction of segments not in tunnel), for the
+  // weather speed model: underground routes shrug off snow/blizzards.
+  const gradeById = new Map<number, string>();
+  for (const t of state.tracks) gradeById.set(t.id, t.grade);
   for (const r of state.routes) {
     r.dailyRidership = result.routeRidership.get(r.id) ?? 0;
     r.dailyRevenue = result.routeRevenue.get(r.id) ?? 0;
@@ -354,6 +402,13 @@ export function refreshAssignment(state: GameState): void {
       const b = r.stationIds[i + 1] as number;
       return result.segmentLoad.get(`${r.id}:${Math.min(a, b)}:${Math.max(a, b)}`) ?? 0;
     });
+    if (r.segmentIds.length > 0) {
+      let exposed = 0;
+      for (const sid of r.segmentIds) if (gradeById.get(sid) !== 'tunnel') exposed += 1;
+      r.surfaceExposure = exposed / r.segmentIds.length;
+    } else {
+      r.surfaceExposure = 1;
+    }
   }
   for (const s of state.stations) {
     // rolling blend so numbers move smoothly

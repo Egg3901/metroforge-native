@@ -37,6 +37,50 @@ pub enum TrackGrade {
     Tunnel,
 }
 
+/// `WeatherState` — metroforge/src/core/weather.ts (v0.7). The sky the sim is
+/// simulating; the render lane consumes it to drive precipitation and light.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WeatherState {
+    /// Clear skies.
+    Clear,
+    /// Overcast / cloudy.
+    Overcast,
+    /// Rain.
+    Rain,
+    /// Fog.
+    Fog,
+    /// Snow.
+    Snow,
+    /// Storm (heavy rain + wind).
+    Storm,
+}
+
+/// `Season` — metroforge/src/core/weather.ts (v0.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Season {
+    /// Winter.
+    Winter,
+    /// Spring.
+    Spring,
+    /// Summer.
+    Summer,
+    /// Autumn.
+    Autumn,
+}
+
+/// `WeatherEvent` — metroforge/src/core/weather.ts (v0.7). A headline weather
+/// event crossing a gameplay threshold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WeatherEvent {
+    /// Heavy snow/storm; surface lines crawl, underground unaffected.
+    Blizzard,
+    /// Hot clear spell; ridership dips and rail speeds are restricted.
+    Heatwave,
+}
+
 /// `Difficulty` — metroforge/src/core/types.ts:164
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -443,6 +487,19 @@ pub struct UiState {
     /// from per-route `live_crowding` instead.
     #[serde(default)]
     pub overcrowded_routes: Option<u32>,
+    /// Weather (v0.7): current sky state. `serde(default)` so old sidecars that
+    /// never emit weather still decode.
+    #[serde(default)]
+    pub weather_state: Option<WeatherState>,
+    /// Weather (v0.7): intensity in `0.0..1.0` (precip strength; heat for clear).
+    #[serde(default)]
+    pub weather_intensity: Option<f64>,
+    /// Weather (v0.7): season derived from the sim date.
+    #[serde(default)]
+    pub weather_season: Option<Season>,
+    /// Weather (v0.7): headline event, when one is active.
+    #[serde(default)]
+    pub weather_event: Option<WeatherEvent>,
 }
 
 impl UiState {

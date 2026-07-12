@@ -4,6 +4,7 @@ import { MAP_SIZE_METERS, presetByKey, type MapSize } from './city/presets';
 import type { OsmCityData } from './city/osmCity';
 import { nextInstanceId } from './instance';
 import { Rng } from './rng';
+import { climateTable, weatherAt } from './weather';
 import type { ScenarioDef } from './scenario/types';
 import { rulesFromScenario } from './scenario/evaluate';
 import type { ScenarioRules } from './scenarioRules';
@@ -73,6 +74,7 @@ export function newGame(seed: number, difficulty: Difficulty, options: NewGameOp
       coverage: 0,
       approval: 50,
     },
+    cityKey: options.presetKey,
     nextId: 1,
     demandDirty: true,
     unlockedModes: startingModes,
@@ -83,6 +85,9 @@ export function newGame(seed: number, difficulty: Difficulty, options: NewGameOp
     bankruptDays: 0,
     failed: null,
   };
+  // seed the initial sky so tick-0 UI/hosts see weather before the first tick
+  state.weather = weatherAt(seed, 0, climateTable(options.presetKey));
+  state.lastWeatherEvent = state.weather.event ?? null;
   if (rules) state.scenarioRules = rules;
   if (scenario) {
     state.scenario = scenario;

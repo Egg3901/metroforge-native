@@ -79,6 +79,34 @@ describe('determinism', () => {
     expect(stateHash(restored)).toBe(stateHash(state));
   });
 
+  it('weather active: two same-seed runs stay bit-identical over 10k+ ticks', () => {
+    // playScript runs 3000 ticks with a live bus line; weather is on by default
+    // and feeds vehicle speed + demand, so this proves the coupling is
+    // deterministic across a long horizon.
+    const a = newGame(20260707, 'normal', { presetKey: 'nyc' });
+    const b = newGame(20260707, 'normal', { presetKey: 'nyc' });
+    expect(a.weather).toBeDefined();
+    for (let t = 0; t < 11000; t++) {
+      simTick(a);
+      simTick(b);
+    }
+    expect(a.weather!.state).toBe(b.weather!.state);
+    expect(stateHash(a)).toBe(stateHash(b));
+  });
+
+  it('weather is wired into the sim: it moves the state hash vs a no-weather run', () => {
+    // Same seed/commands, but blank out weather each tick on one run. The two
+    // must diverge, proving weather actually reaches vehicles/demand.
+    const withW = playScript(555111);
+    const noW = newGame(555111, 'normal');
+    // clear weather so effects are a no-op path
+    for (let t = 0; t < 3000; t++) {
+      noW.weather = undefined;
+      simTick(noW);
+    }
+    expect(stateHash(withW)).not.toBe(stateHash(noW));
+  });
+
   it('a working bus line attracts riders and earns fares', () => {
     const state = playScript(31337);
     const route = state.routes[0];

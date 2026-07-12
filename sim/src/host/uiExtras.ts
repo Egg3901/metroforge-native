@@ -58,6 +58,14 @@ export interface UiStateExtras {
   districts: UiDistrict[];
   /** count of routes over capacity (crowding > 1) */
   overcrowdedRoutes: number;
+  /** current weather state (clear|overcast|rain|fog|snow|storm) */
+  weatherState?: string;
+  /** weather intensity 0..1 (rainfall/snowfall strength; heat for clear) */
+  weatherIntensity?: number;
+  /** season derived from the sim date (winter|spring|summer|autumn) */
+  weatherSeason?: string;
+  /** headline weather event, when active (blizzard|heatwave) */
+  weatherEvent?: string;
   /** cumulative lifetime ledger, if the run has closed at least one day */
   lifetime?: LifetimeLedger;
   /** data-driven scenario progress; omitted when no scenario is active */
@@ -94,6 +102,12 @@ export function uiExtras(s: GameState): UiStateExtras {
     overcrowdedRoutes: s.routes.filter((r) => (r.crowding ?? 0) > 1).length,
     scenarioProgression: SCENARIO_PROGRESSION,
   };
+  if (s.weather) {
+    extras.weatherState = s.weather.state;
+    extras.weatherIntensity = s.weather.intensity;
+    extras.weatherSeason = s.weather.season;
+    if (s.weather.event) extras.weatherEvent = s.weather.event;
+  }
   if (s.budget.lifetime) extras.lifetime = s.budget.lifetime;
   if (s.scenario) extras.scenarioState = buildScenarioState(s.scenario, s);
   if (s.analytics) extras.analytics = s.analytics.insights;

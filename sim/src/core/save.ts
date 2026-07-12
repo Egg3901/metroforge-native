@@ -7,6 +7,7 @@ import Ajv from 'ajv';
 import { fieldsFromJSON, fieldsToJSON } from './fields';
 import { makePolyline } from './geometry';
 import { nextInstanceId } from './instance';
+import { climateTable, weatherAt } from './weather';
 import type { GameState, RoadEdge, TrackSegment } from './types';
 
 export const SAVE_VERSION = 2;
@@ -62,6 +63,11 @@ export function serialize(state: GameState): string {
     osmElevRes: _er,
     osmLabels: _l,
     instanceId: _i,
+    // weather is a pure fn of (seed, tick, cityKey); recomputed on load, never
+    // serialized, so it needs no migration and can't drift. cityKey DOES persist
+    // (it rides in ...persist) so the loaded save keeps its city's climate.
+    weather: _wx,
+    lastWeatherEvent: _we,
     ...persist
   } = state;
   return JSON.stringify({
@@ -140,6 +146,10 @@ export function deserialize(json: string): GameState {
   if (s.globalDemandMultDaysLeft !== undefined) restored.globalDemandMultDaysLeft = s.globalDemandMultDaysLeft;
   // migrate older saves missing rolling cash-flow history
   if (!restored.budget.netHistory) restored.budget.netHistory = [];
+  // recompute the (transient) sky from seed+tick+city so a just-loaded save has
+  // weather before its first tick. Pure fn ⇒ identical to a never-saved run.
+  restored.weather = weatherAt(restored.seed, restored.tick, climateTable(restored.cityKey));
+  restored.lastWeatherEvent = restored.weather.event ?? null;
   return restored;
 }
 

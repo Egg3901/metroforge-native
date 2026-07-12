@@ -10,6 +10,7 @@
 import { CROWD_KNEE, CROWD_PENALTY_MIN, MODES, TRANSFER_PENALTY_MIN, WALK_SPEED } from '../constants';
 import { dist } from '../geometry';
 import { eventDemandMult } from '../events';
+import { weatherCarPenaltyMin, weatherDemandMult, weatherWalkMult } from '../weatherEffects';
 import type { District, FlowResult, GameState, RouteDef, Station } from '../types';
 
 const CAR_SPEED = 8.3; // m/s effective urban driving
@@ -212,12 +213,14 @@ export function runAssignment(state: GameState): AssignmentOutput {
     });
   };
 
+  // weather shrinks how far people will walk to a stop (rain ~-15%, snow more)
+  const walkMult = weatherWalkMult(state.weather);
   // access lists: district -> [(stationId, walkMinutes)]
   const access = new Map<number, { stationId: number; walkMin: number }[]>();
   for (const d of districts) {
     const list: { stationId: number; walkMin: number }[] = [];
     for (const s of stations) {
-      const walkR = MODES[s.mode].walkRadius;
+      const walkR = MODES[s.mode].walkRadius * walkMult;
       const dd = dist(d.centroid, s.pos);
       if (dd <= walkR) list.push({ stationId: s.id, walkMin: dd / WALK_SPEED / 60 });
     }
@@ -230,7 +233,12 @@ export function runAssignment(state: GameState): AssignmentOutput {
 
   // citywide demand multiplier from active events (festivals, fuel spikes, …)
   // plus optional scenario global / per-district multipliers (data-driven beats)
-  const demandMult = eventDemandMult(state.activeEvents) * (state.globalDemandMult ?? 1);
+  // plus the weather (fewer trips in rain/snow/storm).
+  const demandMult =
+    eventDemandMult(state.activeEvents) * (state.globalDemandMult ?? 1) * weatherDemandMult(state.weather);
+  // weather makes driving worse → generalized-cost minutes added to every car
+  // trip, which nudges the logit mode split toward transit.
+  const carWeatherPenalty = weatherCarPenaltyMin(state.weather);
   // destination choice weights per origin (gravity)
   for (const origin of districts) {
     if (origin.population < 50) continue;
@@ -282,7 +290,7 @@ export function runAssignment(state: GameState): AssignmentOutput {
 
     for (const { d: dest, w } of top) {
       const pairTrips = (originTrips * w) / wSum;
-      const carMin = dist(origin.centroid, dest.centroid) / CAR_SPEED / 60 + CAR_OVERHEAD_MIN;
+      const carMin = dist(origin.centroid, dest.centroid) / CAR_SPEED / 60 + CAR_OVERHEAD_MIN + carWeatherPenalty;
 
       // best egress over dest access stations
       let bestCost = Infinity;
@@ -402,7 +410,8 @@ export interface BaselineDemandPair {
  */
 export function computeBaselineDemandOd(state: GameState): BaselineDemandPair[] {
   const { districts } = state;
-  const demandMult = eventDemandMult(state.activeEvents) * (state.globalDemandMult ?? 1);
+  const demandMult =
+    eventDemandMult(state.activeEvents) * (state.globalDemandMult ?? 1) * weatherDemandMult(state.weather);
   const out: BaselineDemandPair[] = [];
   for (const origin of districts) {
     if (origin.population < 50) continue;

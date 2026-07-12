@@ -97,6 +97,13 @@ export interface RouteDef {
   crowding: number;
   /** derived per-segment daily load, aligned to segmentIds (from assignment) */
   segmentLoads: number[];
+  /**
+   * Fraction of the route NOT in tunnel (0 = fully underground, 1 = fully
+   * surface/elevated), derived from its track grades each assignment. Weather
+   * speed penalties scale with this, so grade-separated lines shrug off snow.
+   * Optional/derived; absent on legacy saves (treated as 1 = fully exposed).
+   */
+  surfaceExposure?: number;
 }
 
 export interface VehicleState {
@@ -183,6 +190,21 @@ export interface GameState {
   tick: number; // 1 tick = 1 game-second
   rngState: RngState;
   difficulty: Difficulty;
+  /**
+   * City preset key (e.g. 'nyc', 'seattle'), used to select the seeded weather
+   * climate profile. Persisted so a loaded save keeps its city's weather.
+   * Absent on pre-weather saves → the generic temperate climate is used.
+   */
+  cityKey?: string | undefined;
+  /**
+   * Current sky, a pure deterministic function of (seed, tick, cityKey). Cached
+   * here for the assignment/vehicle/economy hooks and the UI; recomputed each
+   * game-hour. TRANSIENT (recomputed on load, never serialized), so it needs no
+   * save migration and never enters the determinism hash.
+   */
+  weather?: import('./weather').WeatherSnapshot | undefined;
+  /** last tick's headline weather event, for begin/end toasts (transient) */
+  lastWeatherEvent?: import('./weather').WeatherEvent | null | undefined;
   fields: FieldGrid;
   roads: RoadEdge[];
   districts: District[];
