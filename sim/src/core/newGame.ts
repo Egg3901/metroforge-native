@@ -80,6 +80,7 @@ export function newGame(seed: number, difficulty: Difficulty, options: NewGameOp
     nextEventDay: 8, // no events in the first week
     commandLog: [],
     lowApprovalDays: 0,
+    bankruptDays: 0,
     failed: null,
   };
   if (rules) state.scenarioRules = rules;

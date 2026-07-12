@@ -25,7 +25,63 @@ import { evaluateScenarioDay } from './scenario';
 import { getRoutePath } from './transit/routePath';
 import { routeOperatingCost } from './economy';
 import { diurnalDemand, diurnalFactor } from './timeOfDay';
-import type { GameState, Station } from './types';
+import type { Vec2 } from './geometry';
+import type { GameState, RouteDef, Station } from './types';
+
+/**
+ * Coarse spatial bucket over stations, sized so a 3×3 neighborhood covers the
+ * largest coverage/growth query radius (max walkRadius × 1.5 = 1500 m). Replaces
+ * the O(cells × stations) double loops in coverage + growth with O(cells) using
+ * only nearby stations. Deterministic: `candidates` returns ascending station
+ * indices so the growth `access` sum keeps the exact same float addition order
+ * as the original full-array scan (stations outside the radius contributed 0).
+ */
+class StationGrid {
+  private readonly cell = 1500;
+  private readonly map = new Map<number, number[]>();
+  constructor(stations: Station[]) {
+    for (let i = 0; i < stations.length; i++) {
+      const s = stations[i]!;
+      const k = this.key(s.pos.x, s.pos.y);
+      const arr = this.map.get(k);
+      if (arr) arr.push(i);
+      else this.map.set(k, [i]);
+    }
+  }
+  private key(x: number, y: number): number {
+    return Math.floor(x / this.cell) * 73856093 + Math.floor(y / this.cell) * 19349663;
+  }
+  /** ascending station indices in the 3×3 neighborhood of p (superset of those within 1500 m). */
+  candidates(p: Vec2): number[] {
+    const cx = Math.floor(p.x / this.cell);
+    const cy = Math.floor(p.y / this.cell);
+    const out: number[] = [];
+    for (let oy = -1; oy <= 1; oy++) {
+      for (let ox = -1; ox <= 1; ox++) {
+        const arr = this.map.get((cx + ox) * 73856093 + (cy + oy) * 19349663);
+        if (arr) for (const i of arr) out.push(i);
+      }
+    }
+    out.sort((a, b) => a - b);
+    return out;
+  }
+  /** true if any station in the neighborhood satisfies dist(p, station) <= radiusFor(station). */
+  anyWithin(p: Vec2, stations: Station[], radiusFor: (s: Station) => number): boolean {
+    const cx = Math.floor(p.x / this.cell);
+    const cy = Math.floor(p.y / this.cell);
+    for (let oy = -1; oy <= 1; oy++) {
+      for (let ox = -1; ox <= 1; ox++) {
+        const arr = this.map.get((cx + ox) * 73856093 + (cy + oy) * 19349663);
+        if (!arr) continue;
+        for (const i of arr) {
+          const s = stations[i]!;
+          if (dist(p, s.pos) <= radiusFor(s)) return true;
+        }
+      }
+    }
+    return false;
+  }
+}
 
 export interface TickEvents {
   dayCompleted?: number;
@@ -42,13 +98,18 @@ export interface TickEvents {
   heatmap?: HeatmapPayload;
 }
 
-let bankruptDays = 0; // transient across ticks in a session; persisted via save hook below
-
+/**
+ * @deprecated bankruptDays is now instance-scoped state on `GameState`
+ * (`state.bankruptDays`), removing a module-level global that leaked across
+ * games in a warm process — the same bug class as the #23 warm-process fix.
+ * These shims remain only so existing callers/tests keep compiling; they are
+ * no-ops (state.bankruptDays is authoritative and starts at 0 for a new game).
+ */
 export function getBankruptDays(): number {
-  return bankruptDays;
+  return 0;
 }
-export function setBankruptDays(d: number): void {
-  bankruptDays = d;
+export function setBankruptDays(_d: number): void {
+  /* no-op: bankruptDays lives on GameState now */
 }
 
 export function simTick(state: GameState): TickEvents {
@@ -94,15 +155,15 @@ export function simTick(state: GameState): TickEvents {
 function checkFailure(state: GameState, day: number, events: TickEvents): void {
   const rules = state.scenarioRules;
   if (state.budget.cash < BANKRUPTCY_FLOOR) {
-    bankruptDays += 1;
-    if (bankruptDays >= BANKRUPTCY_GRACE_DAYS) {
+    state.bankruptDays += 1;
+    if (state.bankruptDays >= BANKRUPTCY_GRACE_DAYS) {
       state.failed = 'bankrupt';
       events.bankrupt = true;
     } else {
-      events.messages.push(`Deep in the red: ${BANKRUPTCY_GRACE_DAYS - bankruptDays} days until the city takes over`);
+      events.messages.push(`Deep in the red: ${BANKRUPTCY_GRACE_DAYS - state.bankruptDays} days until the city takes over`);
     }
   } else {
-    bankruptDays = 0;
+    state.bankruptDays = 0;
   }
   if (state.failed) return;
 
@@ -137,8 +198,18 @@ function checkFailure(state: GameState, day: number, events: TickEvents): void {
 function moveVehicles(state: GameState): void {
   // one time-of-day factor per tick, shared by every vehicle's occupancy.
   const tod = diurnalFactor(state.tick);
+  // Per-tick id indexes: turns the per-vehicle O(routes)/O(stations) Array.find
+  // hash lookups into O(1) Map lookups (agents.ts:46-47 pattern), rebuilt each
+  // tick so mutations can never leave a stale index. Same values, same order.
+  const routeById = new Map<number, RouteDef>();
+  for (const r of state.routes) routeById.set(r.id, r);
+  const stationById = new Map<number, Station>();
+  for (const s of state.stations) stationById.set(s.id, s);
+  // memoize stop distances per route within the tick: every vehicle on a route
+  // shares the same (route, path) stop list, so compute it once.
+  const stopMemo = new Map<number, number[]>();
   for (const v of state.vehicles) {
-    const route = state.routes.find((r) => r.id === v.routeId);
+    const route = routeById.get(v.routeId);
     if (!route) continue;
     const path = getRoutePath(state, route);
     if (!path) continue;
@@ -150,7 +221,11 @@ function moveVehicles(state: GameState): void {
       continue;
     }
     const cfg = MODES[route.mode];
-    const stops = allStopDistances(path, route, state);
+    let stops = stopMemo.get(route.id);
+    if (!stops) {
+      stops = allStopDistances(path, route, stationById, state.instanceId);
+      stopMemo.set(route.id, stops);
+    }
     // Advance segment-by-segment toward the next stop so we never overshoot
     // a dwell point on long ticks / high speeds.
     let remaining = cfg.speed;
@@ -210,13 +285,14 @@ function occupancyAt(
 function allStopDistances(
   path: { points: { x: number; y: number }[]; cumulative: number[]; length: number },
   route: { stationIds: number[] },
-  state: GameState,
+  stationById: Map<number, Station>,
+  instanceId: number,
 ): number[] {
   const out: number[] = [];
   for (const sid of route.stationIds) {
-    const s = state.stations.find((st) => st.id === sid);
+    const s = stationById.get(sid);
     if (!s) continue;
-    for (const d of nearestAlong(path, s, state.instanceId)) out.push(d);
+    for (const d of nearestAlong(path, s, instanceId)) out.push(d);
   }
   out.sort((a, b) => a - b);
   // de-dupe near-identical stops (out-and-back joints)
@@ -298,17 +374,13 @@ export function refreshAssignment(state: GameState): void {
   let covered = 0;
   let totalPop = 0;
   const g = state.fields;
+  const covGrid = new StationGrid(state.stations);
   for (let i = 0; i < g.population.length; i++) {
     const pop = g.population[i] as number;
     if (pop <= 0) continue;
     totalPop += pop;
     const c = cellCenter(g, i);
-    for (const s of state.stations) {
-      if (dist(c, s.pos) <= MODES[s.mode].walkRadius) {
-        covered += pop;
-        break;
-      }
-    }
+    if (covGrid.anyWithin(c, state.stations, (s) => MODES[s.mode].walkRadius)) covered += pop;
   }
   state.stats.coverage = totalPop > 0 ? covered / totalPop : 0;
 
@@ -423,13 +495,17 @@ function checkUnlocks(state: GameState, events: TickEvents): void {
 function runGrowth(state: GameState): void {
   const g = state.fields;
   const rng = new Rng(state.rngState);
+  const growthGrid = new StationGrid(state.stations);
   let totalPop = 0;
   for (let i = 0; i < g.population.length; i++) {
     const pop = g.population[i] as number;
     if ((g.water[i] as number) === 1) continue;
     const c = cellCenter(g, i);
     let access = 0;
-    for (const s of state.stations) {
+    // ascending station indices preserve the original full-scan summation order,
+    // so the compounding growth is bit-identical to the O(cells × stations) loop.
+    for (const si of growthGrid.candidates(c)) {
+      const s = state.stations[si]!;
       const d = dist(c, s.pos);
       const walkR = MODES[s.mode].walkRadius;
       if (d < walkR * 1.5) access += (s.level * Math.min(1, walkR / Math.max(d, 50))) * (1 + s.ridership / 5000);

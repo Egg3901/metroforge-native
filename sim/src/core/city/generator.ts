@@ -18,6 +18,89 @@ import { traceStreamlines } from './streamlines';
 import type { TensorField } from './tensor';
 import { districtName, uniqueNames } from './names';
 
+/**
+ * Spatial hash over polyline segments for junction-snap nearest-segment queries.
+ * Cell size = the snap radius; each segment is supercover-rasterized into every
+ * cell it passes through, so a 5×5 neighborhood of any query point yields a
+ * superset of every segment within the snap radius. Query returns candidate
+ * (line, seg) refs sorted ascending, so iterating them with the same `d2 < best`
+ * rule reproduces the linear scan's exact tie-breaking — bit-identical output.
+ */
+class SegmentGrid {
+  private readonly cell: number;
+  private readonly map = new Map<number, number[]>(); // cellKey -> encoded refs (line*1e6+seg)
+  constructor(
+    private readonly lines: Vec2[][],
+    cell: number,
+  ) {
+    this.cell = cell;
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li]!;
+      for (let si = 0; si + 1 < line.length; si++) {
+        this.rasterize(line[si]!, line[si + 1]!, li * 1_000_000 + si);
+      }
+    }
+  }
+  private key(cx: number, cy: number): number {
+    return cx * 73856093 + cy * 19349663;
+  }
+  private rasterize(a: Vec2, b: Vec2, ref: number): void {
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    const steps = Math.max(1, Math.ceil((len / this.cell) * 2)); // <= cell/2 spacing
+    let lastKey = NaN;
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const cx = Math.floor((a.x + (b.x - a.x) * t) / this.cell);
+      const cy = Math.floor((a.y + (b.y - a.y) * t) / this.cell);
+      const k = this.key(cx, cy);
+      if (k === lastKey) continue;
+      lastKey = k;
+      const arr = this.map.get(k);
+      if (arr) arr.push(ref);
+      else this.map.set(k, [ref]);
+    }
+  }
+  /** Nearest projected point on any segment within `maxDist`; null if none.
+   *  Equivalent to a full projectOnto scan (same tie-break) but O(local). */
+  nearest(p: Vec2, maxDist: number): Vec2 | null {
+    const cx = Math.floor(p.x / this.cell);
+    const cy = Math.floor(p.y / this.cell);
+    const refs: number[] = [];
+    for (let oy = -2; oy <= 2; oy++) {
+      for (let ox = -2; ox <= 2; ox++) {
+        const arr = this.map.get(this.key(cx + ox, cy + oy));
+        if (arr) for (const r of arr) refs.push(r);
+      }
+    }
+    if (refs.length === 0) return null;
+    refs.sort((x, y) => x - y);
+    let best = maxDist * maxDist;
+    let bestP: Vec2 | null = null;
+    let prev = NaN;
+    for (const ref of refs) {
+      if (ref === prev) continue; // dedupe (a segment can land in several cells)
+      prev = ref;
+      const line = this.lines[Math.floor(ref / 1_000_000)]!;
+      const si = ref % 1_000_000;
+      const a = line[si]!;
+      const b = line[si + 1]!;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const L2 = dx * dx + dy * dy || 1;
+      let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2;
+      t = Math.max(0, Math.min(1, t));
+      const qx = a.x + dx * t;
+      const qy = a.y + dy * t;
+      const d2 = (qx - p.x) * (qx - p.x) + (qy - p.y) * (qy - p.y);
+      if (d2 < best) {
+        best = d2;
+        bestP = { x: qx, y: qy };
+      }
+    }
+    return bestP;
+  }
+}
+
 const DEFAULT_HALF = WORLD_SIZE / 2;
 void DEFAULT_HALF;
 
@@ -516,12 +599,17 @@ export function generateCity(seed: number, difficulty: Difficulty, opts: Generat
   // makes small streets visibly meet other streets instead of dead-ending.
   const ARTERIAL_SNAP = 150;
   const LOCAL_SNAP = 80;
+  // Spatial hash over arterial segments: replaces the O(locals × arterials)
+  // nearest-arterial scan. Arterials are immutable through this loop, so the
+  // grid can be built once. The locals fallback stays a linear scan because
+  // `locals` is mutated (unshift/push) as we go.
+  const arterialGrid = new SegmentGrid(arterials, ARTERIAL_SNAP);
   for (const line of locals) {
     if (line.length >= 2) {
       for (const endIdx of [0, line.length - 1] as const) {
         const end = line[endIdx] as Vec2;
         const q =
-          projectOnto(end, arterials, ARTERIAL_SNAP, null) ??
+          arterialGrid.nearest(end, ARTERIAL_SNAP) ??
           projectOnto(end, locals, LOCAL_SNAP, line);
         if (q && Math.hypot(q.x - end.x, q.y - end.y) > 12 && !isWaterAt(q)) {
           if (endIdx === 0) line.unshift({ ...q });

@@ -246,6 +246,10 @@ export interface GameState {
   commandLog: { tick: number; cmd: Command }[];
   /** consecutive days at/below approvalFloor */
   lowApprovalDays: number;
+  /** consecutive days below the bankruptcy cash floor (grace-period counter).
+   *  Instance-scoped (was a module global) so warm processes don't leak it
+   *  across games. Not part of stateHash. */
+  bankruptDays: number;
   /** why the run ended, if it failed */
   failed: 'bankrupt' | 'approval' | 'time' | 'condition' | null;
 }

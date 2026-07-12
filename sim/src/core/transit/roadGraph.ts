@@ -144,6 +144,62 @@ function nearestNode(g: RoadGraph, p: Vec2, maxDist: number): number {
   return bestI;
 }
 
+/**
+ * Binary min-heap open-set for A*. Ordered by (f, seq): `seq` is push order, so
+ * ties break FIFO — exactly reproducing the previous linear extract-min, which
+ * scanned for the lowest `f` and, on ties, took the earliest-inserted (lowest
+ * index) entry. This keeps the returned path bit-identical (it feeds hashed
+ * track geometry via buildTrack), while dropping the O(n) scan per pop.
+ */
+interface OpenNode {
+  i: number;
+  f: number;
+  seq: number;
+}
+class OpenHeap {
+  private heap: OpenNode[] = [];
+  private seq = 0;
+  get size(): number {
+    return this.heap.length;
+  }
+  private less(a: OpenNode, b: OpenNode): boolean {
+    return a.f < b.f || (a.f === b.f && a.seq < b.seq);
+  }
+  push(i: number, f: number): void {
+    const h = this.heap;
+    h.push({ i, f, seq: this.seq++ });
+    let c = h.length - 1;
+    while (c > 0) {
+      const p = (c - 1) >> 1;
+      if (this.less(h[c] as OpenNode, h[p] as OpenNode)) {
+        [h[c], h[p]] = [h[p] as OpenNode, h[c] as OpenNode];
+        c = p;
+      } else break;
+    }
+  }
+  pop(): OpenNode {
+    const h = this.heap;
+    const top = h[0] as OpenNode;
+    const last = h.pop() as OpenNode;
+    if (h.length > 0) {
+      h[0] = last;
+      let p = 0;
+      const n = h.length;
+      for (;;) {
+        const l = 2 * p + 1;
+        const r = l + 1;
+        let m = p;
+        if (l < n && this.less(h[l] as OpenNode, h[m] as OpenNode)) m = l;
+        if (r < n && this.less(h[r] as OpenNode, h[m] as OpenNode)) m = r;
+        if (m === p) break;
+        [h[p], h[m]] = [h[m] as OpenNode, h[p] as OpenNode];
+        p = m;
+      }
+    }
+    return top;
+  }
+}
+
 /** A* street path between two points; null if either end is off-network or unreachable. */
 export function findRoadPath(roads: RoadEdge[], from: Vec2, to: Vec2): Vec2[] | null {
   const g = getRoadGraph(roads);
@@ -154,15 +210,13 @@ export function findRoadPath(roads: RoadEdge[], from: Vec2, to: Vec2): Vec2[] | 
 
   const dScore = new Map<number, number>();
   const prev = new Map<number, number>();
-  const open: { i: number; f: number }[] = [{ i: start, f: 0 }];
+  const open = new OpenHeap();
+  open.push(start, 0);
   dScore.set(start, 0);
   const closed = new Set<number>();
   let guard = 0;
-  while (open.length > 0 && guard++ < 60000) {
-    // linear extract-min is fine at this scale
-    let mi = 0;
-    for (let k = 1; k < open.length; k++) if ((open[k] as { f: number }).f < (open[mi] as { f: number }).f) mi = k;
-    const { i } = open.splice(mi, 1)[0] as { i: number };
+  while (open.size > 0 && guard++ < 60000) {
+    const { i } = open.pop();
     if (i === goal) break;
     if (closed.has(i)) continue;
     closed.add(i);
@@ -172,7 +226,7 @@ export function findRoadPath(roads: RoadEdge[], from: Vec2, to: Vec2): Vec2[] | 
       if (nd < (dScore.get(j) ?? Infinity)) {
         dScore.set(j, nd);
         prev.set(j, i);
-        open.push({ i: j, f: nd + dist(g.nodes[j] as Vec2, goalP) });
+        open.push(j, nd + dist(g.nodes[j] as Vec2, goalP));
       }
     }
   }

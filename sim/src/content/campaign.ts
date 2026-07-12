@@ -13,8 +13,16 @@ export function loadStars(): StarMap {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed && typeof parsed === 'object') return parsed as StarMap;
+    const parsed: unknown = JSON.parse(raw);
+    // validate the untrusted localStorage payload: a StarMap is a plain object
+    // of scenarioId -> finite, non-negative star count. Drop anything that
+    // doesn't fit rather than trusting a bare `as StarMap` cast.
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: StarMap = {};
+    for (const [id, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === 'number' && Number.isFinite(v) && v >= 0) out[id] = v;
+    }
+    return out;
   } catch {
     /* corrupt or unavailable storage → start fresh */
   }
