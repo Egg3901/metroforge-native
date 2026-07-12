@@ -204,6 +204,18 @@ jobs:
             exit 1
           fi
 
+      # Third gate: render an in-city hero frame on EACH of the four quality
+      # tiers (potato/low/medium/high). native#102 shipped a Potato/Low
+      # in-city black void while High rendered fine — a tier-specific
+      # regression the single-tier gates above cannot see. The plain in-city
+      # gate is also fooled on low tiers (HUD chrome alone clears its 1000
+      # floor over a void world), so this drives the verify harness to a
+      # daytime hero-framed city per tier with a floor set above UI-only.
+      - name: Smoke-test all four quality tiers (in-city, per-tier floor)
+        working-directory: metroforge-native
+        run: |
+          bash scripts/tier-smoke.sh /tmp/mf-smoke/metroforge /tmp/mf-smoke/tiers 90
+
       - name: Upload smoke screenshot (always, for eyeballing)
         if: always()
         uses: actions/upload-artifact@v4
@@ -212,6 +224,7 @@ jobs:
           path: |
             /tmp/mf-smoke/shot.png
             /tmp/mf-smoke/shot-city.png
+            /tmp/mf-smoke/tiers/*/default.png
           if-no-files-found: ignore
 
       - name: Upload release assets

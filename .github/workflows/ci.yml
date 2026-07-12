@@ -150,6 +150,18 @@ jobs:
             exit 1
           fi
 
+      - name: Per-tier in-city smoke (potato/low/medium/high, fail on tier void)
+        working-directory: metroforge-native
+        env:
+          MF_SIDECAR_PATH: ${{ github.workspace }}/metroforge-native/dist-sidecar/metroforge-sidecar
+        # native#102: the in-city gate above runs a single (auto-detected)
+        # tier and a void can hide behind HUD chrome on the low tiers. This
+        # boots each of the four tiers into a hero-framed NYC and fails if any
+        # renders below its per-tier unique-colour floor. See scripts/tier-smoke.sh.
+        run: |
+          set -uo pipefail
+          bash scripts/tier-smoke.sh ./target/release/metroforge "$PWD/tier-smoke" 90
+
       - name: Upload smoke screenshots (always)
         if: always()
         uses: actions/upload-artifact@v4
@@ -158,6 +170,7 @@ jobs:
           path: |
             metroforge-native/shot-menu.png
             metroforge-native/shot-city.png
+            metroforge-native/tier-smoke/*/default.png
           if-no-files-found: ignore
 
   # PR-time Windows cross-compile CHECK (#107). The host `rust` job is
