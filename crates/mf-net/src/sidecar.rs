@@ -114,7 +114,7 @@ impl SidecarProcess {
     /// Lookup order (spec §3.2 `sidecar.rs`):
     /// 1. `$MF_SIDECAR_PATH` (exact binary path)
     /// 2. a `metroforge-sidecar[.exe]` next to the running exe
-    /// 3. dev fallback: `bun run sidecar/index.ts` with cwd `/root/metroforge`
+    /// 3. dev fallback: `bun run sidecar/index.ts` with cwd `<repo>/sim`
     ///
     /// `headless_speed`, if set, is passed as `--headless-speed <n>`.
     pub fn spawn(headless_speed: Option<f64>) -> anyhow::Result<Self> {
@@ -224,24 +224,28 @@ impl SidecarProcess {
         }
 
         // Dev fallback: run the sidecar's TS entrypoint directly under bun,
-        // from the sibling `metroforge` checkout.
+        // from the in-repo `sim/` package (monorepo consolidation, #140).
+        // The sim source is a sibling of this crate's workspace: resolve it
+        // from CARGO_MANIFEST_DIR (crates/mf-net) up to the repo root, then
+        // into `sim`.
         let bun = locate_bun();
-        let metroforge_dir = PathBuf::from("/root/metroforge");
-        if !metroforge_dir.join("sidecar").join("index.ts").is_file() {
+        let sim_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("sim");
+        if !sim_dir.join("sidecar").join("index.ts").is_file() {
             anyhow::bail!(
                 "no sidecar binary found (checked $MF_SIDECAR_PATH, next-to-exe) and dev fallback \
                  {}/sidecar/index.ts does not exist yet",
-                metroforge_dir.display()
+                sim_dir.display()
             );
         }
         let mut cmd = Command::new(&bun);
-        cmd.current_dir(&metroforge_dir)
-            .arg("run")
-            .arg("sidecar/index.ts");
+        cmd.current_dir(&sim_dir).arg("run").arg("sidecar/index.ts");
         let desc = format!(
             "dev fallback: {} run sidecar/index.ts (cwd {})",
             bun.display(),
-            metroforge_dir.display()
+            sim_dir.display()
         );
         Ok((cmd, desc))
     }

@@ -2,7 +2,7 @@
 
 MetroForge Desktop (`metroforge-native`) is a Rust/Bevy renderer and input layer
 in front of a simulation it does not own. Economy, routing, demand, and fail
-conditions live in the TypeScript sim core (sibling `metroforge` repo), reached
+conditions live in the TypeScript sim core (in-repo under [`sim/`](../sim/)), reached
 through the wire protocol in [`PROTOCOL.md`](PROTOCOL.md). This client connects,
 mirrors state, draws it, and forwards player commands. No sim rules are
 reimplemented here.
@@ -90,7 +90,7 @@ policy in `reconnect.rs` (500 ms → 4 s, 5 attempts).
 
 `SidecarProcess` locates and spawns the sidecar binary (lookup order: env var, then
 next to the running executable, then a dev fallback of `bun run sidecar/index.ts`
-against the sibling `metroforge` checkout), parses its one-line stdout handshake to
+against the in-repo `sim/` package), parses its one-line stdout handshake to
 learn the assigned port, captures a rolling stderr log tail, and kills the process
 group on `Drop`. On Unix the child sets `PR_SET_PDEATHSIG` so a client crash cannot
 leave a zombie sidecar; on Windows the child is assigned to a Job Object with

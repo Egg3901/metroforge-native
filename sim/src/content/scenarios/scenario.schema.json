@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://metroforge.local/schemas/scenario.schema.json",
+  "title": "MetroForgeScenario",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "label",
+    "description",
+    "cityKey",
+    "tier",
+    "difficulty",
+    "startingBudget",
+    "startingModes",
+    "deadlineDays",
+    "win"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)+$",
+      "minLength": 3,
+      "maxLength": 64
+    },
+    "label": { "type": "string", "minLength": 2, "maxLength": 48 },
+    "description": { "type": "string", "minLength": 8, "maxLength": 280 },
+    "cityKey": { "type": "string", "enum": ["cleveland", "nyc"] },
+    "tier": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "difficulty": { "type": "string", "enum": ["easy", "normal", "hard"] },
+    "startingBudget": { "type": "number", "minimum": 0 },
+    "startingModes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "enum": ["bus", "tram", "metro", "rail"] },
+      "uniqueItems": true
+    },
+    "lockModes": { "type": "boolean" },
+    "dailySubsidy": { "type": "number" },
+    "deadlineDays": { "type": "integer", "minimum": 1, "maximum": 365 },
+    "eraLabel": { "type": "string", "maxLength": 32 },
+    "win": { "$ref": "#/$defs/conditionNode" },
+    "lose": { "$ref": "#/$defs/conditionNode" },
+    "events": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/scenarioEvent" }
+    }
+  },
+  "$defs": {
+    "compareOp": { "type": "string", "enum": [">=", ">", "<=", "<", "=="] },
+    "metric": {
+      "type": "string",
+      "enum": [
+        "dailyTransitTrips",
+        "fareboxRecovery",
+        "coverage",
+        "transitShare",
+        "approval",
+        "cash",
+        "population",
+        "day",
+        "overcrowdedRoutes"
+      ]
+    },
+    "conditionLeaf": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric", "op", "value"],
+      "properties": {
+        "metric": { "$ref": "#/$defs/metric" },
+        "op": { "$ref": "#/$defs/compareOp" },
+        "value": { "type": "number" },
+        "label": { "type": "string", "maxLength": 80 }
+      }
+    },
+    "conditionNode": {
+      "oneOf": [
+        { "$ref": "#/$defs/conditionLeaf" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["and"],
+          "properties": {
+            "and": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/conditionNode" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["or"],
+          "properties": {
+            "or": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/conditionNode" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["not"],
+          "properties": {
+            "not": { "$ref": "#/$defs/conditionNode" }
+          }
+        }
+      ]
+    },
+    "scenarioEvent": {
+      "type": "object",
+      "required": ["id", "day", "kind", "message"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "day": { "type": "integer", "minimum": 1 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "kind": {
+          "type": "string",
+          "enum": ["districtDemandMult", "globalDemandMult", "cashDelta"]
+        },
+        "densityRank": { "type": "integer", "minimum": 0 },
+        "mult": { "type": "number", "exclusiveMinimum": 0 },
+        "durationDays": { "type": "integer", "minimum": 1 },
+        "amount": { "type": "number" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "districtDemandMult" } } },
+          "then": { "required": ["densityRank", "mult"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "globalDemandMult" } } },
+          "then": { "required": ["mult", "durationDays"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "cashDelta" } } },
+          "then": { "required": ["amount"] }
+        }
+      ]
+    }
+  }
+}

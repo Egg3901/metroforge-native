@@ -1,0 +1,20 @@
+{
+  "id": "nyc-first-thousand",
+  "label": "First Thousand",
+  "description": "Tutorial adjacent. Carry 1000 daily riders on New York buses before day 40.",
+  "cityKey": "nyc",
+  "tier": 1,
+  "difficulty": "easy",
+  "startingBudget": 11000000,
+  "startingModes": ["bus"],
+  "lockModes": true,
+  "dailySubsidy": 28000,
+  "deadlineDays": 40,
+  "eraLabel": "Lesson",
+  "win": {
+    "metric": "dailyTransitTrips",
+    "op": ">=",
+    "value": 1000,
+    "label": "Carry 1000 daily riders"
+  }
+}

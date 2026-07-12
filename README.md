@@ -72,9 +72,9 @@ below). If it runs slowly, lower the quality tier from the in-game HUD.
 
 ## Building from source
 
-Prerequisites: Rust stable (see `rust-toolchain.toml`), Bun 1.3, and a checkout of the
-sibling [`metroforge`](https://github.com/Egg3901/metroforge) repo (the sidecar's
-TypeScript sim source lives there). Full build docs — profiles, measured cold/warm
+Prerequisites: Rust stable (see `rust-toolchain.toml`) and Bun 1.3. The sidecar's
+TypeScript sim source now lives in-repo under [`sim/`](sim/) (monorepo
+consolidation) — no sibling checkout needed. Full build docs — profiles, measured cold/warm
 times, Bevy feature audit, `cargo-xwin`, sidecar Bun compile — are in
 [`BUILDING.md`](BUILDING.md). Day-to-day setup: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
@@ -90,14 +90,14 @@ executable, resolved in this order:
 2. A `metroforge-sidecar[.exe]` sitting next to the client executable (this is how a
    packaged release finds it).
 3. Dev fallback: `bun run sidecar/index.ts` with the working directory set to the
-   sibling `/root/metroforge` checkout. This requires `bun` on `PATH` (or at
-   `~/.bun/bin/bun`) and that checkout to have the sidecar source present.
+   in-repo `sim/` package. This requires `bun` on `PATH` (or at
+   `~/.bun/bin/bun`) and the `sim/` sidecar source present.
 
 ```sh
 # option A: point at a prebuilt sidecar binary
 MF_SIDECAR_PATH=/path/to/metroforge-sidecar cargo run -p mf-game
 
-# option B: let mf-net fall back to `bun run sidecar/index.ts` in ../metroforge
+# option B: let mf-net fall back to `bun run sidecar/index.ts` in ./sim
 cargo run -p mf-game
 ```
 
@@ -150,8 +150,8 @@ and chamfered vehicle meshes on top.
  +-------------------+       WebSocket (mf-wire v1)        +-----------------------+
  |  metroforge-native |  <------------------------------>  |  metroforge-sidecar   |
  |  (Rust / Bevy)     |   JSON control frames (handshake,   |  (Bun, compiled from  |
- |                    |   2 Hz UI, commands, toasts)        |  ../metroforge/       |
- |  mf-protocol       |   binary hot frames (50 ms ticks,   |  sidecar/)            |
+ |                    |   2 Hz UI, commands, toasts)        |  ./sim/sidecar/)      |
+ |  mf-protocol       |   binary hot frames (50 ms ticks,   |                       |
  |  mf-net            |   fields, traffic, static masks)    |                       |
  |  mf-state          |                                     |  wraps the exact      |
  |  mf-render         |                                     |  deterministic TS     |
@@ -186,12 +186,16 @@ metroforge-native/
     DEVELOPMENT.md           build/test/release workflow
   scripts/
     package.sh               stages a client + sidecar + font into a release archive
+  sim/                       TypeScript sim (metroforge-sim): sim core, host loop,
+                             content, city data, and the Bun sidecar (compiled into
+                             the sidecar binary the client spawns)
   .github/workflows/         CI and release automation
 ```
 
-The sidecar's TypeScript source lives in the sibling `metroforge` repo under
-`sidecar/`, not in this repo; see
-[`/root/metroforge/sidecar/README.md`](../metroforge/sidecar/README.md).
+The sidecar's TypeScript sim source lives in this repo under [`sim/`](sim/)
+(the `metroforge-sim` package: sim core, host loop, content, city data, and the
+Bun sidecar); see [`sim/README.md`](sim/README.md) and
+[`sim/sidecar/README.md`](sim/sidecar/README.md).
 
 ## License
 

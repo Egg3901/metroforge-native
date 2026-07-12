@@ -1,0 +1,7 @@
+node_modules/
+# bun --compile output (staged into ../dist-sidecar for packaging, never committed)
+dist-sidecar/
+metroforge-sidecar
+metroforge-sidecar.exe
+metroforge-sidecar-darwin-arm64
+*.log

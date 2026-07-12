@@ -76,15 +76,6 @@ jobs:
         with:
           path: metroforge-native
 
-      # Sidecar source lives in the sibling repo; pin to the same merge SHA
-      # release.yml uses so an unrelated upstream change can't break the gate.
-      - name: Checkout metroforge (sidecar source)
-        uses: actions/checkout@v4
-        with:
-          repository: Egg3901/metroforge
-          ref: 5ec720a80ae29027805b2abced6a3ce833bf2177
-          path: metroforge
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -103,11 +94,13 @@ jobs:
       - name: Install Bevy + smoke runtime deps (xvfb, software vulkan, imagemagick, winit X11 libs)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev pkg-config libwayland-dev xvfb mesa-vulkan-drivers libvulkan1 imagemagick libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2
 
+      # Sidecar source now lives in-repo at ./sim (monorepo consolidation,
+      # #140). No sibling checkout / SHA pin needed.
       - name: Compile sidecar (linux-x64)
-        working-directory: metroforge
+        working-directory: metroforge-native/sim
         run: |
           bun install
-          bun build --compile --target=bun-linux-x64 ./sidecar/index.ts --outfile ../metroforge-native/dist-sidecar/metroforge-sidecar
+          bun build --compile --target=bun-linux-x64 ./sidecar/index.ts --outfile ../dist-sidecar/metroforge-sidecar
 
       - name: Build release client
         working-directory: metroforge-native
@@ -236,13 +229,6 @@ jobs:
         with:
           path: metroforge-native
 
-      - name: Checkout metroforge (sidecar source)
-        uses: actions/checkout@v4
-        with:
-          repository: Egg3901/metroforge
-          ref: 6ce1bbafe71be7694bacd59073fbe5087d27ba8c
-          path: metroforge
-
       - name: Install Bevy Linux system deps
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev pkg-config libwayland-dev xvfb mesa-vulkan-drivers
 
@@ -262,7 +248,7 @@ jobs:
           workspaces: metroforge-native
 
       - name: bun install + compile sidecar
-        working-directory: metroforge/sidecar
+        working-directory: metroforge-native/sim
         run: |
           bun install
           bun run compile:linux
@@ -277,7 +263,7 @@ jobs:
           MF_AUTOSTART: nyc
           MF_TEST_KILL_SIDECAR: "30"
           MF_TEST_KILL_SIDECAR_RESULT: ${{ github.workspace }}/sidecar-recovery-result.txt
-          MF_SIDECAR_PATH: ${{ github.workspace }}/metroforge/sidecar/dist/metroforge-sidecar
+          MF_SIDECAR_PATH: ${{ github.workspace }}/metroforge-native/dist-sidecar/metroforge-sidecar
           WGPU_BACKEND: vulkan
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: |
@@ -285,9 +271,8 @@ jobs:
           # Sidecar compile output path varies; accept common locations.
           if [ ! -x "$MF_SIDECAR_PATH" ]; then
             for candidate in \
-              "${{ github.workspace }}/metroforge/sidecar/dist/metroforge-sidecar" \
-              "${{ github.workspace }}/metroforge/dist-sidecar/metroforge-sidecar" \
-              "${{ github.workspace }}/metroforge/sidecar/metroforge-sidecar"
+              "${{ github.workspace }}/metroforge-native/dist-sidecar/metroforge-sidecar" \
+              "${{ github.workspace }}/metroforge-native/sim/dist-sidecar/metroforge-sidecar"
             do
               if [ -x "$candidate" ]; then
                 export MF_SIDECAR_PATH="$candidate"
@@ -323,33 +308,24 @@ jobs:
   sidecar-smoke:
     runs-on: ubuntu-latest
     steps:
-      # The TypeScript sidecar (spec §2) lives in a sibling repo. This job
-      # only exercises the sidecar in isolation (pure Bun/TS, no GPU, no
-      # Rust client involved), so it doesn't need to check out
-      # metroforge-native at all.
-      #
-      # NOTE(sidecar-merged 2026-07-10): sidecar merged to metroforge master
-      # (PR #17/#18); pinned to the merge SHA so upstream changes can't
-      # silently break CI. Bump deliberately.
-      - name: Checkout metroforge (sidecar source)
+      # The TypeScript sidecar (spec §2) now lives in-repo at ./sim (monorepo
+      # consolidation, #140). This job only exercises the sidecar in isolation
+      # (pure Bun/TS, no GPU, no Rust client involved).
+      - name: Checkout metroforge-native
         uses: actions/checkout@v4
-        with:
-          repository: Egg3901/metroforge
-          ref: 6ce1bbafe71be7694bacd59073fbe5087d27ba8c
-          path: metroforge
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3
 
-      - name: bun install (sidecar deps)
-        working-directory: metroforge/sidecar
+      - name: bun install (sim deps)
+        working-directory: sim
         run: bun install
 
       # Determinism regression gate (spec §2.6): two runs of the same seed
       # must produce identical stateHash and observed vehicle motion. No GPU
-      # needed.
+      # needed. HARD gate — no continue-on-error (checklist #140 item 3).
       - name: bun sidecar smoke test
-        working-directory: metroforge/sidecar
-        run: bun run smoke-test.ts
+        working-directory: sim
+        run: bun run sidecar/smoke-test.ts

@@ -1,8 +1,7 @@
 //! Live-sidecar integration test.
 //!
-//! The TypeScript sidecar (`/root/metroforge/sidecar/`, spec §2) is built by
-//! a separate agent in parallel with this crate, so it may not exist yet.
-//! This test is `#[ignore]`d by default so `cargo test` (and CI's `ci.yml`)
+//! The TypeScript sidecar (`sim/sidecar/`, spec §2) lives in-repo; the dev
+//! fallback builds it from there. This test is `#[ignore]`d by default so `cargo test` (and CI's `ci.yml`)
 //! stays green standalone; once the sidecar lands, run it explicitly:
 //!
 //! ```sh
@@ -22,7 +21,7 @@ use mf_protocol::{
 };
 
 #[test]
-#[ignore = "requires the TypeScript sidecar to exist under /root/metroforge/sidecar; see module docs"]
+#[ignore = "requires the in-repo sim/ sidecar and bun; see module docs"]
 fn connects_and_receives_hello() {
     let require = std::env::var("MF_REQUIRE_SIDECAR").is_ok();
 
@@ -72,7 +71,7 @@ fn connects_and_receives_hello() {
 /// types actually decode the sidecar's real JSON/binary wire output, not
 /// just the fixtures in `mf-protocol/tests/roundtrip.rs`.
 #[test]
-#[ignore = "requires the TypeScript sidecar to exist under /root/metroforge/sidecar; see module docs"]
+#[ignore = "requires the in-repo sim/ sidecar and bun; see module docs"]
 fn inits_nyc_and_receives_ready_fields_and_ui() {
     let require = std::env::var("MF_REQUIRE_SIDECAR").is_ok();
 

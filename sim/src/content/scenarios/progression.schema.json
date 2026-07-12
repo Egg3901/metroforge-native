@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://metroforge.local/schemas/progression.schema.json",
+  "title": "MetroForgeScenarioProgression",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["starters", "unlocks"],
+  "properties": {
+    "starters": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "unlocks": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" },
+        "uniqueItems": true
+      }
+    }
+  }
+}

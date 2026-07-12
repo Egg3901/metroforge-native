@@ -7,12 +7,10 @@
 - **Bun 1.3**: for building/running the TypeScript sidecar. Installed at
   `~/.bun/bin/bun` on the shared dev box; anywhere else, `bun` just needs to be on
   `PATH`.
-- A sibling checkout of the [`metroforge`](https://github.com/Egg3901/metroforge)
-  repo at `../metroforge` (relative to this repo): the sidecar's TypeScript sim
-  source lives there under `sidecar/`, currently on the `feat/sim-sidecar` branch
-  pending merge to `master`. See
-  [`/root/metroforge/sidecar/README.md`](../../metroforge/sidecar/README.md) for
-  sidecar-specific setup.
+- The sidecar's TypeScript sim source now lives in-repo under [`sim/`](../sim/)
+  (the `metroforge-sim` package: sim core, host loop, content, city data, and the
+  Bun sidecar). See [`sim/README.md`](../sim/README.md) and
+  [`sim/sidecar/README.md`](../sim/sidecar/README.md) for sidecar-specific setup.
 
 ## Workspace layout
 
@@ -94,7 +92,7 @@ source directly under `bun`:
 # against a prebuilt sidecar binary
 MF_SIDECAR_PATH=/path/to/metroforge-sidecar cargo run -p mf-game
 
-# against the interpreted TS source in ../metroforge/sidecar/index.ts
+# against the interpreted TS source in ./sim/sidecar/index.ts
 cargo run -p mf-game
 ```
 
@@ -238,7 +236,7 @@ packaging) stages `target/release/metroforge[.exe]`, the matching
 ```sh
 cargo build --release -p mf-game
 # build or place a matching sidecar binary under dist-sidecar/ first, see the
-# metroforge/sidecar README for compile:linux/compile:windows/compile:darwin-arm64
+# sim/sidecar README for compile:linux/compile:windows/compile:darwin-arm64
 ./scripts/package.sh linux 0.1.0-alpha
 ```
 
@@ -271,12 +269,8 @@ Simulation & Protocol, Fixes, Performance, Other). Label a PR correctly before i
 merges: that's what determines which section its entry lands in, not anything
 about the release process itself.
 
-### 3. Sidecar source pin
+### 3. In-repo sidecar source
 
-Both `ci.yml` and `release.yml` check out the sidecar source from the sibling
-`metroforge` repo. As of this writing that checkout still points at the
-`feat/sim-sidecar` branch (not yet merged to `master`): both workflow files carry
-a `TODO(sidecar-merge)` marking where to flip the `ref` to `master` (and ideally to
-a pinned commit SHA or tag rather than a floating branch name) once that merge
-lands. This repo's docs/scripts do not own that flip; it is tracked in
-`.github/workflows/`, owned separately from these docs.
+The sidecar source lives in-repo at `sim/` (monorepo consolidation, #140), so
+`ci.yml` and `release.yml` build it from `./sim` in the same checkout — no sibling
+`metroforge` checkout and no SHA pin. Bump the sidecar by committing to `sim/`.

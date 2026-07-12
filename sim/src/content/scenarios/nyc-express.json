@@ -1,0 +1,40 @@
+{
+  "id": "nyc-express",
+  "label": "Express Grid",
+  "description": "Sandbox unlock. Bus and tram. Hit 2500 riders and 12% coverage before day 45.",
+  "cityKey": "nyc",
+  "tier": 4,
+  "difficulty": "hard",
+  "startingBudget": 10000000,
+  "startingModes": ["bus", "tram"],
+  "lockModes": true,
+  "dailySubsidy": 20000,
+  "deadlineDays": 45,
+  "eraLabel": "Grid",
+  "win": {
+    "and": [
+      {
+        "metric": "dailyTransitTrips",
+        "op": ">=",
+        "value": 2500,
+        "label": "Carry 2500 daily riders"
+      },
+      {
+        "metric": "coverage",
+        "op": ">=",
+        "value": 0.12,
+        "label": "Cover 12% of residents"
+      }
+    ]
+  },
+  "events": [
+    {
+      "id": "nyc-express-surge",
+      "day": 14,
+      "kind": "districtDemandMult",
+      "densityRank": 0,
+      "mult": 1.8,
+      "message": "Express trial week. Densest district demand up."
+    }
+  ]
+}

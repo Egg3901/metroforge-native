@@ -1,0 +1,43 @@
+{
+  "id": "cleveland-tram-line",
+  "label": "Tram Line",
+  "description": "Sandbox unlock. Bus and tram open. Reach 1000 riders and 7% coverage before day 45.",
+  "cityKey": "cleveland",
+  "tier": 3,
+  "difficulty": "normal",
+  "startingBudget": 10500000,
+  "startingModes": [
+    "bus",
+    "tram"
+  ],
+  "lockModes": true,
+  "dailySubsidy": 26000,
+  "deadlineDays": 45,
+  "eraLabel": "Rails",
+  "win": {
+    "and": [
+      {
+        "metric": "dailyTransitTrips",
+        "op": ">=",
+        "value": 1000,
+        "label": "Carry 1000 daily riders"
+      },
+      {
+        "metric": "coverage",
+        "op": ">=",
+        "value": 0.07,
+        "label": "Cover 7% of residents"
+      }
+    ]
+  },
+  "events": [
+    {
+      "id": "cle-tram-boost",
+      "day": 12,
+      "kind": "globalDemandMult",
+      "mult": 1.2,
+      "durationDays": 6,
+      "message": "Streetcar curiosity week. Demand up for six days."
+    }
+  ]
+}
