@@ -329,3 +329,11 @@ jobs:
       - name: bun sidecar smoke test
         working-directory: sim
         run: bun run sidecar/smoke-test.ts
+
+      # Road ↔ water alignment gate (#141): asserts the fraction of committed
+      # road vertices that land on the coarse water field (as the renderer
+      # samples it) stays below threshold per city, catching a re-introduced
+      # half-cell shift or a projection/bbox drift in the city bake.
+      - name: bun road-water alignment check
+        working-directory: sim
+        run: bun run scripts/check-road-water-alignment.ts --assert

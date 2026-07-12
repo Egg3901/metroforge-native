@@ -234,12 +234,25 @@ fn build_terrain_system(
     let field_origin_y = city_json.origin_y as f32;
 
     // The water/park sim fields keep their own (coarse, 96²) grid space.
+    // `GridSpace::grid_coords` treats the origin as the world position of grid
+    // sample (0,0) with NO half-cell term — i.e. the origin must be the first
+    // cell CENTRE (exactly how `height_space` bakes it below:
+    // `-HALF + 0.5·cell`). The sim field values ARE cell-centre samples
+    // (`fields.ts` `cellCenter`/`sampleField`, which subtracts 0.5), but
+    // `city_json.origin_x/y` is the field CORNER (`-(w·cell)/2 = -HALF`). Using
+    // the raw corner origin for bilinear sampling therefore displaced the whole
+    // rendered shoreline half a field cell (≈62.5 m) south-east of the true
+    // coastline, so shoreline-hugging roads ran into water ("land masses don't
+    // line up with roads", issue #141). Shift to the cell centre to match the
+    // sampler's convention and `height_space`. (Nearest-cell lookups like
+    // `traffic.rs` keep the corner origin — correct for their floor(), so
+    // `city_json.origin_x` is left untouched.)
     let water_space = GridSpace {
         w: field_w as i32,
         h: field_h as i32,
         cell_size: field_cell,
-        origin_x: field_origin_x,
-        origin_y: field_origin_y,
+        origin_x: field_origin_x + field_cell * 0.5,
+        origin_y: field_origin_y + field_cell * 0.5,
     };
 
     // Height source: prefer the real-elevation channel (msgType=7) in TRUE
@@ -713,6 +726,50 @@ fn apply_cloud_shadow_to_terrain_system(
         );
         if mat.extension.cloud_noise.is_none() && shadows.texture != Handle::default() {
             mat.extension.cloud_noise = Some(shadows.texture.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GridSpace;
+
+    /// Locks the `GridSpace` bilinear convention that the `water_space` fix
+    /// depends on: the origin is the world position of grid sample (0,0) with
+    /// NO half-cell term, so a `GridSpace` built at the first cell CENTRE must
+    /// map that centre to grid coord 0.0 and return the cell's exact value.
+    /// A regression to a CORNER origin (the half-cell bug behind roads running
+    /// into water, issue #141) shifts this and fails the exact-value asserts.
+    #[test]
+    fn bilinear_u8_hits_cell_centres_under_centre_origin() {
+        // Mirror how build_terrain_system now builds water_space: field of
+        // side `n`, cell `world/n`, origin at the first cell CENTRE.
+        let n: i32 = 4;
+        let world = 12000.0_f32;
+        let cell = world / n as f32;
+        let corner = -world / 2.0;
+        let centre_origin = corner + cell * 0.5;
+        let space = GridSpace {
+            w: n,
+            h: n,
+            cell_size: cell,
+            origin_x: centre_origin,
+            origin_y: centre_origin,
+        };
+        // A distinctive per-cell pattern so an off-by-one/half-cell shift shows.
+        let vals: Vec<u8> = (0..(n * n)).map(|i| (i * 17 % 251) as u8).collect();
+        for gy in 0..n {
+            for gx in 0..n {
+                // World position of this cell's centre.
+                let x = corner + (gx as f32 + 0.5) * cell;
+                let z = corner + (gy as f32 + 0.5) * cell;
+                let got = space.bilinear_u8(&vals, x, z);
+                let want = vals[(gy * n + gx) as usize] as f32;
+                assert!(
+                    (got - want).abs() < 1e-3,
+                    "cell ({gx},{gy}) at world ({x},{z}): got {got}, want {want}",
+                );
+            }
         }
     }
 }
