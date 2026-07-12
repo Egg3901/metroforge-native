@@ -26,7 +26,8 @@ pub use binary::{
 pub use envelope::{
     ClientHelloPayload, CommandPayload, CommandResultPayload, Envelope, EnvelopeError, FromSimJson,
     InitPayload, LoadSavePayload, QueryTrackCostPayload, ReadyPayload, SavedPayload,
-    SetSpeedPayload, ToSim, ToastPayload, TrackCostPayload,
+    SetSpeedPayload, StrataBandDto, StrataProbePayload, StrataProbeResultPayload, ToSim,
+    ToastPayload, TrackCostBreakdown, TrackCostPayload,
 };
 pub use types::{
     ActiveEventDto, CityListEntry, CityMapPreview, CitySize, Command, CommandLogEntry,

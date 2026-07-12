@@ -109,10 +109,75 @@ pub struct ReadyPayload {
 }
 
 /// Sidecar → client `trackCost` payload.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+///
+/// `breakdown` is additive (v0.8 Underground): a sidecar that predates the
+/// geology model omits it and it decodes as `None`, so old and new peers agree.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrackCostPayload {
     /// Estimated construction cost for the queried track.
     pub cost: f64,
+    /// Optional per-component cost breakdown (surface / elevated / cut-and-cover
+    /// / bored) plus a strata summary and water-table flag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breakdown: Option<TrackCostBreakdown>,
+}
+
+/// v0.8 additive cost breakdown carried on `trackCost`. All components are money.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackCostBreakdown {
+    /// Cost of the equivalent surface alignment (UI reference).
+    #[serde(default)]
+    pub surface: f64,
+    /// Cost of the equivalent elevated alignment (UI reference).
+    #[serde(default)]
+    pub elevated: f64,
+    /// Total cut-and-cover component actually chosen along the line.
+    #[serde(default)]
+    pub cut_cover: f64,
+    /// Total bored component actually chosen along the line.
+    #[serde(default)]
+    pub bored: f64,
+    /// Dominant strata crossed, e.g. `"fill/clay/rock"`.
+    #[serde(default)]
+    pub strata: String,
+    /// Does any part of the alignment sit below the water table?
+    #[serde(default)]
+    pub below_water_table: bool,
+}
+
+/// Client → sidecar `strataProbe` query: probe the subsurface at a world point.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct StrataProbePayload {
+    /// World-space x.
+    pub x: f64,
+    /// World-space y.
+    pub y: f64,
+}
+
+/// One reconstructed band in a strata probe (depths are metres below surface).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StrataBandDto {
+    /// `fill` / `clay` / `rock` / `bedrock`.
+    pub kind: String,
+    /// Depth (m) to the top of the band.
+    pub top: f64,
+    /// Depth (m) to the bottom of the band.
+    pub bottom: f64,
+}
+
+/// Sidecar → client `strataProbe` result for the cross-section UI.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StrataProbeResultPayload {
+    /// Top-down band list.
+    pub bands: Vec<StrataBandDto>,
+    /// Depth (m) to the water table.
+    pub water_table: f64,
+    /// Competent-rock hardness 0..1.
+    pub rock_hardness: f64,
+    /// Surface elevation (m above sea level).
+    pub surface_elevation: f64,
 }
 
 /// Sidecar → client `saved` payload: serialized game state.
@@ -169,6 +234,14 @@ pub enum ToSim {
         /// Track geometry and mode/grade for the cost query.
         payload: QueryTrackCostPayload,
     },
+    /// `t:"strataProbe"` — probe the subsurface at a world point.
+    /// `seq` carries the client-assigned `requestId`.
+    StrataProbe {
+        /// Client-assigned request id echoed in the `strataProbe` reply.
+        seq: u32,
+        /// World point to probe.
+        payload: StrataProbePayload,
+    },
     /// `t:"requestReplay"` — ask the sidecar to emit a `replay` message.
     RequestReplay,
     /// `t:"ping"` — keepalive; expects `pong`.
@@ -193,6 +266,9 @@ impl ToSim {
             ),
             ToSim::QueryTrackCost { seq, payload } => {
                 envelope("queryTrackCost", Some(*seq), Some(payload))
+            }
+            ToSim::StrataProbe { seq, payload } => {
+                envelope("strataProbe", Some(*seq), Some(payload))
             }
             ToSim::RequestReplay => envelope_no_payload("requestReplay", None),
             ToSim::Ping => envelope_no_payload("ping", None),
@@ -230,6 +306,15 @@ pub enum FromSimJson {
         seq: Option<u32>,
         /// Estimated construction cost.
         cost: f64,
+        /// Optional v0.8 per-component cost breakdown.
+        breakdown: Option<TrackCostBreakdown>,
+    },
+    /// `t:"strataProbe"` — subsurface probe for a prior `strataProbe` query.
+    StrataProbe {
+        /// Echo of the client's `requestId`, if present.
+        seq: Option<u32>,
+        /// The reconstructed column at the probed point.
+        result: StrataProbeResultPayload,
     },
     /// `t:"saved"` — serialized save blob in response to `requestSave`.
     Saved(SavedPayload),
@@ -271,7 +356,12 @@ impl FromSimJson {
                 Ok(FromSimJson::TrackCost {
                     seq,
                     cost: payload.cost,
+                    breakdown: payload.breakdown,
                 })
+            }
+            "strataProbe" => {
+                let result: StrataProbeResultPayload = parse("strataProbe", need("strataProbe")?)?;
+                Ok(FromSimJson::StrataProbe { seq, result })
             }
             "saved" => Ok(FromSimJson::Saved(parse("saved", need("saved")?)?)),
             "replay" => Ok(FromSimJson::Replay(parse("replay", need("replay")?)?)),

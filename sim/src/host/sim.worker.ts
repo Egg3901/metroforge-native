@@ -4,8 +4,9 @@
  * render snapshots + UI state to the main thread. The renderer never touches
  * the sim directly.
  */
-import { TICKS_PER_DAY } from '@core/constants';
-import { applyCommand, trackCost } from '@core/commands';
+import { TICKS_PER_DAY, WORLD_SIZE } from '@core/constants';
+import { applyCommand, trackCostDetailed } from '@core/commands';
+import { columnAt } from '@core/geology';
 import { pointAlong } from '@core/geometry';
 import { newGame } from '@core/newGame';
 import { loadOsmCity } from '@core/city/osmRegistry';
@@ -390,7 +391,23 @@ self.onmessage = (e: MessageEvent<ToSim>) => {
     }
     case 'queryTrackCost': {
       if (!state) break;
-      post({ type: 'trackCost', requestId: msg.requestId, cost: trackCost(state, msg.mode, msg.grade, msg.points) });
+      const { cost, breakdown } = trackCostDetailed(state, msg.mode, msg.grade, msg.points);
+      post({ type: 'trackCost', requestId: msg.requestId, cost, breakdown });
+      break;
+    }
+    case 'strataProbe': {
+      if (!state) break;
+      const col = columnAt(state.cityKey, state.seed, WORLD_SIZE, state.osmElevation, state.osmElevRes, { x: msg.x, y: msg.y });
+      post({
+        type: 'strataProbe',
+        requestId: msg.requestId,
+        probe: {
+          bands: col.bands.map((b) => ({ kind: b.kind, top: b.top, bottom: b.bottom })),
+          waterTable: col.waterTableDepth,
+          rockHardness: col.rockHardness,
+          surfaceElevation: col.surfaceElevation,
+        },
+      });
       break;
     }
   }

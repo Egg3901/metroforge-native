@@ -17,8 +17,9 @@
  *  - `sendStatic` splits into a JSON `ready` (masks replaced by
  *    maskRes/has*Mask flags) plus up to three binary `staticMask` frames.
  */
-import { applyCommand, trackCost } from '@core/commands';
-import { TICKS_PER_DAY } from '@core/constants';
+import { applyCommand, trackCostDetailed } from '@core/commands';
+import { columnAt } from '@core/geology';
+import { TICKS_PER_DAY, WORLD_SIZE } from '@core/constants';
 import type { MapSize } from '@core/city/presets';
 import { EVENT_DEFS } from '@core/events';
 import { pointAlong } from '@core/geometry';
@@ -144,6 +145,9 @@ export class SimHost {
       case 'queryTrackCost':
         this.handleTrackCost(env.p as { mode: TransitMode; grade: TrackGrade; points: { x: number; y: number }[] }, env.seq);
         break;
+      case 'strataProbe':
+        this.handleStrataProbe(env.p as { x: number; y: number }, env.seq);
+        break;
       case 'requestReplay':
         this.handleRequestReplay();
         break;
@@ -239,8 +243,19 @@ export class SimHost {
 
   private handleTrackCost(p: { mode: TransitMode; grade: TrackGrade; points: { x: number; y: number }[] }, seq: number | undefined): void {
     if (!this.state) return;
-    const cost = trackCost(this.state, p.mode, p.grade, p.points);
-    this.send(jsonMessage('trackCost', { cost }, seq));
+    const { cost, breakdown } = trackCostDetailed(this.state, p.mode, p.grade, p.points);
+    this.send(jsonMessage('trackCost', { cost, breakdown }, seq));
+  }
+
+  private handleStrataProbe(p: { x: number; y: number }, seq: number | undefined): void {
+    if (!this.state) return;
+    const col = columnAt(this.state.cityKey, this.state.seed, WORLD_SIZE, this.state.osmElevation, this.state.osmElevRes, { x: p.x, y: p.y });
+    this.send(jsonMessage('strataProbe', {
+      bands: col.bands.map((b) => ({ kind: b.kind, top: b.top, bottom: b.bottom })),
+      waterTable: col.waterTableDepth,
+      rockHardness: col.rockHardness,
+      surfaceElevation: col.surfaceElevation,
+    }, seq));
   }
 
   private handleRequestReplay(): void {

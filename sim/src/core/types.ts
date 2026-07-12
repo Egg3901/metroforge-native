@@ -62,6 +62,26 @@ export interface Station {
   /** rolling daily alightings (trips ending here), from flow assignment */
   alightings: number;
   buildTick: number;
+  /** underground depth (m below surface), set when a tunnel connects here;
+   *  undefined = surface station. Drives build surcharge + rider access time. */
+  depth?: number | undefined;
+}
+
+/** Additive cost breakdown returned alongside a track-cost quote (v0.8). All
+ *  components are money; `strata` is a human summary of the ground crossed. */
+export interface TrackCostBreakdown {
+  /** cost of the equivalent surface alignment (reference for the UI) */
+  surface: number;
+  /** cost of the equivalent elevated alignment (reference for the UI) */
+  elevated: number;
+  /** total cut-and-cover component actually chosen along the line */
+  cutCover: number;
+  /** total bored component actually chosen along the line */
+  bored: number;
+  /** dominant strata crossed, e.g. "fill/clay/rock" */
+  strata: string;
+  /** does any part of the alignment sit below the water table? */
+  belowWaterTable: boolean;
 }
 
 export interface TrackSegment {
