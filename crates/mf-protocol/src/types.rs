@@ -441,6 +441,44 @@ pub struct UiDistrict {
     pub population: f64,
     /// Jobs in the district.
     pub jobs: f64,
+    /// v0.9 zone response: fractional population change at the last growth
+    /// period (>0 thickening near good transit, <0 shrinking). Additive —
+    /// absent until the first growth period runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub growth_delta: Option<f64>,
+}
+
+/// `UiCohortDemand.mix` — relative per-cohort demand weight right now. Field
+/// names mirror the TS `CohortKind` union; not normalized (HUD normalizes).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CohortMix {
+    /// Work commuters.
+    pub commuter: f64,
+    /// Students.
+    pub student: f64,
+    /// Leisure / discretionary trips.
+    pub leisure: f64,
+    /// Night-shift workers.
+    pub night_shift: f64,
+}
+
+/// `UiCohortDemand` — v0.9 cohort demand-by-hour summary (`uiExtras.ts`). All
+/// values are deterministic pure functions of the sim tick. Additive on the
+/// wire; older clients ignore it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct UiCohortDemand {
+    /// Current integer hour bucket [0,24).
+    pub hour: u32,
+    /// Live total demand factor at this hour (daily mean = 1.0).
+    pub factor: f64,
+    /// Relative per-cohort demand weight right now.
+    pub mix: CohortMix,
+    /// Full 24-entry normalized hourly demand curve for the current day type.
+    pub curve: Vec<f64>,
+    /// True on weekend game-days (curve tilts to leisure).
+    pub weekend: bool,
 }
 
 /// Mirrors the sidecar's `LifetimeLedger` (`core/types.ts`): cumulative
@@ -559,6 +597,10 @@ pub struct UiState {
     /// Weather (v0.7): headline event, when one is active.
     #[serde(default)]
     pub weather_event: Option<WeatherEvent>,
+    /// v0.9 cohort living-city: demand-by-hour summary (schedule-driven shape).
+    /// `serde(default)` so pre-v0.9 sidecars that never emit it still decode.
+    #[serde(default)]
+    pub cohort_demand: Option<UiCohortDemand>,
 }
 
 impl UiState {

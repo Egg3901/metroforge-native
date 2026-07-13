@@ -52,6 +52,25 @@ export interface District {
   jobs: number;
   /** mean land value, drives NIMBY + fares elasticity later */
   landValue: number;
+  /**
+   * Zone-response (v0.9 System B): fractional population change applied at the
+   * last growth period (positive = thickening near good transit, negative =
+   * shrinking where service is thin). Transient/derived — surfaced on the wire
+   * as a district growth delta; not serialized, not hashed.
+   */
+  lastGrowthDelta?: number;
+}
+
+/** A named point-of-interest anchor (stadium/airport/university/…) baked into
+ *  the OSM city bundle. Positions are world-space; drives POI demand surges
+ *  (v0.9 System B) and landmark placement. */
+export interface PoiAnchor {
+  id: string;
+  kind: 'stadium' | 'airport' | 'university' | 'hospital' | 'museum';
+  name: string;
+  /** world-space centroid [x, y] */
+  centroid: [number, number];
+  area?: number;
 }
 
 // ── Transit ─────────────────────────────────────────────────────────────────
@@ -276,6 +295,9 @@ export interface GameState {
   osmElevation?: Int16Array | undefined;
   osmElevRes?: number | undefined;
   osmLabels?: import('./city/osmCity').MapLabel[] | undefined;
+  /** transient: named POI anchors from the OSM bundle (stadiums, airports,
+   *  universities, …); drives v0.9 POI demand surges. Not saved, not hashed. */
+  poiAnchors?: PoiAnchor[] | undefined;
   budget: Budget;
   stats: CityStats;
   /**

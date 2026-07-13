@@ -30,8 +30,9 @@ pub use envelope::{
     ToastPayload, TrackCostBreakdown, TrackCostPayload,
 };
 pub use types::{
-    ActiveEventDto, CityListEntry, CityMapPreview, CitySize, Command, CommandLogEntry,
+    ActiveEventDto, CityListEntry, CityMapPreview, CitySize, CohortMix, Command, CommandLogEntry,
     CommandResult, DayLedger, DemandLine, DemandPayload, Difficulty, FailReason, HelloInfo,
+    UiCohortDemand,
     MapLabel, MapLabelKind, PoiAnchorDto, PoiAnchorKind, ReplayPayload, RoadDto, ScenarioRules,
     Season, StaticCityJson, ToastTone, TrackGrade, TransitMode, UiDistrict, UiRoute, UiState,
     UiStation, UiTrack, Vec2, WeatherEvent, WeatherState,

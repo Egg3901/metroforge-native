@@ -11,6 +11,7 @@ import { WALK_SPEED } from '@core/constants';
 import { dist } from '@core/geometry';
 import type { Vec2 } from '@core/geometry';
 import { Rng } from '@core/rng';
+import { cohortDemandFactor } from '@core/transit/cohorts';
 import { findRoadPath } from '@core/transit/roadGraph';
 import type { FlowResult, GameState } from '@core/types';
 
@@ -93,7 +94,12 @@ export class AgentPool {
     };
 
     const weights = flows.map((x) => x.transitTrips);
-    const target = Math.min(MAX_AGENTS, Math.round(totalTrips / 35));
+    // Schedule-driven crowd size: scale the sampled population by the cohort
+    // time-of-day factor so station crowds swell at the 8am peak and thin at
+    // 2am, while the assignment flows (economics) are untouched. Still sampled/
+    // instanced and MAX_AGENTS-capped; the render tier caps counts further.
+    const todScale = Math.max(0.15, Math.min(1.8, cohortDemandFactor(state.tick)));
+    const target = Math.min(MAX_AGENTS, Math.round((totalTrips / 35) * todScale));
     for (let i = 0; i < target; i++) {
       const f = flows[this.rng.weighted(weights)];
       if (!f) continue;

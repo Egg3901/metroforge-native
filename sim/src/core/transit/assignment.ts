@@ -13,7 +13,8 @@ import { eventDemandMult } from '../events';
 import { weatherCarPenaltyMin, weatherDemandMult, weatherWalkMult } from '../weatherEffects';
 import { stationDepthAccessPenaltySec } from '../geologyCost';
 import { segmentAssignmentSpeedMps, segmentDensity01 } from './gradeEffects';
-import type { District, FlowResult, GameState, RouteDef, Station, TrackSegment } from '../types';
+import { attractorAt, MAX_POI_SURGE, poiSurge } from './cohorts';
+import type { District, FlowResult, GameState, PoiAnchor, RouteDef, Station, TrackSegment } from '../types';
 
 const CAR_SPEED = 8.3; // m/s effective urban driving
 const CAR_OVERHEAD_MIN = 8; // parking, access
@@ -208,8 +209,96 @@ export interface AssignmentOutput {
   dailyCarTrips: number;
 }
 
+/** Fraction of its HOST district's own job attraction that a POI anchor adds at
+ *  full surge. Kept proportional (not an absolute jobs count) so a game-day
+ *  spike is a real, visible bump on that district without dominating the whole
+ *  city or starving distant lines. At baseline surge (=1) the bump is 0, so POIs
+ *  are invisible to the assignment except inside their event windows. */
+const POI_SURGE_FRACTION: Record<PoiAnchor['kind'], number> = {
+  stadium: 0.6,
+  airport: 0.8,
+  university: 0.4,
+  hospital: 0.2,
+  museum: 0.15,
+};
+
+/** anchor → nearest district id, cached per game instance (static geometry). */
+const anchorDistrictCache = new Map<number, Map<string, number>>();
+
+function anchorDistrictMap(state: GameState): Map<string, number> {
+  const cached = anchorDistrictCache.get(state.instanceId);
+  if (cached) return cached;
+  const map = new Map<string, number>();
+  for (const a of state.poiAnchors ?? []) {
+    let best = -1;
+    let bestD = Infinity;
+    const ax = a.centroid[0];
+    const ay = a.centroid[1];
+    for (const d of state.districts) {
+      const dd = (d.centroid.x - ax) ** 2 + (d.centroid.y - ay) ** 2;
+      if (dd < bestD) {
+        bestD = dd;
+        best = d.id;
+      }
+    }
+    if (best >= 0) map.set(a.id, best);
+  }
+  anchorDistrictCache.set(state.instanceId, map);
+  return map;
+}
+
+/** Additive attractor bump per district id from POI surges active at the current
+ *  tick. Empty when no anchor is surging (baseline is untouched). */
+function poiBumpByDistrict(state: GameState): Map<number, number> {
+  const out = new Map<number, number>();
+  const anchors = state.poiAnchors;
+  if (!anchors || anchors.length === 0) return out;
+  const districtOf = anchorDistrictMap(state);
+  const jobsById = new Map(state.districts.map((d) => [d.id, d.jobs]));
+  for (const a of anchors) {
+    const did = districtOf.get(a.id);
+    if (did === undefined) continue;
+    const surge = poiSurge(a, state.seed, state.tick);
+    if (surge <= 1) continue;
+    // normalize surge into [0,1] of its range, then take that fraction of the
+    // host district's own jobs — a bounded, proportional event spike.
+    const s01 = Math.min(1, (surge - 1) / (MAX_POI_SURGE - 1));
+    const bump = s01 * POI_SURGE_FRACTION[a.kind] * (jobsById.get(did) ?? 0);
+    out.set(did, (out.get(did) ?? 0) + bump);
+  }
+  return out;
+}
+
 export function runAssignment(state: GameState): AssignmentOutput {
   const { districts, stations, routes, tracks, fields } = state;
+  // Cohort+hour destination-pull mix (AM→jobs/CBD, PM→home, weekend→leisure) and
+  // any POI event surges active right now. Origin trip *magnitude* is unchanged
+  // (daily scale), so only the OD *direction/shape* moves by hour — the daily
+  // economy stays stable while lines swing between the AM and PM commute.
+  // Reshape strength: blend the cohort hour mix toward the legacy jobs-only
+  // gravity. <1 keeps job-directed demand dominant so tight scenarios stay
+  // winnable, while still giving a visible AM→CBD / PM→home swing.
+  const RS = 0.5;
+  const raw = attractorAt(state.tick);
+  const attractor = {
+    job: 1 - RS * (1 - raw.job),
+    home: RS * raw.home,
+    leisure: RS * raw.leisure,
+  };
+  const poiBump = poiBumpByDistrict(state);
+  // Home/leisure attractors are built from population, which runs ~10× jobs; the
+  // blended pull weights (attractor.*) sum to 1, so to keep TOTAL destination
+  // attraction — and thus overall served ridership + the daily economy — on the
+  // same scale as the old jobs-only gravity, rescale population into
+  // jobs-equivalent units. This makes the hour blend shift demand's DIRECTION
+  // (AM→jobs, PM→home) without inflating or gutting its magnitude.
+  let totJobs = 0;
+  let totPop = 0;
+  for (const d of districts) {
+    totJobs += d.jobs;
+    totPop += d.population;
+  }
+  const homeScale = totPop > 0 ? totJobs / totPop : 1;
   const graph = buildGraph(stations, routes, tracks, fields);
   const flows: FlowResult[] = [];
   const carFlows: CarFlow[] = [];
@@ -258,6 +347,28 @@ export function runAssignment(state: GameState): AssignmentOutput {
   // weather makes driving worse → generalized-cost minutes added to every car
   // trip, which nudges the logit mode split toward transit.
   const carWeatherPenalty = weatherCarPenaltyMin(state.weather);
+  // PERF: the cohort-blended destination attractor depends only on the hour +
+  // the destination (not the origin), so precompute it ONCE per assignment
+  // rather than inside the O(origins×dests) loop. The per-origin work then
+  // stays at baseline cost (one distance + exp per pair), and the hour reshape
+  // adds no per-pair arithmetic. Indexed by destination array position.
+  const nD = districts.length;
+  const destAttr = new Float64Array(nD);
+  const destOk = new Uint8Array(nD);
+  const hasPoi = poiBump.size > 0;
+  for (let j = 0; j < nD; j++) {
+    const dest = districts[j] as District;
+    // jobs pull in the AM, home (population) pulls in the PM reversal, leisure
+    // pull rises evenings/weekends. POI surges add a bounded bump to their host
+    // district during event windows only.
+    const homeAttr = dest.population * homeScale;
+    const leisureAttr = homeAttr * (0.4 + 0.5 * Math.min(1, dest.landValue));
+    let a = attractor.job * dest.jobs + attractor.home * homeAttr + attractor.leisure * leisureAttr;
+    if (hasPoi) a += poiBump.get(dest.id) ?? 0;
+    destAttr[j] = a;
+    destOk[j] = a >= 20 ? 1 : 0; // negligible-destination gate (replaces jobs<20)
+  }
+
   // destination choice weights per origin (gravity)
   for (const origin of districts) {
     if (origin.population < 50) continue;
@@ -265,10 +376,12 @@ export function runAssignment(state: GameState): AssignmentOutput {
     const originTrips = origin.population * TRIP_RATE * demandMult * districtMult;
 
     const destWeights: { d: District; w: number }[] = [];
-    for (const dest of districts) {
-      if (dest.id === origin.id || dest.jobs < 20) continue;
+    for (let j = 0; j < nD; j++) {
+      if (destOk[j] === 0) continue;
+      const dest = districts[j] as District;
+      if (dest.id === origin.id) continue;
       const dd = dist(origin.centroid, dest.centroid);
-      destWeights.push({ d: dest, w: dest.jobs * Math.exp(-dd / DEST_KERNEL) });
+      destWeights.push({ d: dest, w: (destAttr[j] as number) * Math.exp(-dd / DEST_KERNEL) });
     }
     destWeights.sort((a, b) => b.w - a.w);
     const top = destWeights.slice(0, MAX_DESTS_PER_ORIGIN);
