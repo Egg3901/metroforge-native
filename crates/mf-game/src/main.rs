@@ -35,6 +35,7 @@ mod report_ui;
 mod reveal_input;
 mod routes_panel;
 mod saves;
+mod scenarios;
 mod shortcuts;
 mod sidecar_kill_test;
 mod single_instance;

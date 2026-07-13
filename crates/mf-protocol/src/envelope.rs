@@ -66,6 +66,11 @@ pub struct InitPayload {
     /// Optional scenario rule overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules: Option<ScenarioRules>,
+    /// Data-driven scenario id from the playable catalog (`scenarioId` on the
+    /// wire). When set, the sidecar loads the full scenario def (win/lose
+    /// trees) in addition to any explicit `rules`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenario_id: Option<String>,
 }
 
 /// Client → sidecar `loadSave` payload: resume from a serialized save blob.

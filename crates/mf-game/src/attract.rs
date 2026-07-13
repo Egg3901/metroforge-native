@@ -240,6 +240,7 @@ fn send_attract_init(link: &SimLink, preset_key: &str) {
         size: None,
         preset_key: Some(preset_key.to_string()),
         rules: None,
+        scenario_id: None,
     }));
     let _ = link
         .transport

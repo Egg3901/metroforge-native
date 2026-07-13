@@ -2078,6 +2078,13 @@ fn pause_overlay_system(
                                 state,
                                 playtime.whole_secs(),
                                 Some(pending.seed),
+                                pending.scenario_id.clone().or_else(|| {
+                                    if pending.sandbox {
+                                        Some(crate::scenarios::SANDBOX_SCENARIO_ID.to_string())
+                                    } else {
+                                        None
+                                    }
+                                }),
                             );
                             save_manager.request_save(
                                 SaveSlot::Slot(n),

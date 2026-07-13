@@ -71,7 +71,7 @@ pub const DEFAULT_AUTOSAVE_INTERVAL_DAYS: u32 = 10;
 
 /// Current on-disk wrapper schema. Bump + add a migration when the
 /// wrapper shape changes. Sim-blob versioning stays in the TS sidecar.
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// One save destination: a numbered slot (1..=[`SLOT_COUNT`]) or one
 /// entry in the autosave ring (0..[`AUTOSAVE_RING_SIZE`]).
@@ -127,6 +127,11 @@ pub struct SaveMeta {
     /// rather than failing to load.
     #[serde(default)]
     pub seed: Option<u64>,
+    /// Active scenario id at save time (`PendingInit::scenario_id`, or
+    /// [`crate::scenarios::SANDBOX_SCENARIO_ID`] when sandbox mode is on).
+    /// `Option` because pre-v3 saves have no recorded scenario.
+    #[serde(default)]
+    pub scenario_id: Option<String>,
 }
 
 impl SaveMeta {
@@ -136,6 +141,7 @@ impl SaveMeta {
         ui: &UiState,
         playtime_secs: u64,
         seed: Option<u64>,
+        scenario_id: Option<String>,
     ) -> Self {
         SaveMeta {
             city_label,
@@ -146,6 +152,7 @@ impl SaveMeta {
             playtime_secs,
             thumbnail_png_base64: None,
             seed,
+            scenario_id,
         }
     }
 }
@@ -193,7 +200,11 @@ type MigrationFn = fn(Value) -> anyhow::Result<Value>;
 /// Ordered (from_version, migrate_to_from_plus_one) steps. Each entry
 /// advances the document by exactly one schema version.
 fn migration_registry() -> &'static [(u32, MigrationFn)] {
-    &[(0, migrate_v0_to_v1), (1, migrate_v1_to_v2)]
+    &[
+        (0, migrate_v0_to_v1),
+        (1, migrate_v1_to_v2),
+        (2, migrate_v2_to_v3),
+    ]
 }
 
 /// Legacy v0.4 wrapper: `{"meta": {...}, "sim": ...}` with no
@@ -229,6 +240,21 @@ fn migrate_v1_to_v2(mut doc: Value) -> anyhow::Result<Value> {
     // No field insert needed: `seed` is absent on the v1 doc, and
     // `#[serde(default)]` handles that at deserialize time.
     obj.insert("schema_version".to_string(), json!(2));
+    Ok(doc)
+}
+
+/// v2 -> v3 (#25, scenario select): adds `meta.scenario_id`. v2 saves
+/// predate the field entirely, so there's nothing to backfill it from —
+/// leave it absent and let `#[serde(default)]` on `SaveMeta::scenario_id`
+/// deserialize it as `None`.
+fn migrate_v2_to_v3(mut doc: Value) -> anyhow::Result<Value> {
+    let obj = doc
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("save document is not a JSON object"))?;
+    if !obj.contains_key("meta") || !obj.contains_key("sim") {
+        anyhow::bail!("v2 save missing meta/sim");
+    }
+    obj.insert("schema_version".to_string(), json!(3));
     Ok(doc)
 }
 
@@ -450,6 +476,8 @@ pub struct SaveManager {
     pending_load_city: Option<String>,
     /// Playtime from the slot being loaded — applied once Loading starts.
     pending_load_playtime_secs: Option<u64>,
+    /// Scenario id staged alongside `pending_load` for `PendingInit`.
+    pending_load_scenario_id: Option<String>,
     last_autosave_day: Option<u32>,
     /// Next ring index to write (0..[`AUTOSAVE_RING_SIZE`]).
     autosave_ring_index: u8,
@@ -520,6 +548,7 @@ impl SaveManager {
             Ok((meta, sim_json)) => {
                 self.pending_load_city = meta.city_label.clone();
                 self.pending_load_playtime_secs = Some(meta.playtime_secs);
+                self.pending_load_scenario_id = meta.scenario_id.clone();
                 self.pending_load = Some(sim_json);
                 sfx.write(PlaySfx(Sfx::Confirm));
                 Some(meta)
@@ -712,6 +741,13 @@ fn autosave_system(
         state,
         playtime.whole_secs(),
         Some(pending_init.seed),
+        pending_init.scenario_id.clone().or_else(|| {
+            if pending_init.sandbox {
+                Some(crate::scenarios::SANDBOX_SCENARIO_ID.to_string())
+            } else {
+                None
+            }
+        }),
     );
     manager.request_save(slot, meta, &link, &mut toasts, &mut sfx);
     manager.last_autosave_day = Some(state.day);
@@ -754,8 +790,9 @@ fn apply_pending_load_meta_system(
     mut playtime: ResMut<PlaytimeTracker>,
     mut applied: Local<bool>,
 ) {
-    let has_staged =
-        manager.pending_load_city.is_some() || manager.pending_load_playtime_secs.is_some();
+    let has_staged = manager.pending_load_city.is_some()
+        || manager.pending_load_playtime_secs.is_some()
+        || manager.pending_load_scenario_id.is_some();
     if !has_staged {
         *applied = false;
         return;
@@ -769,6 +806,15 @@ fn apply_pending_load_meta_system(
     }
     if let Some(secs) = manager.pending_load_playtime_secs.take() {
         playtime.secs = secs as f64;
+    }
+    if let Some(scenario_id) = manager.pending_load_scenario_id.take() {
+        if scenario_id == crate::scenarios::SANDBOX_SCENARIO_ID {
+            pending.sandbox = true;
+            pending.scenario_id = None;
+        } else {
+            pending.sandbox = false;
+            pending.scenario_id = Some(scenario_id);
+        }
     }
 }
 
@@ -846,6 +892,7 @@ mod tests {
             playtime_secs: 3_600,
             thumbnail_png_base64: None,
             seed: Some(987_654_321),
+            scenario_id: Some("cleveland-first-riders".to_string()),
         }
     }
 
@@ -938,7 +985,25 @@ mod tests {
         .to_string()
     }
 
-    fn fixture_v2_canonical() -> String {
+    fn fixture_v2_no_scenario() -> String {
+        build_wrapper_json(
+            &SaveMeta {
+                city_label: Some("nyc".to_string()),
+                day: 30,
+                cash: 1_000_000.0,
+                saved_at_epoch_secs: 1_700_200_000,
+                network_size: 5,
+                playtime_secs: 600,
+                thumbnail_png_base64: None,
+                seed: Some(99),
+                scenario_id: None,
+            },
+            FIXTURE_SIM,
+        )
+        .unwrap()
+    }
+
+    fn fixture_v3_canonical() -> String {
         build_wrapper_json(
             &SaveMeta {
                 city_label: Some("cleveland".to_string()),
@@ -949,6 +1014,7 @@ mod tests {
                 playtime_secs: 1_200,
                 thumbnail_png_base64: None,
                 seed: Some(42),
+                scenario_id: Some("cleveland-first-riders".to_string()),
             },
             FIXTURE_SIM,
         )
@@ -960,7 +1026,8 @@ mod tests {
         let fixtures: &[(u32, String)] = &[
             (0, fixture_v0_legacy()),
             (1, fixture_v1_no_seed()),
-            (2, fixture_v2_canonical()),
+            (2, fixture_v2_no_scenario()),
+            (3, fixture_v3_canonical()),
         ];
         assert_eq!(
             fixtures.len(),
@@ -1016,8 +1083,21 @@ mod tests {
 
     #[test]
     fn v2_canonical_round_trips_seed() {
-        let (meta, _) = parse_wrapper_json(&fixture_v2_canonical()).unwrap();
-        assert_eq!(meta.seed, Some(42));
+        let (meta, _) = parse_wrapper_json(&fixture_v2_no_scenario()).unwrap();
+        assert_eq!(meta.seed, Some(99));
+        assert_eq!(meta.scenario_id, None);
+    }
+
+    #[test]
+    fn v2_migration_backfills_scenario_id_as_none() {
+        let (meta, _) = parse_wrapper_json(&fixture_v2_no_scenario()).unwrap();
+        assert_eq!(meta.scenario_id, None);
+    }
+
+    #[test]
+    fn v3_canonical_round_trips_scenario_id() {
+        let (meta, _) = parse_wrapper_json(&fixture_v3_canonical()).unwrap();
+        assert_eq!(meta.scenario_id.as_deref(), Some("cleveland-first-riders"));
     }
 
     #[test]
@@ -1161,6 +1241,7 @@ mod tests {
                     playtime_secs: 60,
                     thumbnail_png_base64: None,
                     seed: None,
+                    scenario_id: None,
                 }),
             },
             SlotEntry {
@@ -1174,6 +1255,7 @@ mod tests {
                     playtime_secs: 120,
                     thumbnail_png_base64: None,
                     seed: None,
+                    scenario_id: None,
                 }),
             },
             SlotEntry {
@@ -1187,6 +1269,7 @@ mod tests {
                     playtime_secs: 30,
                     thumbnail_png_base64: None,
                     seed: None,
+                    scenario_id: None,
                 }),
             },
         ];
