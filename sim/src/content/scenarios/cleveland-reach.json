@@ -1,0 +1,40 @@
+{
+  "id": "cleveland-reach",
+  "label": "Within Reach",
+  "description": "800 daily riders and 7% coverage before day 40. Bus and tram from the start.",
+  "cityKey": "cleveland",
+  "tier": 3,
+  "difficulty": "normal",
+  "startingBudget": 11000000,
+  "startingModes": ["bus", "tram"],
+  "lockModes": true,
+  "dailySubsidy": 28000,
+  "deadlineDays": 40,
+  "eraLabel": "Reach",
+  "win": {
+    "and": [
+      {
+        "metric": "dailyTransitTrips",
+        "op": ">=",
+        "value": 800,
+        "label": "Carry 800 daily riders"
+      },
+      {
+        "metric": "coverage",
+        "op": ">=",
+        "value": 0.07,
+        "label": "Cover 7% of residents"
+      }
+    ]
+  },
+  "events": [
+    {
+      "id": "cle-fuel-spike",
+      "day": 15,
+      "kind": "globalDemandMult",
+      "mult": 1.25,
+      "durationDays": 5,
+      "message": "Fuel prices spike citywide. Transit demand jumps for five days."
+    }
+  ]
+}

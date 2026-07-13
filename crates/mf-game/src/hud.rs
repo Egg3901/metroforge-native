@@ -515,6 +515,77 @@ fn is_night_hour(hour: f64) -> bool {
     !(6.0..20.0).contains(&hour)
 }
 
+/// A small weather glyph for the top-bar chip (v0.7), painted from primitives
+/// so it needs no font/emoji (art direction forbids coloured emoji anyway).
+/// Monochrome in the muted HUD ink; the label carries the word.
+fn draw_weather_icon(painter: &egui::Painter, rect: egui::Rect, state: mf_protocol::WeatherState) {
+    use mf_protocol::WeatherState as W;
+    let c = rect.center();
+    let r = rect.width().min(rect.height()) * 0.30;
+    let ink = muted_text();
+    // A soft cloud = two lobes + a base bar, shared by the cloudy states.
+    let cloud = |p: &egui::Painter, dy: f32| {
+        let base = c + egui::vec2(0.0, dy);
+        p.circle_filled(base + egui::vec2(-r * 0.55, 0.0), r * 0.62, ink);
+        p.circle_filled(base + egui::vec2(r * 0.55, 0.0), r * 0.62, ink);
+        p.circle_filled(base + egui::vec2(0.0, -r * 0.35), r * 0.78, ink);
+    };
+    let drop_line = |p: &egui::Painter, dx: f32, col: egui::Color32| {
+        let top = c + egui::vec2(dx, r * 0.55);
+        p.line_segment(
+            [top, top + egui::vec2(-r * 0.25, r * 0.7)],
+            egui::Stroke::new(1.4, col),
+        );
+    };
+    match state {
+        W::Clear => {
+            painter.circle_filled(c, r * 0.7, WARN);
+            for i in 0..8 {
+                let a = i as f32 * std::f32::consts::FRAC_PI_4;
+                let dir = egui::vec2(a.cos(), a.sin());
+                painter.line_segment(
+                    [c + dir * (r * 0.95), c + dir * (r * 1.3)],
+                    egui::Stroke::new(1.2, WARN),
+                );
+            }
+        }
+        W::Overcast => cloud(painter, -r * 0.1),
+        W::Fog => {
+            for i in 0..3 {
+                let y = c.y - r * 0.5 + i as f32 * r * 0.55;
+                painter.line_segment(
+                    [egui::pos2(c.x - r * 1.1, y), egui::pos2(c.x + r * 1.1, y)],
+                    egui::Stroke::new(1.6, ink),
+                );
+            }
+        }
+        W::Rain => {
+            cloud(painter, -r * 0.35);
+            drop_line(painter, -r * 0.4, accent());
+            drop_line(painter, r * 0.2, accent());
+        }
+        W::Snow => {
+            let col = egui::Color32::from_rgb(0xe6, 0xed, 0xf5);
+            for i in 0..3 {
+                let a = i as f32 * std::f32::consts::PI / 3.0;
+                let dir = egui::vec2(a.cos(), a.sin()) * r;
+                painter.line_segment([c - dir, c + dir], egui::Stroke::new(1.4, col));
+            }
+        }
+        W::Storm => {
+            cloud(painter, -r * 0.35);
+            // Lightning bolt: a short zigzag in the accent ink.
+            let bolt = [
+                c + egui::vec2(-r * 0.1, r * 0.35),
+                c + egui::vec2(r * 0.25, r * 0.35),
+                c + egui::vec2(-r * 0.05, r * 1.1),
+            ];
+            painter.line_segment([bolt[0], bolt[1]], egui::Stroke::new(1.6, WARN));
+            painter.line_segment([bolt[1], bolt[2]], egui::Stroke::new(1.6, WARN));
+        }
+    }
+}
+
 /// A simple padlock silhouette (filled body + stroked shackle arc), sized
 /// for a locked city card. Deliberately separate from `build_ui.rs`'s
 /// smaller per-toolbar-button lock badge (that file isn't touched this
@@ -690,6 +761,13 @@ fn continue_slot_row(
                 .size(11.0)
                 .color(muted_text()),
         );
+        if let Some(seed) = meta.seed {
+            child.label(
+                egui::RichText::new(format!("{}{}", s.seed_prefix, seed))
+                    .size(10.0)
+                    .color(muted_text()),
+            );
+        }
     }
 
     occupied && response.clicked()
@@ -1612,6 +1690,7 @@ fn loading_hud_system(
 fn in_game_hud_system(
     mut contexts: EguiContexts,
     ui_state: Res<LatestUi>,
+    weather: Res<mf_state::WeatherRender>,
     link: Option<Res<SimLink>>,
     mut subway: ResMut<SubwayView>,
     toasts: Res<ToastLog>,
@@ -1672,6 +1751,28 @@ fn in_game_hud_system(
                         128.0,
                     );
                     thin_separator(ui);
+
+                    // Weather chip (v0.7): small painted glyph + label, with a
+                    // tooltip carrying season + any headline event. Reads the
+                    // shared `WeatherRender` resource (same source of truth the
+                    // renderer eases from, so the chip and the sky always
+                    // agree, and an `MF_FORCE_WEATHER` override shows here too).
+                    // Hidden until the sim actually reports a weather state.
+                    if let Some(weather_state) = weather.state {
+                        let (icon_rect, _) =
+                            ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                        draw_weather_icon(ui.painter(), icon_rect, weather_state);
+                        let label = ui.label(
+                            egui::RichText::new(s.weather_label(weather_state))
+                                .monospace()
+                                .color(muted_text()),
+                        );
+                        let tip = s.weather_tooltip(weather.season, weather.event);
+                        if !tip.is_empty() {
+                            label.on_hover_text(tip);
+                        }
+                        thin_separator(ui);
+                    }
 
                     // Art-direction: vivid color only on interactive/transit.
                     // Approval state is weight + glyph, not traffic-light hues.
@@ -1832,6 +1933,16 @@ fn in_game_hud_system(
 /// layer at the cursor), so `camera.rs`'s existing egui-capture check keeps
 /// world drag/zoom from leaking through while paused, with no change to
 /// that file.
+/// Extra pause-overlay locals bundled together (#140 seed copy flash) so
+/// adding this feature doesn't push `pause_overlay_system` past Bevy's
+/// 16-parameter `System` limit (see `slot_occupied_cache` above, which hit
+/// the same constraint on `main_menu_hud_system`).
+#[derive(Default)]
+struct PauseOverlayExtra {
+    settings_open: bool,
+    seed_copied_flash: Option<std::time::Instant>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn pause_overlay_system(
     contexts: EguiContexts,
@@ -1848,9 +1959,13 @@ fn pause_overlay_system(
     mut sfx: EventWriter<PlaySfx>,
     mut hovered: Local<Option<egui::Id>>,
     mut slot_occupied_cache: Local<Option<[bool; SAVE_SLOT_COUNT]>>,
-    mut pause_settings_open: Local<bool>,
+    mut pause_extra: Local<PauseOverlayExtra>,
     rigs: Query<&mut CameraRig>,
 ) -> Result {
+    let PauseOverlayExtra {
+        settings_open: pause_settings_open,
+        seed_copied_flash,
+    } = &mut *pause_extra;
     if !pause.active {
         return Ok(());
     }
@@ -1921,6 +2036,22 @@ fn pause_overlay_system(
             }
 
             ui.add_space(14.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{}{}", s.seed_prefix, pending.seed))
+                        .size(12.0)
+                        .color(muted_text()),
+                );
+                if ds::button(ui, s.copy_seed, ds::ButtonKind::Ghost).clicked() {
+                    ui.ctx().copy_text(pending.seed.to_string());
+                    *seed_copied_flash = Some(std::time::Instant::now());
+                    sfx.write(PlaySfx(Sfx::Confirm));
+                }
+            });
+            if seed_copied_flash.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2)) {
+                ui.label(egui::RichText::new(s.copied).size(11.0).color(GOOD));
+            }
+            ui.add_space(10.0);
             field_label(ui, s.save_game);
             ui.horizontal(|ui| {
                 for n in 1..=saves::SLOT_COUNT {
@@ -1946,6 +2077,7 @@ fn pause_overlay_system(
                                 Some(pending.preset_key.clone()),
                                 state,
                                 playtime.whole_secs(),
+                                Some(pending.seed),
                             );
                             save_manager.request_save(
                                 SaveSlot::Slot(n),

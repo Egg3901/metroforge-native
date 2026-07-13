@@ -1,0 +1,60 @@
+{
+  "id": "cleveland-roadworks",
+  "label": "Road Works",
+  "description": "Crisis. Survive the day 5 detour surge past day 22 with 700 riders and zero overcrowded routes.",
+  "cityKey": "cleveland",
+  "tier": 3,
+  "difficulty": "normal",
+  "startingBudget": 11000000,
+  "startingModes": ["bus"],
+  "lockModes": true,
+  "dailySubsidy": 25000,
+  "deadlineDays": 35,
+  "eraLabel": "Detour",
+  "win": {
+    "and": [
+      {
+        "metric": "day",
+        "op": ">=",
+        "value": 22,
+        "label": "Hold through day 22"
+      },
+      {
+        "metric": "dailyTransitTrips",
+        "op": ">=",
+        "value": 700,
+        "label": "Carry 700 daily riders"
+      },
+      {
+        "metric": "overcrowdedRoutes",
+        "op": "<=",
+        "value": 0,
+        "label": "Keep crowding under control"
+      }
+    ]
+  },
+  "lose": {
+    "metric": "overcrowdedRoutes",
+    "op": ">=",
+    "value": 1,
+    "label": "Any route over capacity"
+  },
+  "events": [
+    {
+      "id": "cle-roadworks-global",
+      "day": 5,
+      "kind": "globalDemandMult",
+      "mult": 3,
+      "durationDays": 16,
+      "message": "Road works choke the arterials. Transit demand triples for sixteen days."
+    },
+    {
+      "id": "cle-roadworks-hot",
+      "day": 5,
+      "kind": "districtDemandMult",
+      "densityRank": 0,
+      "mult": 3,
+      "message": "Detours dump onto the densest district."
+    }
+  ]
+}

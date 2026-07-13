@@ -1,0 +1,45 @@
+{
+  "id": "cleveland-austerity",
+  "label": "Austerity",
+  "description": "Thin subsidy, thin cash. 600 riders and 90% farebox before day 35 without cratering.",
+  "cityKey": "cleveland",
+  "tier": 4,
+  "difficulty": "hard",
+  "startingBudget": 5500000,
+  "startingModes": ["bus"],
+  "lockModes": true,
+  "dailySubsidy": 8000,
+  "deadlineDays": 35,
+  "eraLabel": "Cuts",
+  "win": {
+    "and": [
+      {
+        "metric": "dailyTransitTrips",
+        "op": ">=",
+        "value": 600,
+        "label": "Carry 600 daily riders"
+      },
+      {
+        "metric": "fareboxRecovery",
+        "op": ">=",
+        "value": 0.9,
+        "label": "Farebox recovery at least 90%"
+      }
+    ]
+  },
+  "lose": {
+    "metric": "cash",
+    "op": "<",
+    "value": -100000,
+    "label": "Cash below -$100k"
+  },
+  "events": [
+    {
+      "id": "cle-austerity-cut",
+      "day": 15,
+      "kind": "cashDelta",
+      "amount": -500000,
+      "message": "Council clawback. $500k gone."
+    }
+  ]
+}

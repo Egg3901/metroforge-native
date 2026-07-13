@@ -37,6 +37,50 @@ pub enum TrackGrade {
     Tunnel,
 }
 
+/// `WeatherState` — metroforge/src/core/weather.ts (v0.7). The sky the sim is
+/// simulating; the render lane consumes it to drive precipitation and light.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WeatherState {
+    /// Clear skies.
+    Clear,
+    /// Overcast / cloudy.
+    Overcast,
+    /// Rain.
+    Rain,
+    /// Fog.
+    Fog,
+    /// Snow.
+    Snow,
+    /// Storm (heavy rain + wind).
+    Storm,
+}
+
+/// `Season` — metroforge/src/core/weather.ts (v0.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Season {
+    /// Winter.
+    Winter,
+    /// Spring.
+    Spring,
+    /// Summer.
+    Summer,
+    /// Autumn.
+    Autumn,
+}
+
+/// `WeatherEvent` — metroforge/src/core/weather.ts (v0.7). A headline weather
+/// event crossing a gameplay threshold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WeatherEvent {
+    /// Heavy snow/storm; surface lines crawl, underground unaffected.
+    Blizzard,
+    /// Hot clear spell; ridership dips and rail speeds are restricted.
+    Heatwave,
+}
+
 /// `Difficulty` — metroforge/src/core/types.ts:164
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -145,11 +189,22 @@ pub struct MapLabel {
 /// widened to `string` in the wire DTO (metroforge/src/host/protocol.ts:97),
 /// so we mirror that widening rather than the stricter core type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RoadDto {
     /// Road class string (`arterial` / `collector` / `local`, …).
     pub cls: String,
     /// flat x,y pairs
     pub points: Vec<f64>,
+    /// Grade-separation level (signed int; 0 = ground, +N above, -N below).
+    /// From OSM `layer`/`bridge`/`tunnel` tags. Additive: absent → 0.
+    #[serde(default)]
+    pub grade_level: i32,
+    /// Segment is a bridge deck. Additive: absent → false.
+    #[serde(default)]
+    pub is_bridge: bool,
+    /// Segment is a tunnel. Additive: absent → false.
+    #[serde(default)]
+    pub is_tunnel: bool,
 }
 
 /// Native-wire `StaticCity`: identical to the TS `StaticCity`
@@ -443,6 +498,19 @@ pub struct UiState {
     /// from per-route `live_crowding` instead.
     #[serde(default)]
     pub overcrowded_routes: Option<u32>,
+    /// Weather (v0.7): current sky state. `serde(default)` so old sidecars that
+    /// never emit weather still decode.
+    #[serde(default)]
+    pub weather_state: Option<WeatherState>,
+    /// Weather (v0.7): intensity in `0.0..1.0` (precip strength; heat for clear).
+    #[serde(default)]
+    pub weather_intensity: Option<f64>,
+    /// Weather (v0.7): season derived from the sim date.
+    #[serde(default)]
+    pub weather_season: Option<Season>,
+    /// Weather (v0.7): headline event, when one is active.
+    #[serde(default)]
+    pub weather_event: Option<WeatherEvent>,
 }
 
 impl UiState {
@@ -706,4 +774,51 @@ pub enum ToastTone {
     Warn,
     /// Positive / success toast.
     Good,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn road_dto_grade_fields_roundtrip() {
+        let r = RoadDto {
+            cls: "arterial".to_string(),
+            points: vec![1.0, 2.0, 3.0, 4.0],
+            grade_level: 2,
+            is_bridge: true,
+            is_tunnel: false,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        // camelCase wire keys matching the TS host payload.
+        assert!(json.contains("\"gradeLevel\":2"));
+        assert!(json.contains("\"isBridge\":true"));
+        assert!(json.contains("\"isTunnel\":false"));
+        let back: RoadDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(r, back);
+    }
+
+    #[test]
+    fn road_dto_tunnel_negative_grade_roundtrip() {
+        let r = RoadDto {
+            cls: "local".to_string(),
+            points: vec![0.0, 0.0],
+            grade_level: -1,
+            is_bridge: false,
+            is_tunnel: true,
+        };
+        let back: RoadDto = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(r, back);
+    }
+
+    #[test]
+    fn road_dto_legacy_payload_defaults_to_ground() {
+        // Older host payloads omit the grade keys entirely — they must decode
+        // as ground-level, non-bridge, non-tunnel (additive/back-compatible).
+        let back: RoadDto =
+            serde_json::from_str(r#"{"cls":"collector","points":[5.0,6.0]}"#).unwrap();
+        assert_eq!(back.grade_level, 0);
+        assert!(!back.is_bridge);
+        assert!(!back.is_tunnel);
+    }
 }

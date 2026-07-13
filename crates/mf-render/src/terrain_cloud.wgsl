@@ -12,6 +12,11 @@ struct TerrainUniform {
     cloud: vec4<f32>,
 }
 
+struct WeatherUniform {
+    // x = snow_depth (0..1); y,z,w reserved.
+    weather: vec4<f32>,
+}
+
 @group(2) @binding(100)
 var<uniform> terrain_uniform: TerrainUniform;
 
@@ -20,6 +25,9 @@ var cloud_noise_texture: texture_2d<f32>;
 
 @group(2) @binding(102)
 var cloud_noise_sampler: sampler;
+
+@group(2) @binding(103)
+var<uniform> weather_uniform: WeatherUniform;
 
 fn cloud_shadow_factor(world_xz: vec2<f32>) -> f32 {
     let strength = terrain_uniform.cloud.z;
@@ -47,6 +55,13 @@ fn fragment(
     }
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     let shadow = cloud_shadow_factor(in.world_position.xz);
-    out.color = vec4(out.color.rgb * shadow, out.color.a);
+    var rgb = out.color.rgb * shadow;
+    // Snow accumulation: lerp toward a near-white settled-snow tone. Applied
+    // after lighting so the whitened ground still takes the sky/ambient grade
+    // (overcast snow reads cool, not a flat paper cutout). Slightly off-white
+    // so it separates from the buildings' pure-white cel albedo.
+    let snow = clamp(weather_uniform.weather.x, 0.0, 1.0);
+    rgb = mix(rgb, vec3<f32>(0.94, 0.95, 0.97), snow * 0.85);
+    out.color = vec4(rgb, out.color.a);
     return out;
 }

@@ -1,0 +1,60 @@
+{
+  "id": "nyc-dig-season",
+  "label": "Dig Season",
+  "description": "Crisis. Survive the day 8 dig surge past day 25 with 3000 riders and zero overcrowded routes.",
+  "cityKey": "nyc",
+  "tier": 3,
+  "difficulty": "hard",
+  "startingBudget": 10000000,
+  "startingModes": ["bus"],
+  "lockModes": true,
+  "dailySubsidy": 20000,
+  "deadlineDays": 40,
+  "eraLabel": "Dig",
+  "win": {
+    "and": [
+      {
+        "metric": "day",
+        "op": ">=",
+        "value": 25,
+        "label": "Hold through day 25"
+      },
+      {
+        "metric": "dailyTransitTrips",
+        "op": ">=",
+        "value": 3000,
+        "label": "Carry 3000 daily riders"
+      },
+      {
+        "metric": "overcrowdedRoutes",
+        "op": "<=",
+        "value": 0,
+        "label": "Keep crowding under control"
+      }
+    ]
+  },
+  "lose": {
+    "metric": "overcrowdedRoutes",
+    "op": ">=",
+    "value": 1,
+    "label": "Any route over capacity"
+  },
+  "events": [
+    {
+      "id": "nyc-dig-global",
+      "day": 8,
+      "kind": "globalDemandMult",
+      "mult": 2.2,
+      "durationDays": 16,
+      "message": "Avenue digs begin. Citywide transit demand jumps for sixteen days."
+    },
+    {
+      "id": "nyc-dig-hot",
+      "day": 8,
+      "kind": "districtDemandMult",
+      "densityRank": 0,
+      "mult": 2.5,
+      "message": "Detours crush the densest district."
+    }
+  ]
+}

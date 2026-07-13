@@ -4,7 +4,7 @@
 
 use mf_protocol::binary::{
     decode_binary, BinaryError, BinaryMsg, Fields, FrameSnapshot, MaskWhich, StaticBuildings,
-    StaticMask, Traffic,
+    StaticElevation, StaticMask, Traffic,
 };
 use mf_protocol::envelope::{Envelope, FromSimJson, ToSim};
 use mf_protocol::types::{Command, Difficulty, TransitMode, UiState};
@@ -186,6 +186,46 @@ fn static_mask_roundtrip() {
         BinaryMsg::Mask(m) => assert_eq!(m, decoded),
         other => panic!("expected Mask, got {other:?}"),
     }
+}
+
+#[test]
+fn static_elevation_roundtrip() {
+    let res = 3u32;
+    // signed meters incl. negatives (below sea level) and a big peak.
+    let heights: Vec<i16> = vec![-5, 0, 12, 340, -32768, 32767, 100, 200, 300];
+    let src = StaticElevation {
+        res,
+        heights: heights.clone(),
+    };
+    let bytes = src.encode();
+    // header: msgType=7, version=1, reserved u16, res u32, reserved u32
+    assert_eq!(bytes[0], 7);
+    assert_eq!(bytes[1], 1);
+    assert_eq!(bytes.len(), 12 + (res * res) as usize * 2);
+
+    let decoded = StaticElevation::decode(&bytes).expect("decode");
+    assert_eq!(decoded.res, res);
+    assert_eq!(decoded.heights, heights);
+    assert_eq!(decoded.encode(), bytes);
+
+    match decode_binary(&bytes).unwrap() {
+        BinaryMsg::Elevation(e) => assert_eq!(e, decoded),
+        other => panic!("expected Elevation, got {other:?}"),
+    }
+}
+
+#[test]
+fn static_elevation_truncated_body_errors() {
+    // res=2 declares 4 samples (8 body bytes) but only 2 provided.
+    let mut b = vec![7u8, 1u8];
+    push_u16(&mut b, 0);
+    push_u32(&mut b, 2);
+    push_u32(&mut b, 0);
+    push_i16(&mut b, 42);
+    assert!(matches!(
+        StaticElevation::decode(&b),
+        Err(BinaryError::TooShort { .. })
+    ));
 }
 
 #[test]
@@ -664,9 +704,14 @@ fn from_sim_json_every_variant_roundtrips() {
     // TrackCost
     let tc = r#"{"t":"trackCost","seq":3,"p":{"cost":1234.5}}"#;
     match parse_from_sim(tc).unwrap() {
-        FromSimJson::TrackCost { seq, cost } => {
+        FromSimJson::TrackCost {
+            seq,
+            cost,
+            breakdown,
+        } => {
             assert_eq!(seq, Some(3));
             assert!((cost - 1234.5).abs() < 1e-9);
+            assert!(breakdown.is_none());
         }
         other => panic!("TrackCost: {other:?}"),
     }

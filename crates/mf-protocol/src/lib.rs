@@ -21,18 +21,20 @@ pub mod types;
 
 pub use binary::{
     decode_binary, BinaryError, BinaryMsg, BuildingFootprint, Fields, FrameSnapshot, MaskWhich,
-    StaticBuildings, StaticMask, Traffic, TrafficHotspot,
+    StaticBuildings, StaticElevation, StaticMask, Traffic, TrafficHotspot,
 };
 pub use envelope::{
     ClientHelloPayload, CommandPayload, CommandResultPayload, Envelope, EnvelopeError, FromSimJson,
     InitPayload, LoadSavePayload, QueryTrackCostPayload, ReadyPayload, SavedPayload,
-    SetSpeedPayload, ToSim, ToastPayload, TrackCostPayload,
+    SetSpeedPayload, StrataBandDto, StrataProbePayload, StrataProbeResultPayload, ToSim,
+    ToastPayload, TrackCostBreakdown, TrackCostPayload,
 };
 pub use types::{
     ActiveEventDto, CityListEntry, CityMapPreview, CitySize, Command, CommandLogEntry,
     CommandResult, DayLedger, DemandLine, DemandPayload, Difficulty, FailReason, HelloInfo,
-    MapLabel, MapLabelKind, ReplayPayload, RoadDto, ScenarioRules, StaticCityJson, ToastTone,
-    TrackGrade, TransitMode, UiDistrict, UiRoute, UiState, UiStation, UiTrack, Vec2,
+    MapLabel, MapLabelKind, ReplayPayload, RoadDto, ScenarioRules, Season, StaticCityJson,
+    ToastTone, TrackGrade, TransitMode, UiDistrict, UiRoute, UiState, UiStation, UiTrack, Vec2,
+    WeatherEvent, WeatherState,
 };
 
 use std::sync::Arc;
@@ -66,6 +68,9 @@ pub enum FromSimMsg {
     /// msgType=5, sent once. Additive/optional (see `BuildingFootprint`
     /// doc): does NOT bump `PROTOCOL_VERSION`.
     Buildings(StaticBuildings),
+    /// msgType=7 static real-elevation heightfield, sent once. Additive/
+    /// optional like msgType=5: does NOT bump `PROTOCOL_VERSION`.
+    Elevation(Arc<StaticElevation>),
 }
 
 impl From<FromSimJson> for FromSimMsg {
@@ -82,6 +87,7 @@ impl From<BinaryMsg> for FromSimMsg {
             BinaryMsg::Traffic(t) => FromSimMsg::Traffic(t),
             BinaryMsg::Mask(m) => FromSimMsg::Mask(m),
             BinaryMsg::Buildings(b) => FromSimMsg::Buildings(b),
+            BinaryMsg::Elevation(e) => FromSimMsg::Elevation(Arc::new(e)),
         }
     }
 }

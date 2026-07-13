@@ -1,0 +1,40 @@
+{
+  "id": "nyc-farebox-80",
+  "label": "Cover Fares",
+  "description": "Economic drill. 1200 riders and 80% farebox recovery before day 40.",
+  "cityKey": "nyc",
+  "tier": 2,
+  "difficulty": "normal",
+  "startingBudget": 9500000,
+  "startingModes": ["bus"],
+  "lockModes": true,
+  "dailySubsidy": 18000,
+  "deadlineDays": 40,
+  "eraLabel": "Ledger",
+  "win": {
+    "and": [
+      {
+        "metric": "dailyTransitTrips",
+        "op": ">=",
+        "value": 1200,
+        "label": "Carry 1200 daily riders"
+      },
+      {
+        "metric": "fareboxRecovery",
+        "op": ">=",
+        "value": 0.8,
+        "label": "Farebox recovery at least 80%"
+      }
+    ]
+  },
+  "events": [
+    {
+      "id": "nyc-fare-nudge",
+      "day": 10,
+      "kind": "districtDemandMult",
+      "densityRank": 0,
+      "mult": 1.5,
+      "message": "Office return week. Densest district demand up 50%."
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 use bevy_ecs::prelude::*;
-use mf_protocol::{MaskWhich, StaticBuildings, StaticCityJson, StaticMask};
+use mf_protocol::{MaskWhich, StaticBuildings, StaticCityJson, StaticElevation, StaticMask};
 
 /// The currently-loaded city: the `StaticCityJson` sent with `ready`, plus
 /// the (0-3) mask byte arrays that arrive right after it as binary
@@ -31,6 +31,12 @@ pub struct CurrentCity {
     /// city with no buildings message is valid, and the renderer's fallback
     /// makes waiting for it pointless.
     pub buildings: Option<StaticBuildings>,
+    /// Real-elevation heightfield (spec msgType=7), sent once. Optional/
+    /// additive like `buildings`: a city with no elevation frame renders from
+    /// the sim field's normalized terrain instead, so this does NOT gate
+    /// `masks_complete()`. `mf-render`'s `terrain.rs` reads it (in true
+    /// meters) to build real relief when present.
+    pub elevation: Option<StaticElevation>,
 }
 
 impl CurrentCity {
@@ -41,6 +47,7 @@ impl CurrentCity {
         self.park_mask = None;
         self.building_mask = None;
         self.buildings = None;
+        self.elevation = None;
     }
 
     /// Store one incoming `StaticMask` frame into the right slot.
@@ -55,6 +62,11 @@ impl CurrentCity {
     /// Store the (single, one-shot) incoming `StaticBuildings` frame.
     pub fn apply_buildings(&mut self, buildings: StaticBuildings) {
         self.buildings = Some(buildings);
+    }
+
+    /// Store the (single, one-shot) incoming `StaticElevation` frame.
+    pub fn apply_elevation(&mut self, elevation: StaticElevation) {
+        self.elevation = Some(elevation);
     }
 
     /// True once `static_city` is present and every mask it flagged as

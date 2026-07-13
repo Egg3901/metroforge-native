@@ -166,6 +166,38 @@ fn frame_elevated(rig: &mut CameraRig, center: Vec2) {
     rig.yaw = 0.5;
 }
 
+/// Optional camera override for verifying a SPECIFIC world location (e.g. a
+/// named bridge or freeway interchange) instead of the auto-picked dense
+/// center — used by the grade-separation before/after shots.
+/// `MF_VERIFY_TARGET="x,z"` recenters the elevated framing; the optional
+/// `MF_VERIFY_DIST` / `MF_VERIFY_PITCH` / `MF_VERIFY_YAW` tune it. Inert (leaves
+/// the rig untouched) when `MF_VERIFY_TARGET` is unset, so the default verify
+/// sequence is byte-identical to before.
+fn apply_target_override(rig: &mut CameraRig) {
+    let Some(t) = std::env::var_os("MF_VERIFY_TARGET") else {
+        return;
+    };
+    let s = t.to_string_lossy();
+    let mut it = s.split(',').filter_map(|v| v.trim().parse::<f32>().ok());
+    if let (Some(x), Some(z)) = (it.next(), it.next()) {
+        rig.target = Vec2::new(x, z);
+    }
+    let envf = |k: &str| {
+        std::env::var(k)
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+    };
+    if let Some(d) = envf("MF_VERIFY_DIST") {
+        rig.distance = d;
+    }
+    if let Some(p) = envf("MF_VERIFY_PITCH") {
+        rig.pitch = p;
+    }
+    if let Some(y) = envf("MF_VERIFY_YAW") {
+        rig.yaw = y;
+    }
+}
+
 /// Nearest arterial/collector polyline vertex to `center`: with real
 /// footprints, the dense-center point itself is usually inside a tower, so
 /// the street shot must anchor on an actual street.
@@ -794,6 +826,7 @@ fn verify_sequence_system(
             if elapsed_in_stage == 1 {
                 if let Ok(mut rig) = rigs.single_mut() {
                     frame_elevated(&mut rig, dense_center.0);
+                    apply_target_override(&mut rig);
                 }
             }
             if elapsed_in_stage == SETTLE_FRAMES {
@@ -816,6 +849,7 @@ fn verify_sequence_system(
             if elapsed_in_stage == 5 {
                 if let Ok(mut rig) = rigs.single_mut() {
                     frame_elevated(&mut rig, dense_center.0);
+                    apply_target_override(&mut rig);
                 }
                 subway.toggle();
             }

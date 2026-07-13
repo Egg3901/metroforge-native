@@ -25,11 +25,25 @@ use crate::water::{
     make_water_material, water_bundle, WaterMaterial, WaterMeshBuffers, WATER_SURFACE_Y,
 };
 
-/// Max relief per spec §3.3 ("max relief 200-400 m") — picked the midpoint.
-// Was 300 (spec: max relief 200-400m): that much artificial relief buried
-// road ribbons between their sparse vertices and sliced terrain through
-// building prisms on slopes. 90m reads as gentle real-city relief.
+/// Legacy fallback vertical scale for the NORMALIZED (0..1) sim
+/// `Fields.terrain` heightfield — the procedural-relief path used only when a
+/// city ships no real-elevation channel (msgType=7). Real cities now bake a
+/// dedicated DEM heightfield in TRUE METERS (see `StaticElevation` /
+/// `GridSpace`), which bypasses this scale entirely.
+///
+/// Was 300 (spec §3.3: max relief 200-400m): that much artificial relief
+/// buried road ribbons between their sparse vertices and sliced terrain
+/// through building prisms on slopes. 90m reads as gentle procedural relief.
 pub const TERRAIN_Z_SCALE: f32 = 90.0;
+
+/// Vertical exaggeration applied to REAL (meters) elevation for readability.
+/// Kept at 1.0 = honest true-meters: at these city-block camera zooms real
+/// relief (SF's ~100 m hills over a few km) already reads clearly, and any
+/// exaggeration desyncs foundation-clamped buildings / draped roads from
+/// their real-world proportions. Exposed as a named constant so it is a
+/// single, documented knob rather than a magic literal if a future art pass
+/// wants gentle punch-up.
+pub const TERRAIN_VERTICAL_EXAGGERATION: f32 = 1.0;
 /// Water is rendered dead flat, slightly below the nominal ground plane so
 /// shorelines don't z-fight with adjacent land vertices.
 pub const WATER_LEVEL_Y: f32 = -0.4;
@@ -71,29 +85,49 @@ struct TerrainState {
     /// vertex-color attribute at build time, not read from the material
     /// each frame). `shader_water` flips when `water_quality` crosses
     /// zero (Potato flat-in-terrain vs Low+ separate water mesh).
-    key: Option<(u32, u32, Theme, bool)>,
+    key: Option<(u32, u32, Theme, bool, u32)>,
     entity: Option<Entity>,
     water_entity: Option<Entity>,
     material: Option<Handle<TerrainMaterial>>,
 }
 
-/// Real bilinear terrain sampler (replaces `mf_state::HeightAt`'s flat-
-/// ground placeholder). Cheap to clone (all backing arrays are `Arc`), so
-/// the `HeightAt` closure can hold one directly.
-struct TerrainSampleData {
-    field_w: i32,
-    field_h: i32,
+/// A regular sample-point grid over world space: point `(i, j)` sits at
+/// `(origin_x + i*cell_size, origin_y + j*cell_size)`. Used to describe both
+/// the height source (meters) and the water mask, which — since the real
+/// elevation channel and the sim water field differ in resolution — are no
+/// longer guaranteed to share a grid.
+#[derive(Clone, Copy)]
+struct GridSpace {
+    w: i32,
+    h: i32,
     cell_size: f32,
     origin_x: f32,
     origin_y: f32,
-    terrain: Arc<Vec<f32>>,
-    water: Arc<Vec<u8>>,
 }
 
-impl TerrainSampleData {
-    fn bilinear_f32(&self, arr: &[f32], gx: f32, gy: f32) -> f32 {
+impl GridSpace {
+    #[allow(clippy::type_complexity)]
+    fn corners(&self, gx: f32, gy: f32) -> (i32, i32, i32, i32, f32, f32) {
+        let x0 = gx.floor().clamp(0.0, (self.w - 1) as f32) as i32;
+        let y0 = gy.floor().clamp(0.0, (self.h - 1) as f32) as i32;
+        let x1 = (x0 + 1).min(self.w - 1);
+        let y1 = (y0 + 1).min(self.h - 1);
+        let tx = (gx - x0 as f32).clamp(0.0, 1.0);
+        let ty = (gy - y0 as f32).clamp(0.0, 1.0);
+        (x0, y0, x1, y1, tx, ty)
+    }
+
+    fn grid_coords(&self, x: f32, z: f32) -> (f32, f32) {
+        (
+            (x - self.origin_x) / self.cell_size,
+            (z - self.origin_y) / self.cell_size,
+        )
+    }
+
+    fn bilinear_f32(&self, arr: &[f32], x: f32, z: f32) -> f32 {
+        let (gx, gy) = self.grid_coords(x, z);
         let (x0, y0, x1, y1, tx, ty) = self.corners(gx, gy);
-        let w = self.field_w;
+        let w = self.w;
         let v00 = arr[(y0 * w + x0) as usize];
         let v10 = arr[(y0 * w + x1) as usize];
         let v01 = arr[(y1 * w + x0) as usize];
@@ -101,43 +135,45 @@ impl TerrainSampleData {
         (v00 * (1.0 - tx) + v10 * tx) * (1.0 - ty) + (v01 * (1.0 - tx) + v11 * tx) * ty
     }
 
-    fn bilinear_u8(&self, arr: &[u8], gx: f32, gy: f32) -> f32 {
+    fn bilinear_u8(&self, arr: &[u8], x: f32, z: f32) -> f32 {
+        let (gx, gy) = self.grid_coords(x, z);
         let (x0, y0, x1, y1, tx, ty) = self.corners(gx, gy);
-        let w = self.field_w;
+        let w = self.w;
         let v00 = arr[(y0 * w + x0) as usize] as f32;
         let v10 = arr[(y0 * w + x1) as usize] as f32;
         let v01 = arr[(y1 * w + x0) as usize] as f32;
         let v11 = arr[(y1 * w + x1) as usize] as f32;
         (v00 * (1.0 - tx) + v10 * tx) * (1.0 - ty) + (v01 * (1.0 - tx) + v11 * tx) * ty
     }
+}
 
-    #[allow(clippy::type_complexity)]
-    fn corners(&self, gx: f32, gy: f32) -> (i32, i32, i32, i32, f32, f32) {
-        let x0 = gx.floor().clamp(0.0, (self.field_w - 1) as f32) as i32;
-        let y0 = gy.floor().clamp(0.0, (self.field_h - 1) as f32) as i32;
-        let x1 = (x0 + 1).min(self.field_w - 1);
-        let y1 = (y0 + 1).min(self.field_h - 1);
-        let tx = (gx - x0 as f32).clamp(0.0, 1.0);
-        let ty = (gy - y0 as f32).clamp(0.0, 1.0);
-        (x0, y0, x1, y1, tx, ty)
-    }
+/// Real bilinear terrain sampler (replaces `mf_state::HeightAt`'s flat-
+/// ground placeholder). Cheap to clone (all backing arrays are `Arc`), so
+/// the `HeightAt` closure can hold one directly. `heights` is in TRUE METERS
+/// (already graded + exaggerated) on `height_space`; `water` is the sim
+/// water field on its own (coarser) `water_space`.
+struct TerrainSampleData {
+    height_space: GridSpace,
+    water_space: GridSpace,
+    heights: Arc<Vec<f32>>,
+    water: Arc<Vec<u8>>,
+}
 
+impl TerrainSampleData {
     /// `(x, z)` here is world X / Bevy Z (coordinate convention: world Y ->
     /// Bevy Z).
     fn sample(&self, x: f32, z: f32) -> f32 {
-        if self.field_w < 2 || self.field_h < 2 {
+        if self.height_space.w < 2 || self.height_space.h < 2 {
             return 0.0;
         }
-        let gx = (x - self.origin_x) / self.cell_size;
-        let gy = (z - self.origin_y) / self.cell_size;
-        let land_y = self.bilinear_f32(&self.terrain, gx, gy) * TERRAIN_Z_SCALE;
+        let land_y = self.height_space.bilinear_f32(&self.heights, x, z);
         // Shoreline height blends across a band instead of a hard `> 0.5`
         // cliff (#112): a binary cut on the bilinearly-interpolated water
         // fraction snapped whole cells between land height and water level,
         // giving a stair-stepped coast. Ease land -> water level across
         // [0.4, 0.6] so the shore descends smoothly (beach/quay) and inland
         // cells stay at true terrain height.
-        let water_frac = self.bilinear_u8(&self.water, gx, gy);
+        let water_frac = self.water_space.bilinear_u8(&self.water, x, z);
         if water_frac <= 0.4 {
             return land_y;
         }
@@ -171,7 +207,11 @@ fn build_terrain_system(
     };
     let divisor = effective.0.terrain_subdiv_divisor.max(1);
     let shader_water = effective.0.water_quality > 0;
-    let key = (f.version, divisor, *theme, shader_water);
+    // Fold the elevation channel's resolution (0 = none) into the rebuild key
+    // so the mesh rebuilds when the one-shot msgType=7 frame arrives after
+    // `fields` (elevation is static, so its res alone captures presence).
+    let elev_res = city.elevation.as_ref().map(|e| e.res).unwrap_or(0);
+    let key = (f.version, divisor, *theme, shader_water, elev_res);
     if state.key == Some(key) {
         return;
     }
@@ -189,33 +229,96 @@ fn build_terrain_system(
     if field_w < 2 || field_h < 2 || f.terrain.len() != (field_w * field_h) as usize {
         return;
     }
-    let cell_size = city_json.cell_size as f32;
-    let origin_x = city_json.origin_x as f32;
-    let origin_y = city_json.origin_y as f32;
+    let field_cell = city_json.cell_size as f32;
+    let field_origin_x = city_json.origin_x as f32;
+    let field_origin_y = city_json.origin_y as f32;
 
-    // Grade (flatten) the raw heightfield in a corridor under each road so
-    // `roads.rs`'s ribbons — which sample this same field via `HeightAt` —
-    // agree with the ground mesh instead of visually slicing a stripe
-    // across a downhill building's lower wall on slopes (issue #33).
-    // `f.terrain` is otherwise used verbatim below for both the visible
-    // mesh vertices and the `HeightAt` sampler, so grading it once here
-    // (before either consumer reads it) keeps roads/terrain/buildings (via
-    // `HeightAt.sample`, which buildings' footprint-min and stations both
-    // go through) all reading the same graded ground with no separate
-    // plumbing needed.
-    let graded_terrain = grade_terrain(
-        &f.terrain,
-        field_w,
-        field_h,
-        cell_size,
-        origin_x,
-        origin_y,
+    // The water/park sim fields keep their own (coarse, 96²) grid space.
+    // `GridSpace::grid_coords` treats the origin as the world position of grid
+    // sample (0,0) with NO half-cell term — i.e. the origin must be the first
+    // cell CENTRE (exactly how `height_space` bakes it below:
+    // `-HALF + 0.5·cell`). The sim field values ARE cell-centre samples
+    // (`fields.ts` `cellCenter`/`sampleField`, which subtracts 0.5), but
+    // `city_json.origin_x/y` is the field CORNER (`-(w·cell)/2 = -HALF`). Using
+    // the raw corner origin for bilinear sampling therefore displaced the whole
+    // rendered shoreline half a field cell (≈62.5 m) south-east of the true
+    // coastline, so shoreline-hugging roads ran into water ("land masses don't
+    // line up with roads", issue #141). Shift to the cell centre to match the
+    // sampler's convention and `height_space`. (Nearest-cell lookups like
+    // `traffic.rs` keep the corner origin — correct for their floor(), so
+    // `city_json.origin_x` is left untouched.)
+    let water_space = GridSpace {
+        w: field_w as i32,
+        h: field_h as i32,
+        cell_size: field_cell,
+        origin_x: field_origin_x + field_cell * 0.5,
+        origin_y: field_origin_y + field_cell * 0.5,
+    };
+
+    // Height source: prefer the real-elevation channel (msgType=7) in TRUE
+    // METERS at its own (finer) resolution; fall back to the normalized sim
+    // `f.terrain` scaled by TERRAIN_Z_SCALE for cities that ship no DEM.
+    // `world_size` is the full square edge (both channels cover it), so the
+    // elevation sample-point grid places point (0,0) at the first cell CENTER
+    // (`-HALF + 0.5*cell`, matching build-cities.ts's bake) with `cell =
+    // world_size/res`.
+    let (height_space, raw_heights) = match city.elevation.as_ref() {
+        Some(elev) if elev.res >= 2 && elev.heights.len() == (elev.res * elev.res) as usize => {
+            let res = elev.res;
+            let world_size = city_json.world_size as f32;
+            let cell = world_size / res as f32;
+            let origin = -world_size / 2.0 + cell * 0.5;
+            // Re-base to the city's lowest sample so inland cities (Cleveland
+            // ~172m ASL, Atlanta ~156m) sit on the y=0 water/ground plane like
+            // the coastal ones, instead of floating on an absolute-ASL plateau.
+            let base_m = elev.heights.iter().copied().min().unwrap_or(0) as f32;
+            let heights: Vec<f32> = elev
+                .heights
+                .iter()
+                .map(|&m| (m as f32 - base_m) * TERRAIN_VERTICAL_EXAGGERATION)
+                .collect();
+            (
+                GridSpace {
+                    w: res as i32,
+                    h: res as i32,
+                    cell_size: cell,
+                    origin_x: origin,
+                    origin_y: origin,
+                },
+                heights,
+            )
+        }
+        _ => {
+            let heights: Vec<f32> = f.terrain.iter().map(|&t| t * TERRAIN_Z_SCALE).collect();
+            (water_space, heights)
+        }
+    };
+
+    // Grade (flatten) the height source in a corridor under each road so
+    // `roads.rs`'s ribbons — which sample the SAME graded heights via
+    // `HeightAt` — agree with the ground mesh instead of visually slicing a
+    // stripe across a downhill building's lower wall on slopes (issue #33).
+    // Grading in the height grid's own space keeps roads/terrain/buildings
+    // (via `HeightAt.sample`, which buildings' footprint-min and stations
+    // both go through) all reading one graded ground with no extra plumbing.
+    let graded_heights = grade_terrain(
+        &raw_heights,
+        height_space.w as u32,
+        height_space.h as u32,
+        height_space.cell_size,
+        height_space.origin_x,
+        height_space.origin_y,
         &city_json.roads,
         city_json.road_scale as f32,
     );
 
     // Stepped grid indices for this tier's subdivision divisor, always
-    // including the far edge so the mesh reaches the city's full extent.
+    // including the far edge so the mesh reaches the city's full extent. The
+    // mesh now walks the HEIGHT grid (256² for DEM cities), so higher tiers
+    // resolve real relief crisply while the divisor still coarsens it on
+    // weaker GPUs.
+    let hf_w = height_space.w as u32;
+    let hf_h = height_space.h as u32;
     let stepped = |n: u32, step: u32| -> Vec<u32> {
         let mut v: Vec<u32> = (0..n).step_by(step as usize).collect();
         if *v.last().unwrap_or(&0) != n - 1 {
@@ -223,8 +326,8 @@ fn build_terrain_system(
         }
         v
     };
-    let xs = stepped(field_w, divisor);
-    let ys = stepped(field_h, divisor);
+    let xs = stepped(hf_w, divisor);
+    let ys = stepped(hf_h, divisor);
 
     let mut land_buf = MeshBuffers::new();
     let mut water_buf = WaterMeshBuffers::new();
@@ -235,46 +338,20 @@ fn build_terrain_system(
     let vertex_at = |ix: usize, iy: usize| -> (Vec3, Color, f32) {
         let gx = xs[ix];
         let gy = ys[iy];
-        let idx = (gy * field_w + gx) as usize;
-        let is_water = f.water.get(idx).copied().unwrap_or(0) >= 1;
-        let is_park = f.parks.get(idx).copied().unwrap_or(0) >= 1;
-        // Soft shoreline: average the 3x3 water mask so land/water edges
-        // blend instead of hard cell steps (visual fidelity).
-        let water_frac = {
-            let mut sum = 0.0_f32;
-            let mut n = 0.0_f32;
-            let gx_i = gx as i32;
-            let gy_i = gy as i32;
-            let fw = field_w as i32;
-            let fh = field_h as i32;
-            for dy in -1i32..=1 {
-                for dx in -1i32..=1 {
-                    let nx = gx_i + dx;
-                    let ny = gy_i + dy;
-                    if nx < 0 || ny < 0 || nx >= fw || ny >= fh {
-                        continue;
-                    }
-                    let nidx = (ny * fw + nx) as usize;
-                    sum += if f.water.get(nidx).copied().unwrap_or(0) >= 1 {
-                        1.0
-                    } else {
-                        0.0
-                    };
-                    n += 1.0;
-                }
-            }
-            if n > 0.0 {
-                sum / n
-            } else if is_water {
-                1.0
-            } else {
-                0.0
-            }
-        };
+        let idx = (gy * hf_w + gx) as usize;
+        // World position of this height-grid sample point.
+        let x = height_space.origin_x + gx as f32 * height_space.cell_size;
+        let z = height_space.origin_y + gy as f32 * height_space.cell_size;
+        // Water/park come from the (independently-resolved) sim fields,
+        // bilinearly sampled at this vertex's world position — a naturally
+        // soft shoreline that no longer depends on the height grid matching
+        // the field grid cell-for-cell (they differ for DEM cities).
+        let water_frac = water_space.bilinear_u8(&f.water, x, z).clamp(0.0, 1.0);
+        let is_park = water_space.bilinear_u8(&f.parks, x, z) > 0.5;
         let y = if water_frac > 0.5 {
             WATER_LEVEL_Y
         } else {
-            graded_terrain.get(idx).copied().unwrap_or(0.0) * TERRAIN_Z_SCALE
+            graded_heights.get(idx).copied().unwrap_or(0.0)
         };
         let land = if is_park { park } else { ground };
         // Potato: bake water into vertex color (status quo). Low+: land
@@ -290,8 +367,6 @@ fn build_terrain_system(
         } else {
             land
         };
-        let x = origin_x + gx as f32 * cell_size;
-        let z = origin_y + gy as f32 * cell_size;
         (Vec3::new(x, y, z), color, water_frac)
     };
 
@@ -364,6 +439,7 @@ fn build_terrain_system(
                 cloud_shadows.strength,
                 cloud_shadows.inv_scale,
             ),
+            weather: Vec4::ZERO,
             cloud_noise: Some(cloud_shadows.texture.clone()),
         },
     });
@@ -388,12 +464,9 @@ fn build_terrain_system(
     }
 
     let data = Arc::new(TerrainSampleData {
-        field_w: field_w as i32,
-        field_h: field_h as i32,
-        cell_size,
-        origin_x,
-        origin_y,
-        terrain: Arc::new(graded_terrain),
+        height_space,
+        water_space,
+        heights: Arc::new(graded_heights),
         water: Arc::new(f.water.clone()),
     });
     height_at.0 = Box::new(move |x, z| data.sample(x, z));
@@ -654,6 +727,50 @@ fn apply_cloud_shadow_to_terrain_system(
         );
         if mat.extension.cloud_noise.is_none() && shadows.texture != Handle::default() {
             mat.extension.cloud_noise = Some(shadows.texture.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GridSpace;
+
+    /// Locks the `GridSpace` bilinear convention that the `water_space` fix
+    /// depends on: the origin is the world position of grid sample (0,0) with
+    /// NO half-cell term, so a `GridSpace` built at the first cell CENTRE must
+    /// map that centre to grid coord 0.0 and return the cell's exact value.
+    /// A regression to a CORNER origin (the half-cell bug behind roads running
+    /// into water, issue #141) shifts this and fails the exact-value asserts.
+    #[test]
+    fn bilinear_u8_hits_cell_centres_under_centre_origin() {
+        // Mirror how build_terrain_system now builds water_space: field of
+        // side `n`, cell `world/n`, origin at the first cell CENTRE.
+        let n: i32 = 4;
+        let world = 12000.0_f32;
+        let cell = world / n as f32;
+        let corner = -world / 2.0;
+        let centre_origin = corner + cell * 0.5;
+        let space = GridSpace {
+            w: n,
+            h: n,
+            cell_size: cell,
+            origin_x: centre_origin,
+            origin_y: centre_origin,
+        };
+        // A distinctive per-cell pattern so an off-by-one/half-cell shift shows.
+        let vals: Vec<u8> = (0..(n * n)).map(|i| (i * 17 % 251) as u8).collect();
+        for gy in 0..n {
+            for gx in 0..n {
+                // World position of this cell's centre.
+                let x = corner + (gx as f32 + 0.5) * cell;
+                let z = corner + (gy as f32 + 0.5) * cell;
+                let got = space.bilinear_u8(&vals, x, z);
+                let want = vals[(gy * n + gx) as usize] as f32;
+                assert!(
+                    (got - want).abs() < 1e-3,
+                    "cell ({gx},{gy}) at world ({x},{z}): got {got}, want {want}",
+                );
+            }
         }
     }
 }

@@ -19,7 +19,7 @@ use bevy::pbr::{
 };
 use bevy::prelude::*;
 
-use mf_state::{AttractLighting, EffectiveKnobs, LatestUi, Theme};
+use mf_state::{AttractLighting, EffectiveKnobs, LatestUi, Theme, WeatherRender};
 
 use crate::palette;
 use crate::photomode::PhotoModeRender;
@@ -227,6 +227,7 @@ pub(crate) fn apply_day_night_system(
     mut ambient: ResMut<AmbientLight>,
     effective: Res<EffectiveKnobs>,
     theme: Res<Theme>,
+    weather: Res<WeatherRender>,
     mut suns: Query<(&mut DirectionalLight, &mut Transform), With<Sun>>,
     mut fogs: Query<&mut DistanceFog, With<Camera3d>>,
 ) {
@@ -258,9 +259,23 @@ pub(crate) fn apply_day_night_system(
     let quality_or_theme_changed = effective.is_changed() || theme.is_changed();
     let night_dirty = state.applied_night_bucket != Some(night_bucket) || quality_or_theme_changed;
     let hour_dirty = state.applied_hour_bucket != Some(hour_bucket) || quality_or_theme_changed;
-    if !night_dirty && !hour_dirty {
+    // Weather grades the light every frame it is transitioning / flashing:
+    // `WeatherRender` only marks itself changed while a weight is actually
+    // moving (its driver bypasses change-detection at steady state), so this
+    // recomputes the sun/ambient during weather but idles when settled.
+    let weather_dirty = weather.is_changed();
+    if !night_dirty && !hour_dirty && !weather_dirty {
         return;
     }
+    // Overcast/storm close the sky: dim the key sun, lift ambient fill so the
+    // white city flattens instead of going muddy (the issue #40 ambient-fill
+    // pattern). A lightning flash is a brief additive luminance pulse on both
+    // ambient and the key light (no geometry) — the cloud cards + this pulse
+    // are the whole flash.
+    let overcast = (weather.overcast + weather.storm * 0.6).clamp(0.0, 1.0);
+    let sun_dim = 1.0 - overcast * 0.55;
+    let ambient_lift = 1.0 + overcast * 0.55;
+    let flash = weather.lightning;
 
     let n = state.night_factor;
     if night_dirty {
@@ -294,8 +309,23 @@ pub(crate) fn apply_day_night_system(
         ambient.color = Color::WHITE
             .mix(&Color::srgb(1.0, 0.82, 0.62), warm * 0.40)
             .mix(&Color::srgb(0.70, 0.78, 1.0), n * 0.45);
-        ambient.brightness = 550.0 * (1.0 - n * 0.85);
     }
+
+    // Ambient skylight tracks the sun's height, not just the night factor
+    // (issue #40). With a flat 550-lux ambient, a midday cast shadow sits
+    // ~60x below sunlit faces; in districts where tall tight blocks put
+    // nearly every facade below the roofline in true cast shadow, that whole
+    // half of the skyline collapses into one flat grey mass — and where the
+    // building-height regime steps down across an avenue, the lit/shaded
+    // boundary reads as a hard vertical renderer "seam" (the shadowing is
+    // geometrically correct; the rendering of it is too harsh). Real skies
+    // fill shadows hardest at noon, so scale ambient with elevation:
+    // shadowed facades keep separation at high sun while `sun_elevation`
+    // is 0 through dusk/night, leaving golden-hour and night looks alone.
+    // Written on hour OR night dirt so the fill follows the climbing sun.
+    ambient.brightness =
+        550.0 * (1.0 + state.sun_elevation * 1.25) * (1.0 - n * 0.85) * ambient_lift
+            + flash * 2600.0;
 
     state.applied_hour_bucket = Some(hour_bucket);
 
@@ -322,7 +352,11 @@ pub(crate) fn apply_day_night_system(
         // Night floor is moonlight, not the old 8k-lux basement floodlight.
         // Soft high key: 30k keeps lit faces just under clip so white-on-white
         // geometry keeps separation and black roads stay legible.
-        let day_lux = 2_000.0 + elev_sin.max(0.0) * 30_000.0;
+        let elev_pos = elev_sin.max(0.0);
+        // Shave ~10% off the zenith peak: paired with the elevation-scaled
+        // ambient above, this narrows the lit-vs-shaded gap at high sun
+        // without dimming golden-hour light (the trim vanishes as elev -> 0).
+        let day_lux = 2_000.0 + elev_pos * 30_000.0 * (1.0 - 0.10 * elev_pos);
         // Softly dim through the shadow-off band so the last frames before
         // disable aren't a hard contrast pop.
         let night_dim = if n > SHADOW_ON_NIGHT {
@@ -330,7 +364,7 @@ pub(crate) fn apply_day_night_system(
         } else {
             1.0
         };
-        light.illuminance = day_lux * night_dim;
+        light.illuminance = day_lux * night_dim * sun_dim + flash * 45_000.0;
         let twilight = {
             let t = 1.0 - ((n - 0.5).abs() * 2.0);
             t.clamp(0.0, 1.0).powf(1.2)

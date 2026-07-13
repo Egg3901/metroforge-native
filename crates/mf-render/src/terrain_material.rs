@@ -18,6 +18,12 @@ pub struct TerrainExtension {
     /// Cloud shadow: (offset_u, offset_v, strength, inv_scale).
     #[uniform(100)]
     pub cloud: Vec4,
+    /// Weather: (snow_depth, _, _, _). `snow_depth` (0..1) lerps the lit
+    /// ground/park output toward white so accumulation reads on the already
+    /// white city without touching baked vertex colors (v0.7). The remaining
+    /// lanes are reserved so the uniform can grow without a bind-group churn.
+    #[uniform(103)]
+    pub weather: Vec4,
     #[texture(101)]
     #[sampler(102)]
     pub cloud_noise: Option<Handle<Image>>,
@@ -27,6 +33,7 @@ impl Default for TerrainExtension {
     fn default() -> Self {
         TerrainExtension {
             cloud: Vec4::new(0.0, 0.0, 0.0, 1.0 / 1_100.0),
+            weather: Vec4::ZERO,
             cloud_noise: None,
         }
     }

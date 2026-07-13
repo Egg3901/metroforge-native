@@ -1,0 +1,59 @@
+{
+  "id": "nyc-pressure",
+  "label": "Pressure Cooker",
+  "description": "Tight cash, locked buses. Hit 2000 riders, 100% farebox, and 10% coverage before day 50.",
+  "cityKey": "nyc",
+  "tier": 5,
+  "difficulty": "hard",
+  "startingBudget": 7500000,
+  "startingModes": ["bus"],
+  "lockModes": true,
+  "dailySubsidy": 18000,
+  "deadlineDays": 50,
+  "eraLabel": "Pressure",
+  "win": {
+    "and": [
+      {
+        "metric": "dailyTransitTrips",
+        "op": ">=",
+        "value": 2000,
+        "label": "Carry 2000 daily riders"
+      },
+      {
+        "metric": "fareboxRecovery",
+        "op": ">=",
+        "value": 1.0,
+        "label": "Farebox recovery at least 100%"
+      },
+      {
+        "metric": "coverage",
+        "op": ">=",
+        "value": 0.1,
+        "label": "Cover 10% of residents"
+      }
+    ]
+  },
+  "lose": {
+    "metric": "cash",
+    "op": "<",
+    "value": -200000,
+    "label": "Cash below -$200k"
+  },
+  "events": [
+    {
+      "id": "nyc-pressure-boom",
+      "day": 8,
+      "kind": "districtDemandMult",
+      "densityRank": 0,
+      "mult": 2,
+      "message": "A district doubles its demand. Serve it or drown in cars."
+    },
+    {
+      "id": "nyc-pressure-austerity",
+      "day": 25,
+      "kind": "cashDelta",
+      "amount": -750000,
+      "message": "Austerity order. $750k yanked from the operating budget."
+    }
+  ]
+}

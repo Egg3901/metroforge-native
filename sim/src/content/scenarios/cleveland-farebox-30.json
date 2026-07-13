@@ -1,0 +1,40 @@
+{
+  "id": "cleveland-farebox-30",
+  "label": "Pay the Bills",
+  "description": "500 daily riders and farebox recovery above 60% within 30 days. Day 10 doubles demand in the densest district.",
+  "cityKey": "cleveland",
+  "tier": 2,
+  "difficulty": "easy",
+  "startingBudget": 10000000,
+  "startingModes": ["bus"],
+  "lockModes": true,
+  "dailySubsidy": 30000,
+  "deadlineDays": 30,
+  "eraLabel": "1955",
+  "win": {
+    "and": [
+      {
+        "metric": "dailyTransitTrips",
+        "op": ">=",
+        "value": 500,
+        "label": "Carry 500 daily riders"
+      },
+      {
+        "metric": "fareboxRecovery",
+        "op": ">",
+        "value": 0.6,
+        "label": "Farebox recovery above 60%"
+      }
+    ]
+  },
+  "events": [
+    {
+      "id": "cle-demand-surge",
+      "day": 10,
+      "kind": "districtDemandMult",
+      "densityRank": 0,
+      "mult": 2,
+      "message": "West side boom. The densest district doubles its travel demand."
+    }
+  ]
+}

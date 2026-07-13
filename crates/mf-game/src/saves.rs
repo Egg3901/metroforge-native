@@ -71,7 +71,7 @@ pub const DEFAULT_AUTOSAVE_INTERVAL_DAYS: u32 = 10;
 
 /// Current on-disk wrapper schema. Bump + add a migration when the
 /// wrapper shape changes. Sim-blob versioning stays in the TS sidecar.
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// One save destination: a numbered slot (1..=[`SLOT_COUNT`]) or one
 /// entry in the autosave ring (0..[`AUTOSAVE_RING_SIZE`]).
@@ -119,11 +119,24 @@ pub struct SaveMeta {
     /// is not cheap, so this stays `None` unless a future path fills it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumbnail_png_base64: Option<String>,
+    /// Explicit shareable seed (#140): `PendingInit::seed` at save time, so
+    /// the Load browser can show the world seed a save was started from.
+    /// `Option` (not a bare `u64`) because pre-v2 saves, migrated forward,
+    /// have no recorded seed to backfill — `#[serde(default)]` makes old
+    /// on-disk documents that predate this field deserialize to `None`
+    /// rather than failing to load.
+    #[serde(default)]
+    pub seed: Option<u64>,
 }
 
 impl SaveMeta {
     /// Snapshot display metadata from the live UI + playtime tracker.
-    pub fn from_ui(city_label: Option<String>, ui: &UiState, playtime_secs: u64) -> Self {
+    pub fn from_ui(
+        city_label: Option<String>,
+        ui: &UiState,
+        playtime_secs: u64,
+        seed: Option<u64>,
+    ) -> Self {
         SaveMeta {
             city_label,
             day: ui.day,
@@ -132,6 +145,7 @@ impl SaveMeta {
             network_size: (ui.stations.len() + ui.tracks.len()) as u32,
             playtime_secs,
             thumbnail_png_base64: None,
+            seed,
         }
     }
 }
@@ -179,7 +193,7 @@ type MigrationFn = fn(Value) -> anyhow::Result<Value>;
 /// Ordered (from_version, migrate_to_from_plus_one) steps. Each entry
 /// advances the document by exactly one schema version.
 fn migration_registry() -> &'static [(u32, MigrationFn)] {
-    &[(0, migrate_v0_to_v1)]
+    &[(0, migrate_v0_to_v1), (1, migrate_v1_to_v2)]
 }
 
 /// Legacy v0.4 wrapper: `{"meta": {...}, "sim": ...}` with no
@@ -197,6 +211,24 @@ fn migrate_v0_to_v1(mut doc: Value) -> anyhow::Result<Value> {
         // thumbnail stays absent → None via serde default
     }
     obj.insert("schema_version".to_string(), json!(1));
+    Ok(doc)
+}
+
+/// v1 -> v2 (#140, explicit shareable seed): adds `meta.seed`. v1 saves
+/// predate the seed field entirely, so there's nothing to backfill it
+/// from — leave it absent and let `#[serde(default)]` on
+/// `SaveMeta::seed` deserialize it as `None` (shown as "unknown" rather
+/// than a fabricated seed in the Load browser).
+fn migrate_v1_to_v2(mut doc: Value) -> anyhow::Result<Value> {
+    let obj = doc
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("save document is not a JSON object"))?;
+    if !obj.contains_key("meta") || !obj.contains_key("sim") {
+        anyhow::bail!("v1 save missing meta/sim");
+    }
+    // No field insert needed: `seed` is absent on the v1 doc, and
+    // `#[serde(default)]` handles that at deserialize time.
+    obj.insert("schema_version".to_string(), json!(2));
     Ok(doc)
 }
 
@@ -679,6 +711,7 @@ fn autosave_system(
         Some(pending_init.preset_key.clone()),
         state,
         playtime.whole_secs(),
+        Some(pending_init.seed),
     );
     manager.request_save(slot, meta, &link, &mut toasts, &mut sfx);
     manager.last_autosave_day = Some(state.day);
@@ -812,6 +845,7 @@ mod tests {
             network_size: 12,
             playtime_secs: 3_600,
             thumbnail_png_base64: None,
+            seed: Some(987_654_321),
         }
     }
 
@@ -885,7 +919,26 @@ mod tests {
         .to_string()
     }
 
-    fn fixture_v1_canonical() -> String {
+    /// v1 shape (pre-#140): `schema_version: 1`, no `meta.seed` at all —
+    /// distinct from `fixture_v0_legacy` (no `schema_version`/no v1 fields)
+    /// so the matrix below exercises the v1->v2 migration specifically.
+    fn fixture_v1_no_seed() -> String {
+        json!({
+            "schema_version": 1,
+            "meta": {
+                "city_label": "cleveland",
+                "day": 25,
+                "cash": 750_000.0,
+                "saved_at_epoch_secs": 1_700_100_000_u64,
+                "network_size": 8,
+                "playtime_secs": 1_200
+            },
+            "sim": serde_json::from_str::<Value>(FIXTURE_SIM).unwrap()
+        })
+        .to_string()
+    }
+
+    fn fixture_v2_canonical() -> String {
         build_wrapper_json(
             &SaveMeta {
                 city_label: Some("cleveland".to_string()),
@@ -895,6 +948,7 @@ mod tests {
                 network_size: 8,
                 playtime_secs: 1_200,
                 thumbnail_png_base64: None,
+                seed: Some(42),
             },
             FIXTURE_SIM,
         )
@@ -903,7 +957,11 @@ mod tests {
 
     #[test]
     fn schema_fixture_matrix_loads_every_version() {
-        let fixtures: &[(u32, String)] = &[(0, fixture_v0_legacy()), (1, fixture_v1_canonical())];
+        let fixtures: &[(u32, String)] = &[
+            (0, fixture_v0_legacy()),
+            (1, fixture_v1_no_seed()),
+            (2, fixture_v2_canonical()),
+        ];
         assert_eq!(
             fixtures.len(),
             CURRENT_SCHEMA_VERSION as usize + 1,
@@ -942,6 +1000,24 @@ mod tests {
         assert_eq!(meta.network_size, 0);
         assert_eq!(meta.playtime_secs, 0);
         assert_eq!(meta.thumbnail_png_base64, None);
+        assert_eq!(meta.seed, None);
+    }
+
+    #[test]
+    fn v1_migration_backfills_seed_as_none() {
+        let (meta, _) = parse_wrapper_json(&fixture_v1_no_seed()).unwrap();
+        assert_eq!(meta.city_label.as_deref(), Some("cleveland"));
+        assert_eq!(meta.day, 25);
+        // v1 saves predate the seed field: no way to backfill a real
+        // value, so migration must leave it `None` rather than fabricate
+        // one or fail to load.
+        assert_eq!(meta.seed, None);
+    }
+
+    #[test]
+    fn v2_canonical_round_trips_seed() {
+        let (meta, _) = parse_wrapper_json(&fixture_v2_canonical()).unwrap();
+        assert_eq!(meta.seed, Some(42));
     }
 
     #[test]
@@ -1084,6 +1160,7 @@ mod tests {
                     network_size: 1,
                     playtime_secs: 60,
                     thumbnail_png_base64: None,
+                    seed: None,
                 }),
             },
             SlotEntry {
@@ -1096,6 +1173,7 @@ mod tests {
                     network_size: 2,
                     playtime_secs: 120,
                     thumbnail_png_base64: None,
+                    seed: None,
                 }),
             },
             SlotEntry {
@@ -1108,6 +1186,7 @@ mod tests {
                     network_size: 3,
                     playtime_secs: 30,
                     thumbnail_png_base64: None,
+                    seed: None,
                 }),
             },
         ];

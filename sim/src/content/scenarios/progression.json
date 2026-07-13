@@ -1,0 +1,55 @@
+{
+  "starters": [
+    "cleveland-first-riders",
+    "nyc-first-thousand"
+  ],
+  "unlocks": {
+    "cleveland-first-riders": [
+      "cleveland-five-hundred",
+      "cleveland-farebox-30"
+    ],
+    "cleveland-five-hundred": [
+      "cleveland-farebox-80",
+      "cleveland-roadworks"
+    ],
+    "cleveland-farebox-30": [
+      "cleveland-reach"
+    ],
+    "cleveland-farebox-80": [
+      "cleveland-austerity"
+    ],
+    "cleveland-reach": [
+      "cleveland-tram-line"
+    ],
+    "cleveland-roadworks": [
+      "cleveland-tram-line"
+    ],
+    "cleveland-tram-line": [
+      "cleveland-austerity",
+      "nyc-bus-spine"
+    ],
+    "cleveland-austerity": [
+      "nyc-last-stand"
+    ],
+    "nyc-first-thousand": [
+      "nyc-farebox-80",
+      "nyc-bus-spine"
+    ],
+    "nyc-farebox-80": [
+      "nyc-dig-season"
+    ],
+    "nyc-bus-spine": [
+      "nyc-pressure",
+      "nyc-express"
+    ],
+    "nyc-dig-season": [
+      "nyc-express"
+    ],
+    "nyc-pressure": [
+      "nyc-last-stand"
+    ],
+    "nyc-express": [
+      "nyc-last-stand"
+    ]
+  }
+}

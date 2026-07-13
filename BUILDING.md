@@ -13,7 +13,7 @@ release tagging) see [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 | **Rust** | Pinned in `rust-toolchain.toml` (currently `1.96`). `rustup` installs it automatically; needs `rustfmt` + `clippy`. |
 | **Linux system libs** | `libasound2-dev`, `libudev-dev`, `pkg-config` (Bevy audio + udev). |
 | **Bun 1.3** | Sidecar compile + the `bun run sidecar/index.ts` dev fallback. |
-| **Sibling `metroforge` checkout** | At `../metroforge` relative to this repo. Sidecar source lives in `metroforge/sidecar/`. |
+| **In-repo `sim/`** | The TypeScript sim + sidecar source (`metroforge-sim`) lives at `sim/` in this repo. |
 | **Windows cross-compile (optional)** | `clang`, `llvm`, `lld`, `cargo-xwin`, and `rustup target add x86_64-pc-windows-msvc`. |
 
 ```sh
@@ -185,27 +185,31 @@ the Windows sidecar.
 ## Sidecar (Bun)
 
 The sim is **not** rebuilt in Rust. Release builds compile the TypeScript
-sidecar from the sibling `metroforge` repo (pinned SHA in `release.yml`):
+sidecar from the in-repo `sim/` package:
 
 ```sh
-# from the metroforge checkout
+# from the sim/ package
+cd sim
 bun install
-mkdir -p ../metroforge-native/dist-sidecar
+mkdir -p ../dist-sidecar
 
 # Linux
 bun build --compile --target=bun-linux-x64 ./sidecar/index.ts \
-  --outfile ../metroforge-native/dist-sidecar/metroforge-sidecar
+  --outfile ../dist-sidecar/metroforge-sidecar
 
 # Windows (cross-compile from Linux/macOS)
 bun build --compile --target=bun-windows-x64 ./sidecar/index.ts \
-  --outfile ../metroforge-native/dist-sidecar/metroforge-sidecar.exe
+  --outfile ../dist-sidecar/metroforge-sidecar.exe
 
 # macOS Apple Silicon
 bun build --compile --target=bun-darwin-arm64 ./sidecar/index.ts \
-  --outfile ../metroforge-native/dist-sidecar/metroforge-sidecar-darwin-arm64
+  --outfile ../dist-sidecar/metroforge-sidecar-darwin-arm64
 ```
 
-Dev fallback (no prebuilt binary): with `../metroforge` present and `bun` on
+Equivalently, `cd sim && bun run compile:linux` (also `compile:windows`,
+`compile:darwin-arm64`).
+
+Dev fallback (no prebuilt binary): with `sim/` present and `bun` on
 `PATH`, `cargo run -p mf-game` lets `mf-net` exec `bun run sidecar/index.ts`.
 
 Package client + sidecar together with `./scripts/package.sh <linux|windows|macos> <version>`.

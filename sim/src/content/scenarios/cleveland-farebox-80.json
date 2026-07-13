@@ -1,0 +1,30 @@
+{
+  "id": "cleveland-farebox-80",
+  "label": "Farebox Target",
+  "description": "Economic drill. Hit 80% farebox recovery with 400 daily riders before day 40.",
+  "cityKey": "cleveland",
+  "tier": 2,
+  "difficulty": "normal",
+  "startingBudget": 8000000,
+  "startingModes": ["bus"],
+  "lockModes": true,
+  "dailySubsidy": 15000,
+  "deadlineDays": 40,
+  "eraLabel": "Ledger",
+  "win": {
+    "and": [
+      {
+        "metric": "dailyTransitTrips",
+        "op": ">=",
+        "value": 400,
+        "label": "Carry 400 daily riders"
+      },
+      {
+        "metric": "fareboxRecovery",
+        "op": ">=",
+        "value": 0.8,
+        "label": "Farebox recovery at least 80%"
+      }
+    ]
+  }
+}

@@ -473,8 +473,8 @@ Stdout is piped; stderr inherited; stdin null. Handshake: one JSON line within
 2. **Next to the running exe** — `{exe_dir}/metroforge-sidecar` (or
    `metroforge-sidecar.exe` on Windows).
 3. **Dev fallback** — `bun run sidecar/index.ts` with
-   `cwd = /root/metroforge`, only if
-   `/root/metroforge/sidecar/index.ts` exists. Bun is resolved via `PATH`,
+   `cwd = <repo>/sim` (resolved from the crate's `CARGO_MANIFEST_DIR`), only if
+   `<repo>/sim/sidecar/index.ts` exists. Bun is resolved via `PATH`,
    else `$HOME/.bun/bin/bun`, else the string `"bun"`.
 
 On Windows, spawn uses `CREATE_NO_WINDOW` so a second console does not appear.

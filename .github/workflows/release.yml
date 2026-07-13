@@ -54,19 +54,6 @@ jobs:
         with:
           path: metroforge-native
 
-      # The TypeScript sidecar (spec §2) lives in a sibling repo.
-      #
-      # NOTE(sidecar-merged 2026-07-10): the sidecar merged to metroforge
-      # master via PR #17/#18. Pinned to that merge SHA (not the branch name)
-      # so an unrelated upstream metroforge change can't silently break a
-      # release build; bump the SHA deliberately when pulling sidecar changes.
-      - name: Checkout metroforge (sidecar source)
-        uses: actions/checkout@v4
-        with:
-          repository: Egg3901/metroforge
-          ref: 5ec720a80ae29027805b2abced6a3ce833bf2177
-          path: metroforge
-
       - name: Derive version from tag
         id: version
         run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
@@ -76,20 +63,22 @@ jobs:
         with:
           bun-version: 1.3
 
-      - name: bun install (sidecar deps)
-        working-directory: metroforge/sidecar
+      # The TypeScript sidecar (spec §2) now lives in-repo at ./sim (monorepo
+      # consolidation, #140). No sibling checkout / SHA pin needed.
+      - name: bun install (sim deps)
+        working-directory: metroforge-native/sim
         run: bun install
 
       - name: Create dist-sidecar staging dir
         run: mkdir -p metroforge-native/dist-sidecar
 
       - name: Compile sidecar (linux-x64)
-        working-directory: metroforge
-        run: bun build --compile --target=bun-linux-x64 ./sidecar/index.ts --outfile ../metroforge-native/dist-sidecar/metroforge-sidecar
+        working-directory: metroforge-native/sim
+        run: bun build --compile --target=bun-linux-x64 ./sidecar/index.ts --outfile ../dist-sidecar/metroforge-sidecar
 
       - name: Compile sidecar (windows-x64)
-        working-directory: metroforge
-        run: bun build --compile --target=bun-windows-x64 ./sidecar/index.ts --outfile ../metroforge-native/dist-sidecar/metroforge-sidecar.exe
+        working-directory: metroforge-native/sim
+        run: bun build --compile --target=bun-windows-x64 ./sidecar/index.ts --outfile ../dist-sidecar/metroforge-sidecar.exe
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -204,6 +193,18 @@ jobs:
             exit 1
           fi
 
+      # Third gate: render an in-city hero frame on EACH of the four quality
+      # tiers (potato/low/medium/high). native#102 shipped a Potato/Low
+      # in-city black void while High rendered fine — a tier-specific
+      # regression the single-tier gates above cannot see. The plain in-city
+      # gate is also fooled on low tiers (HUD chrome alone clears its 1000
+      # floor over a void world), so this drives the verify harness to a
+      # daytime hero-framed city per tier with a floor set above UI-only.
+      - name: Smoke-test all four quality tiers (in-city, per-tier floor)
+        working-directory: metroforge-native
+        run: |
+          bash scripts/tier-smoke.sh /tmp/mf-smoke/metroforge /tmp/mf-smoke/tiers 90
+
       - name: Upload smoke screenshot (always, for eyeballing)
         if: always()
         uses: actions/upload-artifact@v4
@@ -212,6 +213,7 @@ jobs:
           path: |
             /tmp/mf-smoke/shot.png
             /tmp/mf-smoke/shot-city.png
+            /tmp/mf-smoke/tiers/*/default.png
           if-no-files-found: ignore
 
       - name: Upload release assets
@@ -238,15 +240,6 @@ jobs:
         with:
           path: metroforge-native
 
-      # NOTE(sidecar-merged 2026-07-10): see the identical checkout step in
-      # the linux-and-windows job above — same pinned SHA, same rationale.
-      - name: Checkout metroforge (sidecar source)
-        uses: actions/checkout@v4
-        with:
-          repository: Egg3901/metroforge
-          ref: 5ec720a80ae29027805b2abced6a3ce833bf2177
-          path: metroforge
-
       - name: Derive version from tag
         id: version
         run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
@@ -256,8 +249,10 @@ jobs:
         with:
           bun-version: 1.3
 
-      - name: bun install (sidecar deps)
-        working-directory: metroforge/sidecar
+      # The TypeScript sidecar (spec §2) now lives in-repo at ./sim (monorepo
+      # consolidation, #140). No sibling checkout / SHA pin needed.
+      - name: bun install (sim deps)
+        working-directory: metroforge-native/sim
         run: bun install
 
       - name: Create dist-sidecar staging dir
@@ -265,8 +260,8 @@ jobs:
 
       # GitHub's macos-latest runners are Apple Silicon.
       - name: Compile sidecar (darwin-arm64)
-        working-directory: metroforge
-        run: bun build --compile --target=bun-darwin-arm64 ./sidecar/index.ts --outfile ../metroforge-native/dist-sidecar/metroforge-sidecar-darwin-arm64
+        working-directory: metroforge-native/sim
+        run: bun build --compile --target=bun-darwin-arm64 ./sidecar/index.ts --outfile ../dist-sidecar/metroforge-sidecar-darwin-arm64
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

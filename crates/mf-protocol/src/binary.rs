@@ -16,7 +16,7 @@ pub enum BinaryError {
         /// Actual buffer length.
         got: usize,
     },
-    /// Byte 0 was not a known `msgType` (1–5).
+    /// Byte 0 was not a known `msgType` (1–5, 7).
     #[error("unknown binary msgType {0}")]
     UnknownMsgType(u8),
     /// Byte 1 was not an accepted wire version for this `msgType`.
@@ -618,6 +618,64 @@ impl StaticBuildings {
     }
 }
 
+/// msgType=7 — one static real-elevation heightfield, sent once right after
+/// `ready` (same class as `StaticMask`/`StaticBuildings`). Carries real DEM
+/// elevation in TRUE METERS at its own `res` (decoupled from the coarse
+/// `Fields.terrain` sim grid). Purely additive/optional: a client that
+/// ignores msgType=7 falls back to the sim field's normalized terrain, so
+/// this does NOT bump `PROTOCOL_VERSION` (mirrors msgType=5's precedent).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StaticElevation {
+    /// Side length in cells; `heights` is `res * res` entries, row-major
+    /// over the world square (row 0 = north/min-Z edge, matching the masks).
+    pub res: u32,
+    /// `res * res` signed elevation samples in whole meters, row-major.
+    pub heights: Vec<i16>,
+}
+
+const STATIC_ELEVATION_HEADER_LEN: usize = 12;
+
+impl StaticElevation {
+    /// Decode a msgType=7 elevation frame from a little-endian byte buffer.
+    pub fn decode(b: &[u8]) -> Result<Self, BinaryError> {
+        if b.len() < STATIC_ELEVATION_HEADER_LEN {
+            return Err(BinaryError::TooShort {
+                need: STATIC_ELEVATION_HEADER_LEN,
+                got: b.len(),
+            });
+        }
+        check_msg_type(b, 7)?;
+        let res = u32_at(b, 4)?;
+        let count = (res as usize) * (res as usize);
+        let need = count * 2;
+        let slice = b
+            .get(STATIC_ELEVATION_HEADER_LEN..STATIC_ELEVATION_HEADER_LEN + need)
+            .ok_or(BinaryError::TooShort {
+                need: STATIC_ELEVATION_HEADER_LEN + need,
+                got: b.len(),
+            })?;
+        let heights = slice
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        Ok(StaticElevation { res, heights })
+    }
+
+    /// Encode this heightfield as a msgType=7 little-endian frame.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(STATIC_ELEVATION_HEADER_LEN + self.heights.len() * 2);
+        out.push(7);
+        out.push(1);
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&self.res.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        for h in &self.heights {
+            out.extend_from_slice(&h.to_le_bytes());
+        }
+        out
+    }
+}
+
 /// Every msgType except 5 (`StaticBuildings`) only ever speaks wire version
 /// 1 — this is the common case, checked strictly.
 fn check_msg_type(b: &[u8], expected: u8) -> Result<(), BinaryError> {
@@ -656,6 +714,8 @@ pub enum BinaryMsg {
     Mask(StaticMask),
     /// msgType=5 building footprints.
     Buildings(StaticBuildings),
+    /// msgType=7 static real-elevation heightfield.
+    Elevation(StaticElevation),
 }
 
 /// Decode any binary hot-path frame by dispatching on byte 0 (`msgType`).
@@ -667,6 +727,7 @@ pub fn decode_binary(b: &[u8]) -> Result<BinaryMsg, BinaryError> {
         3 => Ok(BinaryMsg::Traffic(Traffic::decode(b)?)),
         4 => Ok(BinaryMsg::Mask(StaticMask::decode(b)?)),
         5 => Ok(BinaryMsg::Buildings(StaticBuildings::decode(b)?)),
+        7 => Ok(BinaryMsg::Elevation(StaticElevation::decode(b)?)),
         other => Err(BinaryError::UnknownMsgType(other)),
     }
 }

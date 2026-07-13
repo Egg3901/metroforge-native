@@ -1,0 +1,80 @@
+{
+  "id": "nyc-last-stand",
+  "label": "Last Stand",
+  "description": "Brutal endgame. From day 30 hold 4000 riders, 100% farebox, and 12% coverage on a starved bus budget.",
+  "cityKey": "nyc",
+  "tier": 5,
+  "difficulty": "hard",
+  "startingBudget": 5500000,
+  "startingModes": ["bus"],
+  "lockModes": true,
+  "dailySubsidy": 10000,
+  "deadlineDays": 55,
+  "eraLabel": "Endgame",
+  "win": {
+    "and": [
+      {
+        "metric": "day",
+        "op": ">=",
+        "value": 30,
+        "label": "Hold through day 30"
+      },
+      {
+        "metric": "dailyTransitTrips",
+        "op": ">=",
+        "value": 4000,
+        "label": "Carry 4000 daily riders"
+      },
+      {
+        "metric": "fareboxRecovery",
+        "op": ">=",
+        "value": 1.0,
+        "label": "Farebox recovery at least 100%"
+      },
+      {
+        "metric": "coverage",
+        "op": ">=",
+        "value": 0.12,
+        "label": "Cover 12% of residents"
+      }
+    ]
+  },
+  "lose": {
+    "metric": "cash",
+    "op": "<",
+    "value": -150000,
+    "label": "Cash below -$150k"
+  },
+  "events": [
+    {
+      "id": "nyc-end-boom",
+      "day": 10,
+      "kind": "districtDemandMult",
+      "densityRank": 0,
+      "mult": 2.2,
+      "message": "Peak season. Densest district demand more than doubles."
+    },
+    {
+      "id": "nyc-end-cut-a",
+      "day": 18,
+      "kind": "cashDelta",
+      "amount": -600000,
+      "message": "Emergency cut. $600k yanked."
+    },
+    {
+      "id": "nyc-end-cut-b",
+      "day": 28,
+      "kind": "cashDelta",
+      "amount": -500000,
+      "message": "Second cut. Another $500k gone."
+    },
+    {
+      "id": "nyc-end-surge",
+      "day": 22,
+      "kind": "globalDemandMult",
+      "mult": 1.4,
+      "durationDays": 10,
+      "message": "Storm week. Citywide demand up for ten days."
+    }
+  ]
+}

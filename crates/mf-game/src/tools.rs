@@ -628,7 +628,7 @@ fn command_feedback_system(
 /// the sidecar answered) is stale and dropped.
 fn track_cost_feedback_system(mut tool: ResMut<ToolState>, mut events: EventReader<SimEvent>) {
     for SimEvent(msg) in events.read() {
-        if let FromSimMsg::Json(FromSimJson::TrackCost { seq, cost }) = msg {
+        if let FromSimMsg::Json(FromSimJson::TrackCost { seq, cost, .. }) = msg {
             if tool.pending_track_cost_seq.is_some() && *seq == tool.pending_track_cost_seq {
                 tool.last_cost_quote = Some(*cost);
                 tool.pending_track_cost_seq = None;
@@ -1394,6 +1394,9 @@ mod tests {
         RoadDto {
             cls: "local".to_string(),
             points,
+            grade_level: 0,
+            is_bridge: false,
+            is_tunnel: false,
         }
     }
 

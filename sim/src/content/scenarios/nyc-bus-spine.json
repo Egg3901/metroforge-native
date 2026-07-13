@@ -1,0 +1,47 @@
+{
+  "id": "nyc-bus-spine",
+  "label": "Bus Spine",
+  "description": "New York, bus only. Carry 1500 daily riders with farebox at least 80% before day 45.",
+  "cityKey": "nyc",
+  "tier": 4,
+  "difficulty": "hard",
+  "startingBudget": 9000000,
+  "startingModes": ["bus"],
+  "lockModes": true,
+  "dailySubsidy": 22000,
+  "deadlineDays": 45,
+  "eraLabel": "NYC",
+  "win": {
+    "and": [
+      {
+        "metric": "dailyTransitTrips",
+        "op": ">=",
+        "value": 1500,
+        "label": "Carry 1500 daily riders"
+      },
+      {
+        "metric": "fareboxRecovery",
+        "op": ">=",
+        "value": 0.8,
+        "label": "Farebox recovery at least 80%"
+      }
+    ]
+  },
+  "events": [
+    {
+      "id": "nyc-midtown-surge",
+      "day": 12,
+      "kind": "districtDemandMult",
+      "densityRank": 0,
+      "mult": 2,
+      "message": "Midtown surge. The densest district doubles its demand."
+    },
+    {
+      "id": "nyc-grant-cut",
+      "day": 20,
+      "kind": "cashDelta",
+      "amount": -400000,
+      "message": "State grant clawback. $400k leaves overnight."
+    }
+  ]
+}

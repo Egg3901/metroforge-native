@@ -51,6 +51,15 @@ pub struct Strings {
     pub city: &'static str,
     pub continue_label: &'static str,
     pub difficulty: &'static str,
+    /// Explicit shareable seed (#140): new-game seed row label.
+    pub seed: &'static str,
+    /// Prefix for the pause modal / load browser "Seed: 123" line — kept
+    /// separate from `seed` (the input row's label) since one needs a
+    /// trailing colon/space and the other doesn't.
+    pub seed_prefix: &'static str,
+    pub randomize: &'static str,
+    pub copy_seed: &'static str,
+    pub copied: &'static str,
     pub start_prefix: &'static str,
     pub earn_more_star: &'static str,
     pub earn_more_stars: &'static str,
@@ -114,6 +123,22 @@ pub struct Strings {
     pub surface_view: &'static str,
     pub subway_view: &'static str,
     pub goals: &'static str,
+
+    // --- Weather HUD (v0.7) ---------------------------------------------
+    pub weather_clear: &'static str,
+    pub weather_overcast: &'static str,
+    pub weather_rain: &'static str,
+    pub weather_fog: &'static str,
+    pub weather_snow: &'static str,
+    pub weather_storm: &'static str,
+    pub season_winter: &'static str,
+    pub season_spring: &'static str,
+    pub season_summer: &'static str,
+    pub season_autumn: &'static str,
+    pub event_blizzard: &'static str,
+    pub event_heatwave: &'static str,
+    pub weather_tooltip_season_prefix: &'static str,
+    pub weather_tooltip_event_prefix: &'static str,
 
     // --- Pause ----------------------------------------------------------
     pub paused: &'static str,
@@ -350,6 +375,11 @@ pub static EN: Strings = Strings {
     city: "City",
     continue_label: "Continue",
     difficulty: "Difficulty",
+    seed: "Seed",
+    seed_prefix: "Seed: ",
+    randomize: "Randomize",
+    copy_seed: "Copy seed",
+    copied: "Copied",
     start_prefix: "Start - ",
     earn_more_star: "Earn {} more star",
     earn_more_stars: "Earn {} more stars",
@@ -410,6 +440,21 @@ pub static EN: Strings = Strings {
     surface_view: "Surface view",
     subway_view: "Subway view",
     goals: "Goals",
+
+    weather_clear: "Clear",
+    weather_overcast: "Overcast",
+    weather_rain: "Rain",
+    weather_fog: "Fog",
+    weather_snow: "Snow",
+    weather_storm: "Storm",
+    season_winter: "Winter",
+    season_spring: "Spring",
+    season_summer: "Summer",
+    season_autumn: "Autumn",
+    event_blizzard: "Blizzard",
+    event_heatwave: "Heat wave",
+    weather_tooltip_season_prefix: "Season: ",
+    weather_tooltip_event_prefix: "Event: ",
 
     paused: "Paused",
     resume: "Resume",
@@ -700,6 +745,64 @@ impl Strings {
         format!("{}{day}  {hour:02}:{minute:02}", self.day_prefix)
     }
 
+    /// Player-facing label for a weather sky state (v0.7 HUD chip).
+    pub fn weather_label(&self, state: mf_protocol::WeatherState) -> &'static str {
+        use mf_protocol::WeatherState as W;
+        match state {
+            W::Clear => self.weather_clear,
+            W::Overcast => self.weather_overcast,
+            W::Rain => self.weather_rain,
+            W::Fog => self.weather_fog,
+            W::Snow => self.weather_snow,
+            W::Storm => self.weather_storm,
+        }
+    }
+
+    /// Player-facing season label (weather chip tooltip).
+    pub fn season_label(&self, season: mf_protocol::Season) -> &'static str {
+        use mf_protocol::Season as S;
+        match season {
+            S::Winter => self.season_winter,
+            S::Spring => self.season_spring,
+            S::Summer => self.season_summer,
+            S::Autumn => self.season_autumn,
+        }
+    }
+
+    /// Player-facing headline-event label (weather chip tooltip).
+    pub fn event_label(&self, event: mf_protocol::WeatherEvent) -> &'static str {
+        use mf_protocol::WeatherEvent as E;
+        match event {
+            E::Blizzard => self.event_blizzard,
+            E::Heatwave => self.event_heatwave,
+        }
+    }
+
+    /// Tooltip body for the weather chip: season line, plus an event line when
+    /// a headline event is active.
+    pub fn weather_tooltip(
+        &self,
+        season: Option<mf_protocol::Season>,
+        event: Option<mf_protocol::WeatherEvent>,
+    ) -> String {
+        let mut lines = Vec::new();
+        if let Some(s) = season {
+            lines.push(format!(
+                "{}{}",
+                self.weather_tooltip_season_prefix,
+                self.season_label(s)
+            ));
+        }
+        if let Some(e) = event {
+            lines.push(format!(
+                "{}{}",
+                self.weather_tooltip_event_prefix,
+                self.event_label(e)
+            ));
+        }
+        lines.join("\n")
+    }
+
     pub fn approval_pct(&self, pct: f64, trend: i8) -> String {
         if trend > 0 {
             format!("{}{pct:.0}%", self.approval_up_prefix)
@@ -916,6 +1019,11 @@ pub fn all_static_strings(s: &Strings) -> Vec<&'static str> {
         s.city,
         s.continue_label,
         s.difficulty,
+        s.seed,
+        s.seed_prefix,
+        s.randomize,
+        s.copy_seed,
+        s.copied,
         s.start_prefix,
         s.earn_more_star,
         s.earn_more_stars,
