@@ -4,32 +4,52 @@
 # Deterministic: each generator is pure bpy geometry (no randomness, no
 # timestamps). Re-running reproduces byte-stable geometry. Requires Blender
 # 5.x on PATH (headless). Run from anywhere.
+#
+#   ./tools/blender/make-assets.sh                # regenerate the .glb assets
+#   ./tools/blender/make-assets.sh --preview      # ALSO render turntable sheets
+#                                                 # into tools/blender/previews/
+#
+# The --preview flag drives the model-craft critique loop (ops-knowledge doc
+# `metroforge-model-craft-method`): each generator renders 6 flat-shaded views
+# (front/side/3quarter/top + game-camera oblique + ~2km far) so the silhouette
+# checklist can be scored from the images BEFORE the .glb is trusted.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-# Bevy's dev asset root is the binary crate's dir (crates/mf-game), so the
-# .glb models live under its assets/ tree to be loadable at runtime.
 OUT="$REPO/crates/mf-game/assets/models"
+PREV="$HERE/previews"
 BLENDER="${BLENDER:-blender}"
 
-mkdir -p "$OUT"
+PREVIEW=0
+if [[ "${1:-}" == "--preview" ]]; then PREVIEW=1; fi
 
-run() {  # run <script> <outfile> [args...]
-  local script="$1"; shift
-  local outfile="$1"; shift
-  echo ">> $script -> $outfile"
-  "$BLENDER" --background --factory-startup --python "$HERE/$script" -- "$@" "$outfile" \
-    2>&1 | grep -E '^\[mf_bpy\]|Error|error:' || true
+mkdir -p "$OUT"
+if [[ $PREVIEW == 1 ]]; then mkdir -p "$PREV"; fi
+
+filt='^\[mf_bpy\]|^\[turntable\]|Error|error:'
+
+gen() {  # gen <script> <out.glb> <preview-prefix> [variant]
+  local script="$1" outfile="$2" prev="$3" variant="${4:-}"
+  local args=()
+  if [[ -n "$variant" ]]; then args+=("$variant"); fi
+  if [[ $PREVIEW == 1 ]]; then args+=("--preview" "$PREV/$prev"); fi
+  args+=("$outfile")
+  echo ">> $script ${variant:-} -> $outfile"
+  "$BLENDER" --background --factory-startup --python "$HERE/$script" -- "${args[@]}" \
+    2>&1 | grep -E "$filt" || true
 }
 
-# Pilot A — suspension bridge family
-"$BLENDER" --background --factory-startup --python "$HERE/gen_bridge.py" -- generic  "$OUT/bridge_suspension.glb" 2>&1 | grep -E '^\[mf_bpy\]|Error' || true
-"$BLENDER" --background --factory-startup --python "$HERE/gen_bridge.py" -- brooklyn "$OUT/bridge_brooklyn.glb"   2>&1 | grep -E '^\[mf_bpy\]|Error' || true
-# Pilot B — metro consist
-"$BLENDER" --background --factory-startup --python "$HERE/gen_train.py"  -- "$OUT/train_metro.glb"   2>&1 | grep -E '^\[mf_bpy\]|Error' || true
-# Pilot C — cloud puffs
-"$BLENDER" --background --factory-startup --python "$HERE/gen_clouds.py" -- "$OUT/cloud_puffs.glb"   2>&1 | grep -E '^\[mf_bpy\]|Error' || true
+# suspension bridge family
+gen gen_bridge.py "$OUT/bridge_suspension.glb" bridge_suspension generic
+gen gen_bridge.py "$OUT/bridge_brooklyn.glb"   bridge_brooklyn   brooklyn
+# through-truss bridge (120-250m spans)
+gen gen_truss.py  "$OUT/bridge_truss.glb"      bridge_truss
+# metro consist
+gen gen_train.py  "$OUT/train_metro.glb"       train_metro
+# cloud puffs
+gen gen_clouds.py "$OUT/cloud_puffs.glb"       cloud_puffs
 
 echo "== assets =="
 ls -la "$OUT"
+if [[ $PREVIEW == 1 ]]; then echo "== previews =="; ls "$PREV"; fi

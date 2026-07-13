@@ -1,24 +1,23 @@
-"""gen_train.py — metro consist (Pilot B). 3 cars, window band, curved roof,
-bogie hint. Matches 'vehicle silhouettes v2'.
+"""gen_train.py — metro consist (3 cars), polished under the model-craft loop.
 
-Run:  blender --background --python gen_train.py -- <out.glb>
+Run:  blender -b --factory-startup --python gen_train.py -- <out.glb>
+Add   --preview <prefix>  to render a turntable critique sheet.
 
-Orientation: consist runs along +X (matches vehicles.rs box mesh, which is
-positioned then rotated by heading about Y). Body centered at origin, sitting
-so its base is at y=0 (Bevy raises the whole thing +3.0 like the brick).
-The BODY material is 'transit_body' (near-white) so Bevy's per-route
-StandardMaterial tint (base_color) reads through — the loader tints the body
-submesh exactly like it tints the brick cuboid. Windows + roof are separate
-materials that stay neutral (not tinted).
+Polish targets (silhouette checklist):
+  * FRONT view: a cab window on the lead car + a clear door pattern.
+  * SIDE view: a continuous window band reading across all 3 cars, with door
+    slots interrupting it, and bogies clearly visible under each car.
+  * <2000 tris per car.
 
-Base length is normalised to vehicles.rs VEHICLE_BASE_LENGTH * 3 cars so the
-loader can scale it to the same footprint the brick pool uses.
+Orientation: consist runs along +X, base at z=0 (Bevy raises it onto the deck).
+BODY material is near-white ('transit_body') so Bevy's per-route base_color tint
+reads through; windows / doors / bogies stay neutral dark, roof stays neutral.
 """
 
 from __future__ import annotations
 
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mf_bpy as mf  # noqa: E402
@@ -27,8 +26,10 @@ CARS = 3
 CAR_LEN = 9.0
 GAP = 0.8
 WIDTH = 3.6
-HEIGHT = 3.4
-ROOF_RISE = 0.5     # curve of roof above the box top
+HEIGHT = 3.6        # roofline height above rail
+FLOOR = 0.85        # underframe height: bogies live below this, body above
+ROOF_RISE = 0.5
+DOORS = 2            # doors per car side
 
 
 def _box(cx, cy, cz, sx, sy, sz):
@@ -48,56 +49,94 @@ def _append(verts, faces, box):
     bv, bf = box
     off = len(verts)
     verts.extend(bv)
-    faces.extend([tuple(i + off for i in face) for face in bf])
+    faces.extend([tuple(i + off for i in fc) for fc in bf])
+
+
+def _car_centers():
+    total = CARS * CAR_LEN + (CARS - 1) * GAP
+    x0 = -total / 2
+    return [x0 + CAR_LEN / 2 + c * (CAR_LEN + GAP) for c in range(CARS)]
 
 
 def build_bodies(mat):
-    """3 car bodies with a slight roof curve (chamfered top)."""
     verts, faces = [], []
-    total = CARS * CAR_LEN + (CARS - 1) * GAP
-    x0 = -total / 2
-    body_h = HEIGHT - ROOF_RISE
-    for c in range(CARS):
-        cx = x0 + CAR_LEN / 2 + c * (CAR_LEN + GAP)
-        # main box (base at y=0)
-        _append(verts, faces, _box(cx, 0, body_h / 2, CAR_LEN * 0.98, WIDTH, body_h))
-        # curved roof: narrower top slab lifted, giving a rounded silhouette
-        _append(verts, faces,
-                _box(cx, 0, body_h + ROOF_RISE / 2, CAR_LEN * 0.9, WIDTH * 0.82, ROOF_RISE))
+    top = HEIGHT - ROOF_RISE
+    body_h = top - FLOOR
+    for cx in _car_centers():
+        _append(verts, faces, _box(cx, 0, (FLOOR + top) / 2, CAR_LEN * 0.98, WIDTH, body_h))
     return mf.new_mesh_object("bodies", verts, faces, mat)
 
 
-def build_windows(mat):
-    """Continuous window band along each side of each car."""
+def build_roof(mat):
+    """Slightly narrower raised roof slab per car -> rounded silhouette."""
     verts, faces = [], []
-    total = CARS * CAR_LEN + (CARS - 1) * GAP
-    x0 = -total / 2
+    top = HEIGHT - ROOF_RISE
+    for cx in _car_centers():
+        _append(verts, faces,
+                _box(cx, 0, top + ROOF_RISE / 2, CAR_LEN * 0.9, WIDTH * 0.82, ROOF_RISE))
+    return mf.new_mesh_object("roof", verts, faces, mat)
+
+
+def build_glazing(mat):
+    """Continuous side window band + cab windows on the lead/tail ends. The
+    band runs nearly the full car length on both sides so it reads continuous
+    across the consist."""
+    verts, faces = [], []
+    centers = _car_centers()
     band_z = WIDTH / 2 + 0.02
-    band_cy = HEIGHT * 0.62
-    for c in range(CARS):
-        cx = x0 + CAR_LEN / 2 + c * (CAR_LEN + GAP)
+    band_cy = FLOOR + (HEIGHT - ROOF_RISE - FLOOR) * 0.62
+    for cx in centers:
         for side in (-1, 1):
             _append(verts, faces,
-                    _box(cx, side * band_z, band_cy, CAR_LEN * 0.8, 0.06, 1.0))
-    return mf.new_mesh_object("windows", verts, faces, mat)
+                    _box(cx, side * band_z, band_cy, CAR_LEN * 0.86, 0.06, 1.05))
+    # cab windows: wrap-around dark screen on the two outward end faces
+    ends = [(centers[0], -1, CAR_LEN / 2), (centers[-1], 1, CAR_LEN / 2)]
+    for cx, sgn, half in ends:
+        ex = cx + sgn * (half * 0.98)
+        _append(verts, faces, _box(ex, 0, HEIGHT * 0.66, 0.06, WIDTH * 0.78, 1.15))
+    return mf.new_mesh_object("glazing", verts, faces, mat)
+
+
+def build_doors(mat):
+    """Vertical door slots interrupting the window band, DOORS per car side.
+    They run from the band down toward the floor so they read taller than the
+    windows (the door pattern the front/side checklist calls for)."""
+    verts, faces = [], []
+    door_z = WIDTH / 2 + 0.03
+    for cx in _car_centers():
+        for d in range(DOORS):
+            frac = (d + 1) / (DOORS + 1)
+            dx = cx + (frac - 0.5) * CAR_LEN * 0.9
+            door_h = (HEIGHT - ROOF_RISE) - FLOOR - 0.2
+            for side in (-1, 1):
+                _append(verts, faces,
+                        _box(dx, side * door_z, FLOOR + door_h / 2, 0.9, 0.05, door_h))
+    return mf.new_mesh_object("doors", verts, faces, mat)
 
 
 def build_bogies(mat):
-    """Bogie hint: small dark boxes under each car end."""
+    """Two bogies per car in the underframe zone (below FLOOR) so the running
+    gear reads as dark trucks under a lifted white body."""
     verts, faces = [], []
-    total = CARS * CAR_LEN + (CARS - 1) * GAP
-    x0 = -total / 2
-    for c in range(CARS):
-        cx = x0 + CAR_LEN / 2 + c * (CAR_LEN + GAP)
+    for cx in _car_centers():
         for end in (-1, 1):
-            bx = cx + end * CAR_LEN * 0.32
-            _append(verts, faces, _box(bx, 0, 0.35, 1.8, WIDTH * 0.7, 0.7))
+            bx = cx + end * CAR_LEN * 0.30
+            _append(verts, faces, _box(bx, 0, FLOOR / 2, 2.4, WIDTH * 0.7, FLOOR))
     return mf.new_mesh_object("bogies", verts, faces, mat)
 
 
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    out = argv[0] if argv else "/tmp/train_metro.glb"
+    out = None
+    preview = None
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--preview":
+            preview = argv[i + 1]; i += 2
+        else:
+            out = argv[i]; i += 1
+    if out is None:
+        out = "/tmp/train_metro.glb"
 
     mf.reset_scene()
     m_body = mf.palette_material("transit_body", "transit_body")
@@ -105,12 +144,16 @@ def main():
     m_roof = mf.palette_material("transit_roof", "transit_roof")
 
     build_bodies(m_body)
-    build_windows(m_glass)
+    build_roof(m_roof)
+    build_glazing(m_glass)
+    build_doors(m_glass)
     build_bogies(m_glass)
-    # roof accent as its own object keeps its neutral tint under a body mesh join
-    build_bogies  # noqa
 
-    mf.export_glb(out)
+    if preview:
+        import turntable
+        turntable.render_turntable(preview)
+    if out:
+        mf.export_glb(out)
 
 
 main()

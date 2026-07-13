@@ -57,7 +57,16 @@ def build_clump(idx, lobes, m_top, m_under):
 
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    out = argv[0] if argv else "/tmp/clouds.glb"
+    out = None
+    preview = None
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--preview":
+            preview = argv[i + 1]; i += 2
+        else:
+            out = argv[i]; i += 1
+    if out is None:
+        out = "/tmp/clouds.glb"
 
     mf.reset_scene()
     m_top = mf.palette_material("cloud", "cloud")
@@ -66,6 +75,9 @@ def main():
     for i, lobes in enumerate(CLUMPS):
         build_clump(i, lobes, m_top, m_under)
 
+    if preview:
+        import turntable
+        turntable.render_turntable(preview)
     mf.export_glb(out)
 
 
