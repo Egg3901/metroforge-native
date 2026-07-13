@@ -292,6 +292,7 @@ mod tests {
             weather_intensity: None,
             weather_season: None,
             weather_event: None,
+            cohort_demand: None,
             tick: 0,
             insights: Vec::new(),
             day: 5,

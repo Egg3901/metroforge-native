@@ -92,10 +92,14 @@ export interface UiState {
   demandFactor?: number;
   /** farebox recovery for yesterday's ledger (fares / running costs) */
   fareboxRecovery?: number;
-  /** per-district catchment population + jobs (building-derived), world coords */
-  districts?: { id: number; name: string; x: number; y: number; population: number; jobs: number }[];
+  /** per-district catchment population + jobs (building-derived), world coords.
+   *  `growthDelta` (v0.9 zone response) is additive per entry. */
+  districts?: { id: number; name: string; x: number; y: number; population: number; jobs: number; growthDelta?: number }[];
   /** count of routes over capacity (crowding > 1) */
   overcrowdedRoutes?: number;
+  // ── optional, additive (v0.9 cohort living-city); older clients ignore ──
+  /** cohort demand-by-hour summary (schedule-driven demand shape) */
+  cohortDemand?: import('@host/uiExtras').UiCohortDemand;
   // ── optional, additive (v0.7 weather); older clients ignore these ──
   /** current weather state: clear|overcast|rain|fog|snow|storm */
   weatherState?: string;

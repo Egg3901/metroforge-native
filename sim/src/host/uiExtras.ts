@@ -15,6 +15,14 @@ import {
   type ScenarioState,
 } from '@core/scenario';
 import { diurnalFactor, hourOfDay } from '@core/timeOfDay';
+import {
+  cohortDemandFactor,
+  cohortMix,
+  hourBucket,
+  hourlyDemandCurve,
+  isWeekend,
+  type CohortKind,
+} from '@core/transit/cohorts';
 import { segmentDensity01, segmentEffectiveSpeedMps } from '@core/transit/gradeEffects';
 import type { AnalyticsInsights } from '@core/analytics';
 import type { GameState, LifetimeLedger, RouteDef } from '@core/types';
@@ -68,6 +76,27 @@ export interface UiDistrict {
   y: number;
   population: number;
   jobs: number;
+  /** v0.9 zone response: fractional population change at the last growth period
+   *  (>0 thickening near good transit, <0 shrinking). Additive; older clients
+   *  ignore it. Absent until the first growth period has run. */
+  growthDelta?: number;
+}
+
+/** v0.9 cohort demand-by-hour summary for the HUD (schedule-driven demand). All
+ *  values are deterministic pure functions of the sim tick. Additive on the
+ *  wire — older clients ignore it. */
+export interface UiCohortDemand {
+  /** current integer hour bucket [0,24) */
+  hour: number;
+  /** live total demand factor at this hour (daily mean = 1.0) */
+  factor: number;
+  /** relative per-cohort demand weight right now (commuter/student/…); not
+   *  normalized — the HUD normalizes for a stacked bar. */
+  mix: Record<CohortKind, number>;
+  /** the full 24-entry normalized hourly demand curve for the current day type */
+  curve: number[];
+  /** true on weekend game-days (curve tilts to leisure) */
+  weekend: boolean;
 }
 
 export interface UiStateExtras {
@@ -81,6 +110,8 @@ export interface UiStateExtras {
   districts: UiDistrict[];
   /** count of routes over capacity (crowding > 1) */
   overcrowdedRoutes: number;
+  /** v0.9 cohort demand-by-hour summary (schedule-driven demand shape) */
+  cohortDemand: UiCohortDemand;
   /** current weather state (clear|overcast|rain|fog|snow|storm) */
   weatherState?: string;
   /** weather intensity 0..1 (rainfall/snowfall strength; heat for clear) */
@@ -114,15 +145,26 @@ export function uiExtras(s: GameState): UiStateExtras {
     hourOfDay: hourOfDay(s.tick),
     demandFactor: diurnalFactor(s.tick),
     fareboxRecovery: fareboxRecovery(s.budget.lastDay),
-    districts: s.districts.map((d) => ({
-      id: d.id,
-      name: d.name,
-      x: d.centroid.x,
-      y: d.centroid.y,
-      population: d.population,
-      jobs: d.jobs,
-    })),
+    districts: s.districts.map((d) => {
+      const ud: UiDistrict = {
+        id: d.id,
+        name: d.name,
+        x: d.centroid.x,
+        y: d.centroid.y,
+        population: d.population,
+        jobs: d.jobs,
+      };
+      if (d.lastGrowthDelta !== undefined) ud.growthDelta = d.lastGrowthDelta;
+      return ud;
+    }),
     overcrowdedRoutes: s.routes.filter((r) => (r.crowding ?? 0) > 1).length,
+    cohortDemand: {
+      hour: hourBucket(s.tick),
+      factor: cohortDemandFactor(s.tick),
+      mix: cohortMix(s.tick),
+      curve: hourlyDemandCurve(isWeekend(s.tick)),
+      weekend: isWeekend(s.tick),
+    },
     scenarioProgression: SCENARIO_PROGRESSION,
   };
   if (s.weather) {

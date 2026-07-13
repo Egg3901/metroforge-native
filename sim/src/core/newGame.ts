@@ -8,7 +8,7 @@ import { climateTable, weatherAt } from './weather';
 import type { ScenarioDef } from './scenario/types';
 import { rulesFromScenario } from './scenario/evaluate';
 import type { ScenarioRules } from './scenarioRules';
-import type { Difficulty, GameState, TransitMode } from './types';
+import type { Difficulty, GameState, PoiAnchor, TransitMode } from './types';
 
 export interface NewGameOptions {
   size?: MapSize | undefined;
@@ -19,6 +19,24 @@ export interface NewGameOptions {
   rules?: ScenarioRules | undefined;
   /** data-driven scenario (win/lose trees + events); implies rules when rules omitted */
   scenario?: ScenarioDef | undefined;
+}
+
+/** Read the raw POI anchors carried on a baked OSM bundle (they are not part of
+ *  the `OsmCityData` type) and coerce them into strict `PoiAnchor` values. */
+function coercePoiAnchors(osm: OsmCityData | undefined): PoiAnchor[] | undefined {
+  const raw = (osm as { poiAnchors?: { id: string; kind: string; name: string; centroid: number[]; area?: number }[] } | undefined)
+    ?.poiAnchors;
+  if (!raw || raw.length === 0) return undefined;
+  return raw.map((a): PoiAnchor => {
+    const anchor: PoiAnchor = {
+      id: a.id,
+      kind: a.kind as PoiAnchor['kind'],
+      name: a.name,
+      centroid: [a.centroid[0] ?? 0, a.centroid[1] ?? 0],
+    };
+    if (a.area !== undefined) anchor.area = a.area;
+    return anchor;
+  });
 }
 
 export function newGame(seed: number, difficulty: Difficulty, options: NewGameOptions = {}): GameState {
@@ -53,6 +71,9 @@ export function newGame(seed: number, difficulty: Difficulty, options: NewGameOp
     osmElevation: city.elevationHi,
     osmElevRes: city.elevRes,
     osmLabels: city.labels,
+    // POI anchors ride on the baked OSM bundle (raw JSON shape, not on the
+    // OsmCityData type); coerce them into the strict PoiAnchor form here.
+    poiAnchors: coercePoiAnchors(options.osm),
     stations: [],
     tracks: [],
     routes: [],

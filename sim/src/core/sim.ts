@@ -578,10 +578,36 @@ function checkUnlocks(state: GameState, events: TickEvents): void {
 }
 
 /** Weekly growth pass: transit access densifies nearby cells; neglect decays. */
+/**
+ * Zone response (v0.9 System B, B3): population/density grows where sustained
+ * transit coverage AND reliability are good, and shrinks where service is thin
+ * or cut. Rates are slow and capped per growth period, and deterministic (one
+ * RNG draw per qualifying cell, same order as before). The density field it
+ * writes is already on the wire + rendered, so the white city visibly thickens
+ * around good lines over sim-years.
+ */
+function networkReliability(state: GameState): number {
+  // Proxy until the ops lane's on-time%/reliability feed lands: heavy sustained
+  // overcrowding reads as poor reliability (bunching, pass-ups), which damps
+  // growth. TODO(ops-lane): replace with the real per-route reliability signal
+  // (frequency / rolling-stock module) when available.
+  let loadW = 0;
+  let penalty = 0;
+  for (const r of state.routes) {
+    if (r.vehicleCount === 0) continue;
+    const w = Math.max(1, r.dailyRidership);
+    loadW += w;
+    penalty += w * Math.min(1, Math.max(0, (r.crowding ?? 0) - 1));
+  }
+  const overload = loadW > 0 ? penalty / loadW : 0; // 0 = smooth, 1 = chronically packed
+  return 1.1 - 0.5 * overload; // [0.6 .. 1.1]
+}
+
 function runGrowth(state: GameState): void {
   const g = state.fields;
   const rng = new Rng(state.rngState);
   const growthGrid = new StationGrid(state.stations);
+  const rel = networkReliability(state);
   let totalPop = 0;
   for (let i = 0; i < g.population.length; i++) {
     const pop = g.population[i] as number;
@@ -597,7 +623,8 @@ function runGrowth(state: GameState): void {
       if (d < walkR * 1.5) access += (s.level * Math.min(1, walkR / Math.max(d, 50))) * (1 + s.ridership / 5000);
     }
     if (access > 0.5 && pop > 5) {
-      const growth = Math.min(0.03, 0.004 * access) * (0.8 + rng.next() * 0.4);
+      // reliability scales the growth rate; the per-period cap keeps it slow.
+      const growth = Math.min(0.03, 0.004 * access * rel) * (0.8 + rng.next() * 0.4);
       g.population[i] = pop * (1 + growth);
       g.landValue[i] = Math.min(3, (g.landValue[i] as number) * (1 + growth * 0.5));
       g.jobs[i] = (g.jobs[i] as number) * (1 + growth * 0.6);
@@ -608,7 +635,8 @@ function runGrowth(state: GameState): void {
   }
   state.rngState = rng.state();
 
-  // refresh district aggregates
+  // refresh district aggregates + record the per-district growth delta for the
+  // wire (positive = thickening near good transit, negative = shrinking).
   for (const d of state.districts) {
     let pop = 0;
     let jobs = 0;
@@ -616,6 +644,8 @@ function runGrowth(state: GameState): void {
       pop += g.population[i] as number;
       jobs += g.jobs[i] as number;
     }
+    const prev = d.population;
+    d.lastGrowthDelta = prev > 0 ? (pop - prev) / prev : 0;
     d.population = pop;
     d.jobs = jobs;
   }

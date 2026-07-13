@@ -189,3 +189,40 @@ fn route_missing_only_some_sim_depth_fields_defaults_the_rest() {
     assert_eq!(route.operating_cost, None);
     assert_eq!(route.farebox, None);
 }
+
+#[test]
+fn cohort_demand_summary_roundtrips_and_defaults() {
+    // v0.9 cohort living-city: `cohortDemand` (+ per-district `growthDelta`).
+    // Old payloads omit both → decode with None/absent; new payloads carry them.
+    let legacy: UiState = serde_json::from_str(&legacy_ui_state_json())
+        .expect("legacy payload must still decode");
+    assert!(legacy.cohort_demand.is_none());
+
+    let json = r##"{
+        "tick": 400, "insights": [], "day": 1, "speed": 1.0, "cash": 0.0, "loanBalance": 0.0,
+        "lastDay": {"fares": 0.0, "subsidy": 0.0, "operations": 0.0, "maintenance": 0.0, "interest": 0.0},
+        "netHistory": [], "population": 0.0, "approval": 50.0, "transitShare": 0.0, "coverage": 0.0,
+        "dailyTransitTrips": 0.0, "unlockedModes": [], "stations": [], "tracks": [], "routes": [],
+        "activeEvents": [], "fieldsVersion": 1, "bankrupt": false, "commandCount": 0,
+        "districts": [{"id": 1, "name": "CBD", "x": 0.0, "y": 0.0, "population": 1000.0, "jobs": 5000.0, "growthDelta": 0.012}],
+        "cohortDemand": {
+            "hour": 8, "factor": 1.7, "weekend": false,
+            "mix": {"commuter": 0.42, "student": 0.11, "leisure": 0.03, "nightShift": 0.01},
+            "curve": [0.3, 0.3, 0.9, 1.8, 1.2, 0.8]
+        }
+    }"##;
+    let state: UiState = serde_json::from_str(json).expect("v0.9 payload must decode");
+    let cd = state.cohort_demand.as_ref().expect("cohortDemand present");
+    assert_eq!(cd.hour, 8);
+    assert!((cd.factor - 1.7).abs() < 1e-9);
+    assert!(!cd.weekend);
+    assert!((cd.mix.commuter - 0.42).abs() < 1e-9);
+    assert!((cd.mix.night_shift - 0.01).abs() < 1e-9);
+    assert_eq!(cd.curve.len(), 6);
+    assert_eq!(state.districts[0].growth_delta, Some(0.012));
+
+    // full re-encode / re-decode preserves the cohort summary.
+    let s = serde_json::to_string(&state).unwrap();
+    let back: UiState = serde_json::from_str(&s).unwrap();
+    assert_eq!(back.cohort_demand.unwrap().mix.commuter, 0.42);
+}

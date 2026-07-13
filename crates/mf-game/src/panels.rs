@@ -907,6 +907,7 @@ mod tests {
             y,
             population: 1000.0,
             jobs: 500.0,
+            growth_delta: None,
         }
     }
 
@@ -947,6 +948,7 @@ mod tests {
             weather_intensity: None,
             weather_season: None,
             weather_event: None,
+            cohort_demand: None,
             tick: 0,
             insights: Vec::new(),
             day: 1,
