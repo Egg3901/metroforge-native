@@ -950,6 +950,62 @@ fn route_editor(
         }
     });
 
+    // Service frequency (v0.9 A1): per-period target headway. The core
+    // operations dial — shorter headway (more service) draws riders but needs
+    // more vehicles. Running/needed units sit above so the trade-off is legible.
+    ui.add_space(ds::SPACE_XXS);
+    ui.label(ds::label_muted(s.frequency_heading));
+    if let (Some(running), Some(needed)) = (route.in_service_vehicles, route.peak_units_required) {
+        ui.horizontal(|ui| {
+            ui.label(ds::label_small(s.running_now));
+            ui.label(ds::value_strong(running.to_string()));
+            ui.add_space(ds::SPACE_SM);
+            ui.label(ds::label_small(s.peak_units_needed));
+            let short = running < needed;
+            ui.label(ds::value_strong(needed.to_string()).color(if short {
+                ds::WARN
+            } else {
+                ds::GOOD
+            }));
+        });
+    }
+    ui.label(ds::label_small(s.frequency_hint));
+    let periods: [(&str, &str); 5] = [
+        ("amPeak", s.period_am_peak),
+        ("midday", s.period_midday),
+        ("pmPeak", s.period_pm_peak),
+        ("evening", s.period_evening),
+        ("night", s.period_night),
+    ];
+    for (key, label) in periods {
+        let current = route
+            .frequency
+            .as_ref()
+            .and_then(|f| f.get(key))
+            .copied()
+            .unwrap_or(route.headway_seconds);
+        ui.horizontal(|ui| {
+            ui.label(ds::label_muted(label));
+            let minus = ui.small_button("-");
+            hover_tick(&minus, hovered, sfx);
+            // Minus = shorter headway = more service. One-minute steps; the
+            // sim clamps at the mode's own minimum so a floor click is a no-op.
+            if minus.clicked() && current > 60.0 {
+                submit_set_frequency(bus, link, route.id, key, current - 60.0);
+            }
+            ui.label(ds::value_strong(format!(
+                "{:.0} min",
+                (current / 60.0).max(0.0)
+            )));
+            let plus = ui.small_button("+");
+            hover_tick(&plus, hovered, sfx);
+            if plus.clicked() {
+                submit_set_frequency(bus, link, route.id, key, current + 60.0);
+            }
+        });
+    }
+    ui.add_space(ds::SPACE_XXS);
+
     // Fare
     ui.horizontal(|ui| {
         ui.label(ds::label_muted(s.fare));
@@ -1273,6 +1329,29 @@ fn submit_edit(bus: &mut CommandBus, link: Option<&SimLink>, route_id: i64, fiel
             color: fields.color,
         },
         CmdMeta::EditRoute { route_id },
+    );
+}
+
+/// Dispatch a per-period frequency change (v0.9 A1). `period` is one of the
+/// sim's five keys (`amPeak`/`midday`/`pmPeak`/`evening`/`night`); the sim
+/// clamps `headway_seconds` to the mode's own min/max, so the client only
+/// needs to keep it positive.
+fn submit_set_frequency(
+    bus: &mut CommandBus,
+    link: Option<&SimLink>,
+    route_id: i64,
+    period: &str,
+    headway_seconds: f64,
+) {
+    let Some(link) = link else { return };
+    bus.submit(
+        link,
+        Command::SetRouteFrequency {
+            route_id,
+            period: period.to_string(),
+            headway_seconds,
+        },
+        CmdMeta::SetRouteFrequency { route_id },
     );
 }
 
