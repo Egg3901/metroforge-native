@@ -152,6 +152,10 @@ case "$OS" in
         cp "$CLIENT_BIN" "$STAGE_DIR/metroforge"
         cp "$SIDECAR_BIN" "$STAGE_DIR/metroforge-sidecar"
         cp "$PROJECT_ROOT/crates/mf-game/assets/fonts/OFL.txt" "$STAGE_DIR/OFL.txt"
+        # Scripted Blender .glb models (tools/blender/) — Bevy resolves its
+        # asset root next to the running exe, so ship assets/ as a sibling.
+        mkdir -p "$STAGE_DIR/assets/models"
+        cp "$PROJECT_ROOT"/crates/mf-game/assets/models/*.glb "$STAGE_DIR/assets/models/"
         cp "$PROJECT_ROOT/packaging/icon.png" "$STAGE_DIR/metroforge.png"
         cp "$PROJECT_ROOT/packaging/linux/metroforge.desktop" "$STAGE_DIR/metroforge.desktop"
 
@@ -194,6 +198,9 @@ case "$OS" in
         cp "$CLIENT_BIN" "$STAGE_DIR/metroforge.exe"
         cp "$SIDECAR_BIN" "$STAGE_DIR/metroforge-sidecar.exe"
         cp "$PROJECT_ROOT/crates/mf-game/assets/fonts/OFL.txt" "$STAGE_DIR/OFL.txt"
+        # Scripted Blender .glb models (Bevy asset root sits next to the exe).
+        mkdir -p "$STAGE_DIR/assets/models"
+        cp "$PROJECT_ROOT"/crates/mf-game/assets/models/*.glb "$STAGE_DIR/assets/models/"
 
         cp "$PROJECT_ROOT/packaging/icon.ico" "$STAGE_DIR/icon.ico"
 
@@ -247,6 +254,9 @@ case "$OS" in
         cp "$CLIENT_BIN" "$STAGE_DIR/metroforge"
         cp "$SIDECAR_BIN_SOURCE" "$STAGE_DIR/metroforge-sidecar"
         cp "$PROJECT_ROOT/crates/mf-game/assets/fonts/OFL.txt" "$STAGE_DIR/OFL.txt"
+        # Scripted Blender .glb models (Bevy asset root sits next to the exe).
+        mkdir -p "$STAGE_DIR/assets/models"
+        cp "$PROJECT_ROOT"/crates/mf-game/assets/models/*.glb "$STAGE_DIR/assets/models/"
 
         # Make binaries executable
         make_executable "$STAGE_DIR/metroforge"
@@ -265,6 +275,7 @@ case "$OS" in
                 metroforge \
                 metroforge-sidecar \
                 OFL.txt \
+                assets \
                 README-dist.txt
         else
             # Fallback to ditto on macOS
@@ -282,6 +293,9 @@ case "$OS" in
             cp "$STAGE_DIR/metroforge" "$APP_DIR/Contents/MacOS/metroforge"
             cp "$STAGE_DIR/metroforge-sidecar" "$APP_DIR/Contents/MacOS/metroforge-sidecar"
             cp "$STAGE_DIR/OFL.txt" "$APP_DIR/Contents/Resources/OFL.txt"
+            # Models sit next to the exe (Contents/MacOS) — Bevy asset root.
+            mkdir -p "$APP_DIR/Contents/MacOS/assets/models"
+            cp "$STAGE_DIR"/assets/models/*.glb "$APP_DIR/Contents/MacOS/assets/models/"
             cp "$PROJECT_ROOT/packaging/icon.icns" "$APP_DIR/Contents/Resources/icon.icns"
             sed "s/__VERSION__/$VERSION/g" "$PROJECT_ROOT/packaging/macos/Info.plist" \
                 > "$APP_DIR/Contents/Info.plist"

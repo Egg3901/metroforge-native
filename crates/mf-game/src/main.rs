@@ -35,6 +35,8 @@ mod report_ui;
 mod reveal_input;
 mod routes_panel;
 mod saves;
+mod scenarios;
+mod seam_shots;
 mod shortcuts;
 mod sidecar_kill_test;
 mod single_instance;
@@ -115,6 +117,7 @@ fn main() {
             build_ui::MfBuildUiPlugin,
         ))
         .add_plugins(routes_panel::MfRoutesPanelPlugin)
+        .add_plugins(seam_shots::MfSeamShotsPlugin)
         // Bevy's Plugins tuple impl caps at 15 elements; second batch.
         .add_plugins((
             overlays::MfOverlaysPlugin,

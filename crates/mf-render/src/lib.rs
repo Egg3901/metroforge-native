@@ -11,9 +11,15 @@
 
 mod agents;
 mod atmosphere;
+mod bridges;
 mod buildings;
 mod daynight;
+mod diorama;
+/// Public so the diorama slab and any cross-section UI can reconstruct the
+/// sim's strata client-side (see `diorama.rs`).
+pub mod geology;
 mod mesh_utils;
+mod models;
 mod outline;
 /// Public so `mf-game` ghost previews can share the same vivid route table
 /// (and theme) as finished transit — see `tools.rs` route_ghost_color.
@@ -96,6 +102,7 @@ impl Plugin for MfRenderPlugin {
                 roads::MfRoadsPlugin,
                 buildings::MfBuildingsPlugin,
                 transit::MfTransitPlugin,
+                diorama::MfDioramaPlugin,
             ),
             (
                 trees::MfTreesPlugin,
@@ -108,6 +115,11 @@ impl Plugin for MfRenderPlugin {
                 outline::MfOutlinePlugin,
                 weather_render::MfWeatherRenderPlugin,
                 precip::MfPrecipPlugin,
+                // Scripted Blender glTF asset pipeline (tools/blender/):
+                // model loader/registry + cloud puffs, and long-span bridge
+                // model placement. Statics/Dynamic sets are chosen inside each.
+                models::MfModelsPlugin,
+                bridges::MfBridgesPlugin,
             ),
         ))
         .add_plugins(photomode::MfPhotoModeRenderPlugin)

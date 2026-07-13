@@ -47,9 +47,9 @@ use bevy::render::render_resource::{
 };
 
 use bevy::asset::{load_internal_asset, weak_handle};
-use mf_state::EffectiveKnobs;
+use mf_state::{EffectiveKnobs, RevealState};
 
-use crate::buildings::{BuildingChunk, BuildingsDenseCenter};
+use crate::buildings::{reveal_bucket, BuildingChunk, BuildingsDenseCenter};
 
 /// World-space push distance along each vertex normal. Small on purpose --
 /// "crisp thin dark edges ... NOT thick toon borders" (spec). Building walls
@@ -99,6 +99,7 @@ impl Plugin for MfOutlinePlugin {
                 (
                     maintain_outline_system,
                     outline_distance_fade_system.after(maintain_outline_system),
+                    apply_reveal_to_outline_system.after(maintain_outline_system),
                 )
                     .in_set(crate::MfRenderSet::Dynamic),
             );
@@ -109,9 +110,16 @@ impl Plugin for MfOutlinePlugin {
 struct OutlineMaterial {
     #[uniform(0)]
     color: Vec4,
-    /// (push_distance_m, reserved, reserved, reserved).
+    /// (push_distance_m, reveal_strength 0..1, reserved, reserved).
     #[uniform(0)]
     params: Vec4,
+    /// Reveal hole: (center_x, center_z, inner_radius, outer_radius), world
+    /// space — mirrors `RevealExtension::reveal` so the hull dissolves on
+    /// exactly the same boundary as the buildings it copies (issue #141:
+    /// without this, the reveal hole exposes the hull as a solid black
+    /// mass instead of revealing streets).
+    #[uniform(0)]
+    reveal: Vec4,
 }
 
 impl Material for OutlineMaterial {
@@ -159,6 +167,10 @@ struct OutlineState {
     /// World-space center of the dense-center chunk the outline copies, used
     /// as the camera-distance anchor for the fade.
     center: Vec3,
+    /// Last quantized `RevealState` written into the outline material — same
+    /// no-churn discipline as `buildings.rs`'s `apply_reveal_system` (a
+    /// jittering cursor must not re-upload the uniform every frame).
+    applied_reveal_bucket: Option<(i32, i32, i32, i32, i32)>,
 }
 
 fn maintain_outline_system(
@@ -199,6 +211,9 @@ fn maintain_outline_system(
     let material = materials.add(OutlineMaterial {
         color: Vec4::new(0.0, 0.0, 0.0, 1.0),
         params: Vec4::new(OUTLINE_PUSH_M, 0.0, 0.0, 0.0),
+        // Inert non-degenerate default, matching `RevealExtension::default`;
+        // `apply_reveal_to_outline_system` keeps it in sync from then on.
+        reveal: Vec4::new(0.0, 0.0, 60.0, 180.0),
     });
     let entity = commands
         .spawn((
@@ -214,6 +229,39 @@ fn maintain_outline_system(
     state.entity = Some(entity);
     state.source_mesh = Some(mesh3d.0.id());
     state.material = Some(material);
+    // Fresh material carries the inert default reveal; force the next
+    // apply_reveal_to_outline_system run to write the live state into it.
+    state.applied_reveal_bucket = None;
+}
+
+/// Mirrors `mf_state::RevealState` into the outline material's reveal
+/// uniform (issue #141). The hull is a copy of building geometry, so it must
+/// dissolve exactly where the buildings do: without this, every fragment the
+/// reveal discards from the building material exposes the solid-black hull
+/// behind it, and the reveal hole (or a stray headless-X cursor) renders as
+/// a solid black mass — the "black tower".
+fn apply_reveal_to_outline_system(
+    reveal_state: Res<RevealState>,
+    mut state: ResMut<OutlineState>,
+    mut materials: ResMut<Assets<OutlineMaterial>>,
+) {
+    let Some(handle) = state.material.clone() else {
+        return;
+    };
+    let bucket = reveal_bucket(&reveal_state);
+    if state.applied_reveal_bucket == Some(bucket) {
+        return;
+    }
+    if let Some(mat) = materials.get_mut(&handle) {
+        mat.reveal = Vec4::new(
+            reveal_state.center.x,
+            reveal_state.center.y,
+            reveal_state.inner,
+            reveal_state.outer,
+        );
+        mat.params.y = reveal_state.strength;
+    }
+    state.applied_reveal_bucket = Some(bucket);
 }
 
 /// Scales the outline push toward zero as the camera dollies out and hides the

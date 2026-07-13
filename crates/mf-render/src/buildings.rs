@@ -209,6 +209,81 @@ enum PartSkipReason {
 /// jobs/population fields lazily. Factored out of `build_buildings_system`'s
 /// per-part loop for the same reason as `emit_building_prism`: it is
 /// unit-testable without a Bevy `App`.
+/// Flag building:parts that are exact-footprint duplicates of another part
+/// with an overlapping vertical extent, so the mesh builder can skip them
+/// (issue #141).
+///
+/// Real NYC OSM data ships the same `building:part` ring twice when a way is
+/// both a standalone element and a member of a relation the extractor also
+/// walked (e.g. Central Park Tower arrives as two byte-identical 8-vertex
+/// rings, one 466 m and one 472 m tall). Extruding both produces two
+/// coincident prisms whose walls z-fight in the depth buffer AND
+/// self-shadow each other in the shadow map — the tower renders solid black
+/// with stippled edges at every hour of the day. Dropping the shorter twin
+/// fixes the render with zero visual loss: the kept prism covers the whole
+/// shared extent.
+///
+/// Rules, per group of byte-identical vertex rings (non-duplicates never
+/// enter a group and are never skipped):
+/// - Parts are considered tallest-first (`height_dm` descending, unknown
+///   `height_dm == 0` last); the first part of a group is always kept.
+/// - A part is skipped iff its wire vertical extent `[min_height_dm,
+///   height_dm)` overlaps an extent already kept in its group. Legitimate
+///   same-footprint vertical stacking (e.g. a spire segment `mh=420 h=500`
+///   above a `0..417` tower body) has disjoint extents and keeps both.
+/// - `height_dm == 0` (unknown height, resolved later by the density
+///   formula) is treated as covering everything: two unknown-height twins
+///   would resolve to the same formula height and be exactly coincident.
+fn duplicate_part_skips(parts: &[BuildingFootprint]) -> Vec<bool> {
+    use std::collections::HashMap;
+
+    let mut skip = vec![false; parts.len()];
+    // Group by bit-exact ring bytes; verts come off the wire as i16
+    // half-meter fixed point, so identical source rings decode bit-identical.
+    let mut groups: HashMap<Vec<(u32, u32)>, Vec<usize>> = HashMap::new();
+    for (i, bd) in parts.iter().enumerate() {
+        if bd.verts.len() < 3 {
+            continue;
+        }
+        let key: Vec<(u32, u32)> = bd
+            .verts
+            .iter()
+            .map(|v| (v[0].to_bits(), v[1].to_bits()))
+            .collect();
+        groups.entry(key).or_default().push(i);
+    }
+
+    let extent_of = |i: usize| -> (u32, u32) {
+        let bd = &parts[i];
+        if bd.height_dm == 0 {
+            (0, u32::MAX) // unknown: resolved later, assume full coverage
+        } else {
+            (bd.min_height_dm as u32, bd.height_dm as u32)
+        }
+    };
+
+    for mut members in groups.into_values() {
+        if members.len() < 2 {
+            continue;
+        }
+        // Tallest first so the twin that covers the most extent is kept.
+        members.sort_by_key(|&i| {
+            let h = parts[i].height_dm;
+            core::cmp::Reverse(if h == 0 { u32::MAX } else { h as u32 })
+        });
+        let mut kept: Vec<(u32, u32)> = Vec::with_capacity(members.len());
+        for i in members {
+            let (lo, hi) = extent_of(i);
+            if kept.iter().any(|&(klo, khi)| lo < khi && klo < hi) {
+                skip[i] = true;
+            } else {
+                kept.push((lo, hi));
+            }
+        }
+    }
+    skip
+}
+
 fn resolve_part_extent(
     bd: &BuildingFootprint,
     jitter_key: (i32, i32),
@@ -421,7 +496,12 @@ fn build_buildings_system(
         let mut prism_vertex_total = 0usize;
         let mut skipped_unknown_height_with_min = 0usize;
         let mut skipped_min_at_or_above_height = 0usize;
-        for bd in &buildings.buildings {
+        let duplicate_skips = duplicate_part_skips(&buildings.buildings);
+        let skipped_duplicate_footprint = duplicate_skips.iter().filter(|s| **s).count();
+        for (part_idx, bd) in buildings.buildings.iter().enumerate() {
+            if duplicate_skips[part_idx] {
+                continue; // coincident duplicate of a kept part (issue #141)
+            }
             if bd.verts.len() < 3 {
                 continue; // decode already enforces 3..=64; never trust twice
             }
@@ -510,10 +590,15 @@ fn build_buildings_system(
             );
             prism_vertex_total += v;
         }
-        if skipped_unknown_height_with_min > 0 || skipped_min_at_or_above_height > 0 {
+        if skipped_unknown_height_with_min > 0
+            || skipped_min_at_or_above_height > 0
+            || skipped_duplicate_footprint > 0
+        {
             debug!(
-                "buildings: real-footprint path skipped {} parts (unknown height + nonzero min) and {} parts (min >= height)",
-                skipped_unknown_height_with_min, skipped_min_at_or_above_height
+                "buildings: real-footprint path skipped {} parts (unknown height + nonzero min), {} parts (min >= height), {} parts (duplicate coincident footprint)",
+                skipped_unknown_height_with_min,
+                skipped_min_at_or_above_height,
+                skipped_duplicate_footprint
             );
         }
         let chunks_used = chunk_bufs.iter().filter(|b| !b.is_empty()).count();
@@ -1021,12 +1106,26 @@ fn apply_facade_uniforms_system(
 const REVEAL_POSITION_QUANTUM_M: f32 = 0.5;
 const REVEAL_STRENGTH_BUCKETS: f32 = 64.0;
 
-fn quantize_reveal_position(v: f32) -> i32 {
+pub(crate) fn quantize_reveal_position(v: f32) -> i32 {
     (v / REVEAL_POSITION_QUANTUM_M).round() as i32
 }
 
-fn quantize_reveal_strength(v: f32) -> i32 {
+pub(crate) fn quantize_reveal_strength(v: f32) -> i32 {
     (v * REVEAL_STRENGTH_BUCKETS).round() as i32
+}
+
+/// One quantized `RevealState` snapshot — the shared change-detection bucket
+/// both `apply_reveal_system` (buildings material) and `outline.rs`'s
+/// `apply_reveal_to_outline_system` (inverted-hull material, issue #141) use
+/// to skip redundant uniform re-uploads.
+pub(crate) fn reveal_bucket(reveal_state: &RevealState) -> (i32, i32, i32, i32, i32) {
+    (
+        quantize_reveal_position(reveal_state.center.x),
+        quantize_reveal_position(reveal_state.center.y),
+        quantize_reveal_position(reveal_state.inner),
+        quantize_reveal_position(reveal_state.outer),
+        quantize_reveal_strength(reveal_state.strength),
+    )
 }
 
 /// Copies `mf_state::RevealState` into the shared buildings material's
@@ -1043,13 +1142,7 @@ fn apply_reveal_system(
     let Some(handle) = state.material.clone() else {
         return;
     };
-    let bucket = (
-        quantize_reveal_position(reveal_state.center.x),
-        quantize_reveal_position(reveal_state.center.y),
-        quantize_reveal_position(reveal_state.inner),
-        quantize_reveal_position(reveal_state.outer),
-        quantize_reveal_strength(reveal_state.strength),
-    );
+    let bucket = reveal_bucket(&reveal_state);
     if state.applied_reveal_bucket == Some(bucket) {
         return;
     }
@@ -1253,5 +1346,48 @@ mod tests {
         city.apply_buildings(mf_protocol::StaticBuildings { buildings: vec![] });
         let key = BuildingsState::rebuild_key(&city, 5);
         assert_eq!(key, (5, None));
+    }
+
+    #[test]
+    fn duplicate_part_skips_drops_shorter_coincident_twin() {
+        // The literal issue-#141 shape: two byte-identical rings, 472 dm-ish
+        // heights apart, both ground based. The shorter must be skipped.
+        let parts = vec![l_shape_footprint(4660, 0), l_shape_footprint(4720, 0)];
+        assert_eq!(duplicate_part_skips(&parts), vec![true, false]);
+    }
+
+    #[test]
+    fn duplicate_part_skips_keeps_disjoint_vertical_stack() {
+        // Same footprint but stacked extents (tower body 0..4170, spire
+        // 4200..5000): legitimate building:part stacking, keep both.
+        let parts = vec![l_shape_footprint(4170, 0), l_shape_footprint(5000, 4200)];
+        assert_eq!(duplicate_part_skips(&parts), vec![false, false]);
+    }
+
+    #[test]
+    fn duplicate_part_skips_treats_unknown_height_twins_as_coincident() {
+        // Two unknown-height twins resolve to the same density-formula
+        // height later — exactly coincident, so one must be skipped.
+        let parts = vec![l_shape_footprint(0, 0), l_shape_footprint(0, 0)];
+        assert_eq!(
+            duplicate_part_skips(&parts).iter().filter(|s| **s).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn duplicate_part_skips_ignores_distinct_footprints() {
+        let mut other = l_shape_footprint(4660, 0);
+        other.verts[0] = [0.5, 0.0];
+        let parts = vec![l_shape_footprint(4660, 0), other];
+        assert_eq!(duplicate_part_skips(&parts), vec![false, false]);
+    }
+
+    #[test]
+    fn duplicate_part_skips_partial_overlap_is_still_a_duplicate() {
+        // Overlapping (not nested) extents on an identical ring still means
+        // coincident walls over the shared band — skip the shorter.
+        let parts = vec![l_shape_footprint(3000, 0), l_shape_footprint(4720, 890)];
+        assert_eq!(duplicate_part_skips(&parts), vec![true, false]);
     }
 }

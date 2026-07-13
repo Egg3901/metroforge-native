@@ -93,6 +93,7 @@ fn inits_nyc_and_receives_ready_fields_and_ui() {
             size: None,
             preset_key: Some("nyc".to_string()),
             rules: None,
+            scenario_id: None,
         }))
         .expect("send init");
 
@@ -145,4 +146,76 @@ fn inits_nyc_and_receives_ready_fields_and_ui() {
     assert!(got_fields, "never received a `Fields` binary frame");
     assert!(got_ui, "never received a `ui` UiState");
     eprintln!("received {masks_seen} StaticMask frame(s)");
+}
+
+/// Boot check (#25): a data-driven scenario's rules must land on the first
+/// `ui` snapshot (starting cash, calendar limit, unlocked modes).
+#[test]
+#[ignore = "requires the in-repo sim/ sidecar and bun; see module docs"]
+fn scenario_rules_apply_on_init() {
+    use mf_protocol::{ScenarioRules, TransitMode};
+
+    let require = std::env::var("MF_REQUIRE_SIDECAR").is_ok();
+
+    let link = match SimLink::spawn_and_connect(None) {
+        Ok(link) => link,
+        Err(e) => {
+            if require {
+                panic!("MF_REQUIRE_SIDECAR set but sidecar spawn/connect failed: {e}");
+            }
+            eprintln!("skipping scenario_rules_apply_on_init: sidecar not available yet ({e})");
+            return;
+        }
+    };
+
+    let rules = ScenarioRules {
+        scenario_id: Some("cleveland-first-riders".to_string()),
+        starting_modes: vec![TransitMode::Bus],
+        lock_modes: Some(true),
+        max_day: Some(45),
+        approval_floor: None,
+        starting_cash: Some(12_000_000.0),
+        daily_subsidy: Some(35_000.0),
+        era_label: Some("Starter".to_string()),
+    };
+
+    link.transport
+        .send(ToSim::Init(InitPayload {
+            seed: 4242,
+            difficulty: Difficulty::Easy,
+            size: None,
+            preset_key: Some("cleveland".to_string()),
+            rules: Some(rules),
+            scenario_id: Some("cleveland-first-riders".to_string()),
+        }))
+        .expect("send init");
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut got_ui = false;
+
+    while Instant::now() < deadline && !got_ui {
+        match link.transport.try_recv() {
+            Some(FromSimMsg::Json(FromSimJson::Ui(ui))) => {
+                assert!(
+                    (ui.cash - 12_000_000.0).abs() < 1.0,
+                    "expected scenario starting cash 12M, got {}",
+                    ui.cash
+                );
+                assert_eq!(ui.max_day, Some(45), "expected scenario deadline 45 days");
+                assert_eq!(
+                    ui.unlocked_modes,
+                    vec![TransitMode::Bus],
+                    "expected bus-only start"
+                );
+                got_ui = true;
+            }
+            Some(_) => continue,
+            None => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+
+    assert!(
+        got_ui,
+        "never received a `ui` UiState with scenario rules applied"
+    );
 }

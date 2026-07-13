@@ -25,8 +25,10 @@ pub mod day_night;
 pub mod demand;
 /// Latest fields grid (terrain/population/jobs/…).
 pub mod fields;
+
 /// Latest per-tick vehicle/agent frame snapshot.
 pub mod frame;
+pub mod geology;
 /// Shared ground-height sampler (`HeightAt`).
 pub mod height;
 /// Overlay mode resource (`Off` / `Demand` / `Unserved`).
@@ -54,6 +56,7 @@ pub use day_night::DayNightEnabled;
 pub use demand::LatestDemand;
 pub use fields::LatestFields;
 pub use frame::LatestFrame;
+pub use geology::{ClipPlane, GeologyContext, CLIP_TRANSITION_SECS};
 pub use height::HeightAt;
 pub use overlay::{OverlayMode, OverlayState};
 pub use plugin::{KnobSyncSet, MfStatePlugin};

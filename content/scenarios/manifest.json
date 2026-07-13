@@ -1,0 +1,247 @@
+{
+  "scenarios": [
+    {
+      "id": "cleveland-austerity",
+      "label": "Austerity",
+      "description": "Thin subsidy, thin cash. 600 riders and 90% farebox before day 35 without cratering.",
+      "cityKey": "cleveland",
+      "tier": 4,
+      "difficulty": "hard",
+      "startingBudget": 5500000,
+      "startingModes": [
+        "bus"
+      ],
+      "lockModes": true,
+      "dailySubsidy": 8000,
+      "deadlineDays": 35,
+      "eraLabel": "Cuts"
+    },
+    {
+      "id": "cleveland-farebox-30",
+      "label": "Pay the Bills",
+      "description": "500 daily riders and farebox recovery above 60% within 30 days. Day 10 doubles demand in the densest district.",
+      "cityKey": "cleveland",
+      "tier": 2,
+      "difficulty": "easy",
+      "startingBudget": 10000000,
+      "startingModes": [
+        "bus"
+      ],
+      "lockModes": true,
+      "dailySubsidy": 30000,
+      "deadlineDays": 30,
+      "eraLabel": "1955"
+    },
+    {
+      "id": "cleveland-farebox-80",
+      "label": "Farebox Target",
+      "description": "Economic drill. Hit 80% farebox recovery with 400 daily riders before day 40.",
+      "cityKey": "cleveland",
+      "tier": 2,
+      "difficulty": "normal",
+      "startingBudget": 8000000,
+      "startingModes": [
+        "bus"
+      ],
+      "lockModes": true,
+      "dailySubsidy": 15000,
+      "deadlineDays": 40,
+      "eraLabel": "Ledger"
+    },
+    {
+      "id": "cleveland-first-riders",
+      "label": "First Riders",
+      "description": "Cleveland, bus only. Carry 300 daily riders before day 45.",
+      "cityKey": "cleveland",
+      "tier": 1,
+      "difficulty": "easy",
+      "startingBudget": 12000000,
+      "startingModes": [
+        "bus"
+      ],
+      "lockModes": true,
+      "dailySubsidy": 35000,
+      "deadlineDays": 45,
+      "eraLabel": "Starter"
+    },
+    {
+      "id": "cleveland-five-hundred",
+      "label": "Five Hundred",
+      "description": "Tutorial adjacent. Carry 500 daily riders on buses before day 50.",
+      "cityKey": "cleveland",
+      "tier": 1,
+      "difficulty": "easy",
+      "startingBudget": 12000000,
+      "startingModes": [
+        "bus"
+      ],
+      "lockModes": true,
+      "dailySubsidy": 32000,
+      "deadlineDays": 50,
+      "eraLabel": "Lesson"
+    },
+    {
+      "id": "cleveland-reach",
+      "label": "Within Reach",
+      "description": "800 daily riders and 7% coverage before day 40. Bus and tram from the start.",
+      "cityKey": "cleveland",
+      "tier": 3,
+      "difficulty": "normal",
+      "startingBudget": 11000000,
+      "startingModes": [
+        "bus",
+        "tram"
+      ],
+      "lockModes": true,
+      "dailySubsidy": 28000,
+      "deadlineDays": 40,
+      "eraLabel": "Reach"
+    },
+    {
+      "id": "cleveland-roadworks",
+      "label": "Road Works",
+      "description": "Crisis. Survive the day 5 detour surge past day 22 with 700 riders and zero overcrowded routes.",
+      "cityKey": "cleveland",
+      "tier": 3,
+      "difficulty": "normal",
+      "startingBudget": 11000000,
+      "startingModes": [
+        "bus"
+      ],
+      "lockModes": true,
+      "dailySubsidy": 25000,
+      "deadlineDays": 35,
+      "eraLabel": "Detour"
+    },
+    {
+      "id": "cleveland-tram-line",
+      "label": "Tram Line",
+      "description": "Sandbox unlock. Bus and tram open. Reach 1000 riders and 7% coverage before day 45.",
+      "cityKey": "cleveland",
+      "tier": 3,
+      "difficulty": "normal",
+      "startingBudget": 10500000,
+      "startingModes": [
+        "bus",
+        "tram"
+      ],
+      "lockModes": true,
+      "dailySubsidy": 26000,
+      "deadlineDays": 45,
+      "eraLabel": "Rails"
+    },
+    {
+      "id": "nyc-bus-spine",
+      "label": "Bus Spine",
+      "description": "New York, bus only. Carry 1500 daily riders with farebox at least 80% before day 45.",
+      "cityKey": "nyc",
+      "tier": 4,
+      "difficulty": "hard",
+      "startingBudget": 9000000,
+      "startingModes": [
+        "bus"
+      ],
+      "lockModes": true,
+      "dailySubsidy": 22000,
+      "deadlineDays": 45,
+      "eraLabel": "NYC"
+    },
+    {
+      "id": "nyc-dig-season",
+      "label": "Dig Season",
+      "description": "Crisis. Survive the day 8 dig surge past day 25 with 3000 riders and zero overcrowded routes.",
+      "cityKey": "nyc",
+      "tier": 3,
+      "difficulty": "hard",
+      "startingBudget": 10000000,
+      "startingModes": [
+        "bus"
+      ],
+      "lockModes": true,
+      "dailySubsidy": 20000,
+      "deadlineDays": 40,
+      "eraLabel": "Dig"
+    },
+    {
+      "id": "nyc-express",
+      "label": "Express Grid",
+      "description": "Sandbox unlock. Bus and tram. Hit 2500 riders and 12% coverage before day 45.",
+      "cityKey": "nyc",
+      "tier": 4,
+      "difficulty": "hard",
+      "startingBudget": 10000000,
+      "startingModes": [
+        "bus",
+        "tram"
+      ],
+      "lockModes": true,
+      "dailySubsidy": 20000,
+      "deadlineDays": 45,
+      "eraLabel": "Grid"
+    },
+    {
+      "id": "nyc-farebox-80",
+      "label": "Cover Fares",
+      "description": "Economic drill. 1200 riders and 80% farebox recovery before day 40.",
+      "cityKey": "nyc",
+      "tier": 2,
+      "difficulty": "normal",
+      "startingBudget": 9500000,
+      "startingModes": [
+        "bus"
+      ],
+      "lockModes": true,
+      "dailySubsidy": 18000,
+      "deadlineDays": 40,
+      "eraLabel": "Ledger"
+    },
+    {
+      "id": "nyc-first-thousand",
+      "label": "First Thousand",
+      "description": "Tutorial adjacent. Carry 1000 daily riders on New York buses before day 40.",
+      "cityKey": "nyc",
+      "tier": 1,
+      "difficulty": "easy",
+      "startingBudget": 11000000,
+      "startingModes": [
+        "bus"
+      ],
+      "lockModes": true,
+      "dailySubsidy": 28000,
+      "deadlineDays": 40,
+      "eraLabel": "Lesson"
+    },
+    {
+      "id": "nyc-last-stand",
+      "label": "Last Stand",
+      "description": "Brutal endgame. From day 30 hold 4000 riders, 100% farebox, and 12% coverage on a starved bus budget.",
+      "cityKey": "nyc",
+      "tier": 5,
+      "difficulty": "hard",
+      "startingBudget": 5500000,
+      "startingModes": [
+        "bus"
+      ],
+      "lockModes": true,
+      "dailySubsidy": 10000,
+      "deadlineDays": 55,
+      "eraLabel": "Endgame"
+    },
+    {
+      "id": "nyc-pressure",
+      "label": "Pressure Cooker",
+      "description": "Tight cash, locked buses. Hit 2000 riders, 100% farebox, and 10% coverage before day 50.",
+      "cityKey": "nyc",
+      "tier": 5,
+      "difficulty": "hard",
+      "startingBudget": 7500000,
+      "startingModes": [
+        "bus"
+      ],
+      "lockModes": true,
+      "dailySubsidy": 18000,
+      "deadlineDays": 50,
+      "eraLabel": "Pressure"
+    }
+  ]
+}

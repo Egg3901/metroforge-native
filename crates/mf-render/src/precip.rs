@@ -193,25 +193,36 @@ fn resolve_look(weather: &WeatherRender, wind_dir: Vec2, elapsed: f32) -> Precip
     }
 
     if snowy {
+        // Fatter, rounder flakes packed into a tighter radius so snow reads as
+        // a dense fall against BOTH the white buildings and the bright sky
+        // (owner: daytime snow showed nothing but a HUD chip). Radius pulled in
+        // from 300->220 concentrates the same particle count into a denser
+        // near-camera volume; width up 2.4->5.5 makes each flake actually
+        // visible at street and overview zoom.
         PrecipLook {
             data: PrecipData {
-                p0: Vec4::new(elapsed, 9.0, 300.0, 480.0),
-                p1: Vec4::new(2.4, 2.4, 0.55, 1.0),
+                p0: Vec4::new(elapsed, 9.0, 220.0, 460.0),
+                p1: Vec4::new(5.5, 5.5, 0.55, 1.0),
                 wind: Vec4::new(wind_dir.x * 6.0, wind_dir.y * 6.0, 7.0, 0.0),
-                tint: Vec4::new(1.0, 1.0, 1.0, 0.85 * snow),
+                // Flakes are lightly grey-tinted so they don't vanish into a
+                // white sky, and near-opaque so the fall reads at Medium/High.
+                tint: Vec4::new(0.97, 0.98, 1.0, (0.95 * snow).clamp(0.0, 0.95)),
             },
             visible: true,
         }
     } else {
-        // Storm rains harder, faster, more slanted.
+        // Storm rains harder, faster, more slanted. Streaks widened 0.35->0.85
+        // and darkened toward a cool slate so they read as visible lines
+        // against the white city and bright surfaces in daylight (owner: rain
+        // streaks too subtle), not just as night-bloom glints.
         let speed = 110.0 + storm * 60.0;
         let slant = 28.0 + storm * 40.0;
         PrecipLook {
             data: PrecipData {
-                p0: Vec4::new(elapsed, speed, 340.0, 620.0),
-                p1: Vec4::new(16.0 + storm * 10.0, 0.35, 0.0, 0.0),
+                p0: Vec4::new(elapsed, speed, 300.0, 620.0),
+                p1: Vec4::new(20.0 + storm * 12.0, 0.85, 0.0, 0.0),
                 wind: Vec4::new(wind_dir.x * slant, wind_dir.y * slant, 0.0, 1.0),
-                tint: Vec4::new(0.74, 0.79, 0.90, (0.45 + storm * 0.2) * rain),
+                tint: Vec4::new(0.58, 0.63, 0.74, (0.62 + storm * 0.2).min(0.9) * rain),
             },
             visible: true,
         }

@@ -7,9 +7,10 @@
  *   npx vite-node scripts/build-cities.ts          # all configured cities
  *   npx vite-node scripts/build-cities.ts nyc      # one city
  *
- * Raw Overpass responses are cached in /tmp so re-runs are fast.
+ * Raw Overpass responses are cached under sim/.cache/osm so re-runs are fast.
  */
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { encodePng } from './png';
 import { expandBboxToSquare } from './geo-utils';
@@ -65,10 +66,92 @@ function sleep(ms: number): void {
 }
 type OsmEl = {
   type: string;
+  id?: number;
   tags?: Record<string, string>;
   geometry?: LL[];
+  lat?: number;
+  lon?: number;
   members?: { type: string; role: string; geometry?: LL[] }[];
 };
+
+const OSM_CACHE_DIR = '.cache/osm';
+const POI_CAP = 40;
+
+type PoiKind = 'stadium' | 'airport' | 'university' | 'hospital' | 'museum';
+
+interface PoiAnchor {
+  id: string;
+  kind: PoiKind;
+  name: string;
+  /** world-space centroid (meters, y down / north up) */
+  centroid: [number, number];
+  /** footprint area in m² */
+  area: number;
+}
+
+/** Classify a named OSM feature into a POI anchor kind, or null if not one. */
+function poiKindOf(tags: Record<string, string>): PoiKind | null {
+  if (tags.leisure === 'stadium') return 'stadium';
+  if (tags.aeroway === 'aerodrome') return 'airport';
+  if (tags.amenity === 'university') return 'university';
+  if (tags.amenity === 'hospital') return 'hospital';
+  if (tags.tourism === 'museum') return 'museum';
+  return null;
+}
+
+function osmId(el: OsmEl): string {
+  const t = el.type[0] ?? 'x';
+  return `${t}${el.id ?? 0}`;
+}
+
+/** Named POI anchors (stadiums, airports, universities, hospitals, museums).
+ *  Keeps the largest footprints up to POI_CAP per city. */
+function buildPoiAnchors(poiEls: OsmEl[], P: (ll: LL) => [number, number]): PoiAnchor[] {
+  const clampToWorld = (v: number): number => Math.max(-HALF, Math.min(HALF, v));
+  const candidates: PoiAnchor[] = [];
+  const seen = new Set<string>();
+
+  for (const el of poiEls) {
+    const tags = el.tags ?? {};
+    const name = tags.name?.trim();
+    const kind = poiKindOf(tags);
+    if (!name || !kind) continue;
+
+    let centroid: [number, number];
+    let area = 0;
+
+    if (el.type === 'node' && el.lat !== undefined && el.lon !== undefined) {
+      const [x, y] = P({ lat: el.lat, lon: el.lon });
+      centroid = [Math.round(clampToWorld(x)), Math.round(clampToWorld(y))];
+    } else {
+      const rings = el.type === 'relation' ? classifyRings([el]).outers : ringsOf([el]);
+      let bestArea = 0;
+      let bestCentroid: [number, number] | null = null;
+      for (const ring of rings) {
+        const simp = simplifyRingPoints(ring, P);
+        if (!simp) continue;
+        const a = Math.abs(signedArea2D(simp));
+        if (a > bestArea) {
+          bestArea = a;
+          const [cx, cy] = polygonCentroid(simp);
+          bestCentroid = [Math.round(clampToWorld(cx)), Math.round(clampToWorld(cy))];
+        }
+      }
+      if (!bestCentroid) continue;
+      centroid = bestCentroid;
+      area = Math.round(bestArea);
+    }
+
+    const dedupe = `${kind}\0${name.toLowerCase()}`;
+    if (seen.has(dedupe)) continue;
+    seen.add(dedupe);
+
+    candidates.push({ id: osmId(el), kind, name, centroid, area });
+  }
+
+  candidates.sort((a, b) => b.area - a.area || a.name.localeCompare(b.name));
+  return candidates.slice(0, POI_CAP);
+}
 /** Overpass replies HTTP 200 with a JSON body that still starts with `{` even
  *  when the server-side query timed out or errored — the partial/empty result
  *  carries a top-level `remark` like "runtime error: Query timed out ...". Such
@@ -99,16 +182,17 @@ function queryFingerprint(query: string): string {
 }
 
 function fetchRaw(query: string, cacheKey: string): OsmEl[] {
-  const cache = `/tmp/osm-${cacheKey}-${queryFingerprint(query)}.json`;
+  mkdirSync(OSM_CACHE_DIR, { recursive: true });
+  const cache = join(OSM_CACHE_DIR, `osm-${cacheKey}-${queryFingerprint(query)}.json`);
   let json = '';
   if (existsSync(cache)) {
     const cached = readFileSync(cache, 'utf8');
     if (cached.trimStart().startsWith('{') && !isTruncated(cached)) json = cached;
   }
   if (!json) {
-    // per-key query file: a single shared /tmp/q.overpass gets clobbered when
-    // two importer runs overlap, silently caching the WRONG query's response
-    const qFile = `/tmp/q-${cacheKey}.overpass`;
+    // per-key query file: a single shared q.overpass gets clobbered when two
+    // importer runs overlap, silently caching the WRONG query's response
+    const qFile = join(OSM_CACHE_DIR, `q-${cacheKey}.overpass`);
     writeFileSync(qFile, query);
     for (let attempt = 0; attempt < 6 && (!json.trimStart().startsWith('{') || isTruncated(json)); attempt++) {
       const url = ENDPOINTS[attempt % ENDPOINTS.length]!;
@@ -455,7 +539,40 @@ function buildBuildingsExport(
   const keptOutlines = outlines.filter((_, i) => !suppressed[i]);
   const outlinesSuppressed = outlines.length - keptOutlines.length;
 
-  const buildings: BuildingRecord[] = [...keptOutlines.map((o) => o.rec), ...parts];
+  const merged: BuildingRecord[] = [...keptOutlines.map((o) => o.rec), ...parts];
+  // Dedupe byte-identical footprints with overlapping vertical extents
+  // (issue #141): a way that is both a standalone element and a member of a
+  // walked relation arrives twice (e.g. Central Park Tower: two identical
+  // rings at 466 m and 472 m). Extruding both makes coincident walls that
+  // z-fight and self-shadow into a solid black tower. Keep the tallest of
+  // each identical-ring group; drop the rest only when their [mh, h) extent
+  // overlaps a kept one, so legitimate same-footprint vertical stacking
+  // (spire above tower body) survives. h=0 (unknown) is treated as covering
+  // everything — unknown twins would resolve to the same fallback height.
+  const byRing = new Map<string, number[]>();
+  merged.forEach((b, i) => {
+    const k = b.v.join(',');
+    const g = byRing.get(k);
+    if (g) g.push(i);
+    else byRing.set(k, [i]);
+  });
+  const dropped = new Set<number>();
+  for (const group of byRing.values()) {
+    if (group.length < 2) continue;
+    const extent = (b: BuildingRecord): [number, number] =>
+      b.h === 0 ? [0, Number.MAX_SAFE_INTEGER] : [b.mh, b.h];
+    group.sort((a, b) => extent(merged[b]!)[1] - extent(merged[a]!)[1]);
+    const kept: [number, number][] = [];
+    for (const i of group) {
+      const [lo, hi] = extent(merged[i]!);
+      if (kept.some(([klo, khi]) => lo < khi && klo < hi)) dropped.add(i);
+      else kept.push([lo, hi]);
+    }
+  }
+  const buildings = merged.filter((_, i) => !dropped.has(i));
+  if (dropped.size > 0) {
+    console.log(`${key}: buildings dedupe dropped ${dropped.size} coincident duplicate footprints`);
+  }
   const bundle = { version: 2, buildings };
   const path = `src/data/cities/${key}.buildings.json`;
   const json = JSON.stringify(bundle);
@@ -565,6 +682,17 @@ function build(cfg: CityCfg): void {
     `[out:json][timeout:180];(way["building:part"](${bb});relation["building:part"](${bb}););out geom;`,
     `${cfg.key}-buildingparts`,
   );
+  // named POI anchors for demand surges + landmark placement (stadiums, airports, …)
+  const poiEls = fetchRaw(
+    `[out:json][timeout:180];(` +
+      `way["leisure"="stadium"]["name"](${bb});relation["leisure"="stadium"]["name"](${bb});node["leisure"="stadium"]["name"](${bb});` +
+      `way["aeroway"="aerodrome"]["name"](${bb});relation["aeroway"="aerodrome"]["name"](${bb});node["aeroway"="aerodrome"]["name"](${bb});` +
+      `way["amenity"="university"]["name"](${bb});relation["amenity"="university"]["name"](${bb});node["amenity"="university"]["name"](${bb});` +
+      `way["amenity"="hospital"]["name"](${bb});relation["amenity"="hospital"]["name"](${bb});node["amenity"="hospital"]["name"](${bb});` +
+      `way["tourism"="museum"]["name"](${bb});relation["tourism"="museum"]["name"](${bb});node["tourism"="museum"]["name"](${bb});` +
+      `);out geom;`,
+    `${cfg.key}-poi`,
+  );
 
   // equirectangular projection around bbox center, north-up, fit to world square
   const lat0 = (s + n) / 2;
@@ -580,11 +708,21 @@ function build(cfg: CityCfg): void {
   // `g` gradeLevel (int), `br` isBridge, `tn` isTunnel — grade-separation flags
   // per segment. Emitted only when non-default to keep the bundle compact
   // (additive; older readers ignore the extra keys).
-  const outRoads: { cls: string; pts: number[]; g?: number; br?: boolean; tn?: boolean }[] = [];
+  const outRoads: {
+    cls: string;
+    pts: number[];
+    g?: number;
+    br?: boolean;
+    tn?: boolean;
+    name?: string;
+    wikidata?: string;
+  }[] = [];
   for (const way of roads) {
     const cls = CLASS[way.tags.highway ?? ''];
     if (!cls) continue;
     const { g, br, tn } = roadGrade(way.tags);
+    const bridgeName = br ? way.tags.name?.trim() : undefined;
+    const bridgeWikidata = br ? way.tags.wikidata?.trim() : undefined;
     const pts = way.geometry.map(P);
     const simp = simplify(pts, 5);
     if (simp.length < 2) continue;
@@ -592,16 +730,28 @@ function build(cfg: CityCfg): void {
     // fetched area; clip to the world square so no road point/segment can
     // render off the map edge, splitting into sub-polylines as needed.
     for (const seg of clipPolylineToBox(simp, HALF)) {
-      const rec: { cls: string; pts: number[]; g?: number; br?: boolean; tn?: boolean } = {
+      const rec: {
+        cls: string;
+        pts: number[];
+        g?: number;
+        br?: boolean;
+        tn?: boolean;
+        name?: string;
+        wikidata?: string;
+      } = {
         cls,
         pts: seg.flatMap(([x, y]) => [Math.round(x), Math.round(y)]),
       };
       if (g !== 0) rec.g = g;
       if (br) rec.br = true;
       if (tn) rec.tn = true;
+      if (bridgeName) rec.name = bridgeName;
+      if (bridgeWikidata) rec.wikidata = bridgeWikidata;
       outRoads.push(rec);
     }
   }
+
+  const poiAnchors = buildPoiAnchors(poiEls, P);
 
   // union: pre-assembled sea polygons + inland OSM water (both with holes)
   const waterOuter: number[][] = [...ocean.outers, ...waterR.outers].map((ring) => ring.map(P).flat());
@@ -797,12 +947,17 @@ function build(cfg: CityCfg): void {
     elevation: elevB64,
     roads: outRoads,
     labels,
+    poiAnchors,
   };
   mkdirSync('src/data/cities', { recursive: true });
   const path = `src/data/cities/${cfg.key}.json`;
   writeFileSync(path, JSON.stringify(bundle));
   const kb = (JSON.stringify(bundle).length / 1024) | 0;
-  console.log(`${cfg.key}: ${outRoads.length} roads, ${ocean.outers.length} sea, ${waterOuter.length} water, ${parkPolys.length} parks, ${buildingR.outers.length} buildings → ${path} (${kb} KB)`);
+  const bridgeNamed = outRoads.filter((r) => r.br && r.name).length;
+  console.log(
+    `${cfg.key}: ${outRoads.length} roads (${bridgeNamed} named bridges), ${poiAnchors.length} POI anchors, ` +
+      `${ocean.outers.length} sea, ${waterOuter.length} water, ${parkPolys.length} parks, ${buildingR.outers.length} buildings → ${path} (${kb} KB)`,
+  );
 }
 
 /** Clip a single segment [x0,y0]-[x1,y1] against the box [-half,half]^2 using

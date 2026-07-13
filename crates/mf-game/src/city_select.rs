@@ -26,6 +26,7 @@ use crate::map_paint::{
     WorldPolyline,
 };
 use crate::saves::{self, PlaytimeTracker, SaveManager, SaveMeta, SaveSlot, SlotEntry};
+use crate::scenarios;
 use crate::state::{AppState, MenuScreen, PendingInit, SimHello};
 
 const GRID_COLS: usize = 2;
@@ -148,6 +149,10 @@ pub fn city_select_screen_ui(
                 FocusTarget::City(key) => {
                     if progress.city_unlocked(key) {
                         pending.preset_key = key.to_string();
+                        if !pending.sandbox {
+                            pending.scenario_id =
+                                scenarios::default_for_city(key).map(|s| s.id.clone());
+                        }
                         start_pressed = true;
                     }
                 }
@@ -332,10 +337,20 @@ pub fn city_select_screen_ui(
                                             if clicked {
                                                 locals.focus_idx = cell_i;
                                                 pending.preset_key = key.to_string();
+                                                if !pending.sandbox {
+                                                    pending.scenario_id =
+                                                        scenarios::default_for_city(key)
+                                                            .map(|s| s.id.clone());
+                                                }
                                                 sfx.write(PlaySfx(Sfx::Confirm));
                                             }
                                             if double_clicked {
                                                 pending.preset_key = key.to_string();
+                                                if !pending.sandbox {
+                                                    pending.scenario_id =
+                                                        scenarios::default_for_city(key)
+                                                            .map(|s| s.id.clone());
+                                                }
                                                 start_pressed = true;
                                             }
                                             cell_i += 1;
@@ -366,6 +381,61 @@ pub fn city_select_screen_ui(
                                             );
                                         }
                                     });
+                                ui.add_space(ds::SPACE_XS);
+                                field_label(ui, crate::strings::current().scenario);
+                                let city_scenarios = scenarios::for_city(&pending.preset_key);
+                                let scenario_label = scenario_picker_label(&pending);
+                                egui::ComboBox::from_id_salt("scenario_picker")
+                                    .selected_text(scenario_label)
+                                    .width(300.0)
+                                    .show_ui(ui, |ui| {
+                                        ui.add_enabled_ui(!pending.sandbox, |ui| {
+                                            let mut pick = pending.scenario_id.clone();
+                                            if ui
+                                                .selectable_value(
+                                                    &mut pick,
+                                                    None,
+                                                    crate::strings::current().free_play,
+                                                )
+                                                .clicked()
+                                            {
+                                                pending.sandbox = false;
+                                            }
+                                            for entry in &city_scenarios {
+                                                let id = entry.id.clone();
+                                                if ui
+                                                    .selectable_value(
+                                                        &mut pick,
+                                                        Some(id.clone()),
+                                                        &entry.label,
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    pending.sandbox = false;
+                                                }
+                                                ui.label(
+                                                    ds::label_small(entry.description.clone())
+                                                        .color(ds::muted()),
+                                                );
+                                            }
+                                            pending.scenario_id = pick;
+                                        });
+                                    });
+                                ui.add_space(ds::SPACE_XXS);
+                                if ui
+                                    .checkbox(
+                                        &mut pending.sandbox,
+                                        crate::strings::current().sandbox_mode,
+                                    )
+                                    .changed()
+                                {
+                                    sfx.write(PlaySfx(Sfx::Confirm));
+                                }
+                                if pending.sandbox {
+                                    ui.label(ds::label_muted(
+                                        crate::strings::current().sandbox_hint,
+                                    ));
+                                }
                                 ui.add_space(ds::SPACE_XS);
                                 field_label(ui, crate::strings::current().seed);
                                 ui.horizontal(|ui| {
@@ -412,6 +482,18 @@ pub fn city_select_screen_ui(
         *screen = MenuScreen::Title;
     }
     Ok(())
+}
+
+fn scenario_picker_label(pending: &PendingInit) -> String {
+    if pending.sandbox {
+        return crate::strings::current().sandbox_mode.to_string();
+    }
+    pending
+        .scenario_id
+        .as_deref()
+        .and_then(scenarios::by_id)
+        .map(|s| s.label.clone())
+        .unwrap_or_else(|| crate::strings::current().free_play.to_string())
 }
 
 struct CityStats {
