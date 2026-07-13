@@ -18,6 +18,7 @@ pub mod fields;
 pub mod geometry;
 pub mod hash;
 pub mod new_game;
+pub mod ops; // P3-OPS ADDED: register the v0.9 operations module (lane B).
 pub mod rng;
 pub mod save;
 pub mod types;
