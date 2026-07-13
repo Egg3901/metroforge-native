@@ -49,12 +49,21 @@ use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
+use bevy::scene::SceneRoot;
+
 use mf_protocol::TransitMode;
-use mf_state::{EffectiveKnobs, HeightAt, LatestFrame, LatestUi};
+use mf_state::{EffectiveKnobs, HeightAt, LatestFrame, LatestUi, QualityTier};
 
 use crate::daynight::DayNightState;
+use crate::models::ModelHandles;
 use crate::palette;
 use crate::RenderCacheStats;
+
+/// Pilot B knob: swap the brick metro vehicle for the scripted 3-car metro
+/// consist glTF (tools/blender/gen_train.py) at Medium+ tiers. Default ON for
+/// metro; every other transit mode and the Potato/Low tiers keep the brick.
+/// Flip to `false` to fall the whole game back to bricks.
+const METRO_MODEL_SWAP: bool = true;
 
 const VEHICLE_BASE_LENGTH: f32 = 10.0;
 const VEHICLE_WIDTH: f32 = 4.5;
@@ -79,10 +88,21 @@ pub struct MfVehiclesPlugin;
 
 impl Plugin for MfVehiclesPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<VehiclePool>().add_systems(
-            Update,
-            update_vehicles_system.in_set(crate::MfRenderSet::Dynamic),
-        );
+        app.init_resource::<VehiclePool>()
+            .add_systems(
+                Update,
+                update_vehicles_system.in_set(crate::MfRenderSet::Dynamic),
+            )
+            // Recolors the async-spawned metro consist scene's body material
+            // to the per-route tint, mirroring the brick's per-route paint
+            // (Pilot B). Runs after the vehicle system so it sees this frame's
+            // desired tint.
+            .add_systems(
+                Update,
+                apply_metro_tint_system
+                    .in_set(crate::MfRenderSet::Dynamic)
+                    .after(update_vehicles_system),
+            );
     }
 }
 
@@ -91,6 +111,37 @@ struct VehicleSlot;
 
 #[derive(Component)]
 struct VehicleLightSlot;
+
+/// Metro model instance parented-in-spirit to vehicle slot `index`. Carries
+/// the desired per-route tint; `applied_tint` on the pool tracks whether the
+/// (async-spawned) scene children have been recolored to it yet.
+#[derive(Component)]
+struct MetroModelSlot {
+    #[allow(dead_code)]
+    index: usize,
+    /// Desired per-route body tint (updated by the vehicle system each frame).
+    tint: Color,
+    /// Packed sRGB of the tint currently baked into this instance's cloned
+    /// scene materials; `None` until the async scene spawned and got recolored.
+    applied: Option<u32>,
+    /// Descendant entities whose material is the near-white BODY (identified
+    /// once by luminance when the scene first spawns). Re-tint updates just
+    /// these, so a dark route color can't defeat the luminance test on a
+    /// subsequent recolor.
+    body_entities: Vec<Entity>,
+}
+
+/// Pack an sRGB color into a u32 for cheap change detection.
+fn pack_color(c: Color) -> u32 {
+    let s = c.to_srgba();
+    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    (q(s.red) << 16) | (q(s.green) << 8) | q(s.blue)
+}
+
+/// True on Medium/High (`QualityTier` has no `Ord`, so match explicitly).
+fn is_medium_plus(tier: QualityTier) -> bool {
+    matches!(tier, QualityTier::Medium | QualityTier::High)
+}
 
 #[derive(Resource, Default)]
 struct VehiclePool {
@@ -124,6 +175,10 @@ struct VehiclePool {
     /// frame by the smoothing system, so `is_changed()` is always true and
     /// would defeat the 20 Hz skip-gate below; only a bucket step matters.
     last_night_bucket: Option<i32>,
+    /// Pilot B: parallel metro-model instances, one per vehicle slot, spawned
+    /// lazily the first time a slot is a Medium+ metro. `None` = not spawned
+    /// yet. Reused (shown/hidden) like the brick slots.
+    metro_models: Vec<Option<Entity>>,
 }
 
 fn material_for_paint(
@@ -245,8 +300,23 @@ fn update_vehicles_system(
         ),
         (With<VehicleLightSlot>, Without<VehicleSlot>),
     >,
+    // Pilot B params bundled into one tuple SystemParam to stay within Bevy's
+    // 16-param limit: (quality tier, loaded model handles, metro model pool).
+    metro: (
+        Res<QualityTier>,
+        Option<Res<ModelHandles>>,
+        Query<
+            (&mut Transform, &mut Visibility, &mut MetroModelSlot),
+            (
+                With<MetroModelSlot>,
+                Without<VehicleSlot>,
+                Without<VehicleLightSlot>,
+            ),
+        >,
+    ),
     mut stats: ResMut<RenderCacheStats>,
 ) {
+    let (quality, model_handles, mut metro_slots) = metro;
     // `LatestFrame` arrives at the sim's ~20Hz tick while this system runs
     // every render frame (60+ Hz); `EffectiveKnobs` / `Theme` / overlay / night
     // change independently and flip paint. None changing means nothing about a
@@ -430,6 +500,13 @@ fn update_vehicles_system(
                 .unwrap_or(TransitMode::Bus);
         let is_tram_like = matches!(mode, TransitMode::Tram | TransitMode::Metro);
         let is_tram_mesh = mode == TransitMode::Tram;
+        // Pilot B: this slot shows the scripted 3-car metro consist instead of
+        // the brick when the knob is on, the tier is Medium+, the route is
+        // Metro, and the model assets have loaded.
+        let metro_active = METRO_MODEL_SWAP
+            && is_medium_plus(*quality)
+            && mode == TransitMode::Metro
+            && model_handles.is_some();
         let length = if is_tram_mesh {
             VEHICLE_BASE_LENGTH * TRAM_LENGTH_MULT
         } else {
@@ -444,7 +521,12 @@ fn update_vehicles_system(
             let ground_y = height_at.sample(x, y);
             transform.translation = Vec3::new(x, ground_y + 3.0, y);
             transform.rotation = Quat::from_rotation_y(-heading);
-            *visibility = Visibility::Visible;
+            // Brick is hidden when the metro model takes over this slot.
+            *visibility = if metro_active {
+                Visibility::Hidden
+            } else {
+                Visibility::Visible
+            };
 
             let desired_mesh = if is_tram_mesh { &tram_mesh } else { &box_mesh };
             if mesh.0 != *desired_mesh {
@@ -476,6 +558,56 @@ fn update_vehicles_system(
             material_handle.0 = handle;
             if let Some(slot) = pool.applied_paint.get_mut(i) {
                 *slot = Some(paint_key);
+            }
+        }
+
+        // --- Pilot B: metro consist model swap (parallel model pool) ---
+        if METRO_MODEL_SWAP {
+            if pool.metro_models.len() <= i {
+                pool.metro_models.resize(i + 1, None);
+            }
+            if metro_active {
+                if let Some(handles) = &model_handles {
+                    // Model base sits at y=0 authored; the brick center is
+                    // ground+3.0, so drop the model to the deck.
+                    let base = transform.translation - Vec3::Y * 3.0;
+                    let model_xf = Transform {
+                        translation: base,
+                        rotation: transform.rotation,
+                        scale: Vec3::ONE,
+                    };
+                    match pool.metro_models[i] {
+                        Some(e) => {
+                            if let Ok((mut mxf, mut mvis, mut mslot)) = metro_slots.get_mut(e) {
+                                if frame_changed {
+                                    *mxf = model_xf;
+                                }
+                                *mvis = Visibility::Visible;
+                                mslot.tint = color;
+                            }
+                        }
+                        None => {
+                            let e = commands
+                                .spawn((
+                                    SceneRoot(handles.train_metro.clone()),
+                                    model_xf,
+                                    Visibility::Visible,
+                                    MetroModelSlot {
+                                        index: i,
+                                        tint: color,
+                                        applied: None,
+                                        body_entities: Vec::new(),
+                                    },
+                                ))
+                                .id();
+                            pool.metro_models[i] = Some(e);
+                        }
+                    }
+                }
+            } else if let Some(e) = pool.metro_models.get(i).copied().flatten() {
+                if let Ok((_, mut mvis, _)) = metro_slots.get_mut(e) {
+                    *mvis = Visibility::Hidden;
+                }
             }
         }
 
@@ -556,8 +688,87 @@ fn update_vehicles_system(
         }
     }
 
+    // Pilot B: hide metro models for slots beyond the current vehicle count
+    // (the brick pool hides those slots too; keep the model pool in step).
+    if frame_changed {
+        for i in vehicle_count..pool.metro_models.len() {
+            if let Some(e) = pool.metro_models[i] {
+                if let Ok((_, mut mvis, _)) = metro_slots.get_mut(e) {
+                    *mvis = Visibility::Hidden;
+                }
+            }
+        }
+    }
+
     prune_material_cache(&mut pool);
     stats.vehicle_slots = pool.entities.len();
     stats.vehicle_material_cache = pool.material_cache.len();
     stats.vehicle_light_material_cache = pool.light_material_cache.len();
+}
+
+/// Pilot B tint pass: walks each metro model scene's descendants and recolors
+/// the near-white BODY material to the route tint (per-instance material
+/// clone, so windows/roof/bogies keep their neutral palette). Cheap: skips any
+/// instance already baked to its current tint. The body meshes are located
+/// once by luminance the first time the async scene is present, then reused.
+fn apply_metro_tint_system(
+    mut slots: Query<(Entity, &mut MetroModelSlot)>,
+    children: Query<&Children>,
+    mut mesh_mats: Query<&mut MeshMaterial3d<StandardMaterial>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    for (root, mut slot) in &mut slots {
+        let want = pack_color(slot.tint);
+        if slot.applied == Some(want) {
+            continue;
+        }
+        // First time: discover the body-material mesh entities by luminance.
+        if slot.body_entities.is_empty() {
+            let mut stack = vec![root];
+            let mut found = Vec::new();
+            while let Some(e) = stack.pop() {
+                if let Ok(kids) = children.get(e) {
+                    for c in kids.iter() {
+                        stack.push(c);
+                    }
+                }
+                if let Ok(mm) = mesh_mats.get(e) {
+                    if let Some(mat) = materials.get(&mm.0) {
+                        let b = mat.base_color.to_srgba();
+                        let lum = 0.299 * b.red + 0.587 * b.green + 0.114 * b.blue;
+                        if lum > 0.7 {
+                            found.push(e);
+                        }
+                    }
+                }
+            }
+            if found.is_empty() {
+                // Scene not spawned yet — retry next frame.
+                continue;
+            }
+            slot.body_entities = found;
+        }
+        // Re-tint the recorded body meshes (per-instance material clone).
+        let tint = slot.tint;
+        let mut done = true;
+        for &e in &slot.body_entities {
+            if let Ok(mut mm) = mesh_mats.get_mut(e) {
+                let cloned = materials.get(&mm.0).map(|m| {
+                    let mut c = m.clone();
+                    c.base_color = tint;
+                    c
+                });
+                if let Some(c) = cloned {
+                    mm.0 = materials.add(c);
+                } else {
+                    done = false;
+                }
+            } else {
+                done = false;
+            }
+        }
+        if done {
+            slot.applied = Some(want);
+        }
+    }
 }
