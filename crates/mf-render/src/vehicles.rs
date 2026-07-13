@@ -20,10 +20,13 @@
 //! Color: per art-direction §4, the wire's `colorTable` is IGNORED — each
 //! vehicle is painted from the client's vivid table (`palette::vivid_route_color`)
 //! indexed by `routeColorIdx`. Materials are **shared by paint key**
-//! `(color_idx, brightness_bucket, unlit)` so Bevy can batch draws across
-//! vehicles that look identical; when a slot's paint changes, its
-//! `MeshMaterial3d` handle is swapped to the cached material rather than
-//! mutating a per-slot asset.
+//! `(color_idx, brightness_bucket, unlit, overlay_dimmed, condition)` so Bevy
+//! can batch draws across vehicles that look identical; when a slot's paint
+//! changes, its `MeshMaterial3d` handle is swapped to the cached material
+//! rather than mutating a per-slot asset. The `condition` component (v0.9 A3)
+//! is Normal / Bunched / Broken, inferred from wire positions +
+//! `UiState.incidents`: a bunched vehicle glows hotter so a jam is legible, and
+//! a broken vehicle on an incident route is painted stark hazard red.
 //!
 //! Night headlights / cabin strips extend the same paint-key pattern: a
 //! parallel grow-only pool of small emissive quads (cool-white front glow
@@ -102,6 +105,103 @@ const VEHICLE_HEIGHT: f32 = 3.5;
 const TRAM_LENGTH_MULT: f32 = 1.6;
 const TRAM_WIDTH_MULT: f32 = 0.85;
 
+/// Operations (v0.9 A3): center-to-center distance under which two vehicles on
+/// the SAME route read as bunched (~2.5 vehicle lengths). Derived purely from
+/// wire positions, so it is deterministic frame to frame.
+const BUNCH_RADIUS: f32 = 26.0;
+/// Stark hazard red for a broken-down/stalled vehicle (art-direction §4:
+/// transit-only color, stark). Painted regardless of route color so an
+/// incident reads instantly against the moving, route-colored fleet.
+const BREAKDOWN_COLOR: Color = Color::srgb(1.0, 0.18, 0.12);
+
+/// Per-vehicle operating condition inferred from the wire (positions +
+/// `UiState.incidents`). Drives a distinct paint so breakdowns and bunching
+/// are legible without any new wire field.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum VehCondition {
+    /// Free-running, normal spacing.
+    Normal,
+    /// Tight to another vehicle on the same route (a jam/bunch), but no
+    /// active incident on the route.
+    Bunched,
+    /// Bunched on a route that currently has an active breakdown incident:
+    /// this is the stalled jam behind the blockage.
+    Broken,
+}
+
+impl VehCondition {
+    /// Stable discriminant folded into the material paint key.
+    fn key(self) -> u8 {
+        match self {
+            VehCondition::Normal => 0,
+            VehCondition::Bunched => 1,
+            VehCondition::Broken => 2,
+        }
+    }
+}
+
+/// Classify each vehicle's condition from the stride-6 wire array and the set
+/// of route color-indices with an active incident. Pure (no ECS/render types)
+/// so the bunching + breakdown logic is unit-testable directly.
+///
+/// A vehicle is *bunched* when another vehicle on the SAME route sits within
+/// [`BUNCH_RADIUS`]; a bunched vehicle whose route has an active incident is
+/// *broken* (the stalled jam behind the blockage). Everything else is normal.
+#[allow(clippy::needless_range_loop)] // `i` indexes both the stride-6 wire and `out`; an all-pairs neighbor scan is clearest as an index loop.
+fn classify_conditions(
+    vehicles: &[f32],
+    vehicle_count: usize,
+    incident_idxs: &HashSet<usize>,
+    bunch_radius: f32,
+) -> Vec<VehCondition> {
+    let r2 = bunch_radius * bunch_radius;
+    let mut out = vec![VehCondition::Normal; vehicle_count];
+    for i in 0..vehicle_count {
+        let bi = i * 6;
+        let (Some(&xi), Some(&yi), Some(&ci)) = (
+            vehicles.get(bi + 1),
+            vehicles.get(bi + 2),
+            vehicles.get(bi + 5),
+        ) else {
+            continue;
+        };
+        let route_i = ci as usize;
+        let mut bunched = false;
+        for j in 0..vehicle_count {
+            if j == i {
+                continue;
+            }
+            let bj = j * 6;
+            let (Some(&xj), Some(&yj), Some(&cj)) = (
+                vehicles.get(bj + 1),
+                vehicles.get(bj + 2),
+                vehicles.get(bj + 5),
+            ) else {
+                continue;
+            };
+            if cj as usize != route_i {
+                continue;
+            }
+            let dx = xi - xj;
+            let dy = yi - yj;
+            if dx * dx + dy * dy <= r2 {
+                bunched = true;
+                break;
+            }
+        }
+        out[i] = if bunched {
+            if incident_idxs.contains(&route_i) {
+                VehCondition::Broken
+            } else {
+                VehCondition::Bunched
+            }
+        } else {
+            VehCondition::Normal
+        };
+    }
+    out
+}
+
 /// Cool-white headlight / running-light glow.
 const HEADLIGHT_COLOR: Color = Color::srgb(0.85, 0.92, 1.0);
 /// Warm tram/metro cabin strip.
@@ -167,6 +267,11 @@ struct VehicleModelSlot {
     body_entities: Vec<Entity>,
 }
 
+/// Shared-material paint key: `(route color index, brightness bucket, unlit,
+/// overlay dimmed, condition discriminant)`. Vehicles that hash to the same key
+/// batch onto one material.
+type PaintKey = (usize, i32, bool, bool, u8);
+
 /// Pack an sRGB color into a u32 for cheap change detection.
 fn pack_color(c: Color) -> u32 {
     let s = c.to_srgba();
@@ -194,9 +299,9 @@ struct VehiclePool {
     /// the washed-out color forever. Unused entries are pruned each paint
     /// pass so a long session cannot retain every occupancy bucket ever
     /// seen — only keys currently applied to a live slot stay alive.
-    material_cache: HashMap<(usize, i32, bool, bool), Handle<StandardMaterial>>,
+    material_cache: HashMap<PaintKey, Handle<StandardMaterial>>,
     /// Last-applied paint key per slot, parallel to `entities`.
-    applied_paint: Vec<Option<(usize, i32, bool, bool)>>,
+    applied_paint: Vec<Option<PaintKey>>,
     /// Parallel light pool: two entities per vehicle (headlight + cabin).
     light_entities: Vec<[Entity; 2]>,
     headlight_mesh: Option<Handle<Mesh>>,
@@ -219,20 +324,32 @@ struct VehiclePool {
 }
 
 fn material_for_paint(
-    cache: &mut HashMap<(usize, i32, bool, bool), Handle<StandardMaterial>>,
+    cache: &mut HashMap<PaintKey, Handle<StandardMaterial>>,
     materials: &mut Assets<StandardMaterial>,
-    paint_key: (usize, i32, bool, bool),
+    paint_key: PaintKey,
     color: Color,
     brightness: f32,
+    condition: VehCondition,
 ) -> Handle<StandardMaterial> {
     cache
         .entry(paint_key)
         .or_insert_with(|| {
-            let (color_idx, brightness_bucket, unlit, overlay_dimmed) = paint_key;
+            let (color_idx, brightness_bucket, unlit, overlay_dimmed, _cond) = paint_key;
             let _ = (color_idx, brightness_bucket, overlay_dimmed); // key already encodes these
+                                                                    // Emissive by condition: a broken vehicle glows stark and hot so it
+                                                                    // reads as a dead/stalled hazard; a bunch glows hotter than a
+                                                                    // free-running vehicle so a jam is legible; normal keeps the
+                                                                    // occupancy-driven brightness. The base already carries the right
+                                                                    // color (hazard red / brightened route / route) from the caller.
+            let base = (if unlit { 1.0 } else { 0.4 }) * brightness;
+            let strength = match condition {
+                VehCondition::Broken => 0.95,
+                VehCondition::Bunched => base + 0.5,
+                VehCondition::Normal => base,
+            };
             materials.add(StandardMaterial {
                 base_color: color,
-                emissive: palette::emissive(color, (if unlit { 1.0 } else { 0.4 }) * brightness),
+                emissive: palette::emissive(color, strength),
                 unlit,
                 ..default()
             })
@@ -300,8 +417,7 @@ fn sync_light_emissive(
 /// this, every occupancy bucket a vehicle ever visits stays pinned in
 /// `Assets<StandardMaterial>` for the rest of the session.
 fn prune_material_cache(pool: &mut VehiclePool) {
-    let live: HashSet<(usize, i32, bool, bool)> =
-        pool.applied_paint.iter().flatten().copied().collect();
+    let live: HashSet<PaintKey> = pool.applied_paint.iter().flatten().copied().collect();
     pool.material_cache.retain(|k, _| live.contains(k));
 }
 
@@ -443,6 +559,27 @@ fn update_vehicles_system(
 
     let vehicle_count = f.vehicle_count as usize;
     let lights_on = night_factor >= LIGHT_VISIBLE_NIGHT;
+
+    // Operations (v0.9 A3): which route color-indices currently have an active
+    // breakdown incident. `UiState.incidents` carries the route ENTITY id;
+    // `vehicles[i*6+5]` is the route's POSITIONAL index into `ui.routes` (see
+    // the module header), so map incident route ids -> positional indices once.
+    // Then classify every vehicle (bunched / broken) from wire positions. Both
+    // are derived from present fields; no wire field was added.
+    let incident_idxs: HashSet<usize> = ui
+        .0
+        .as_ref()
+        .map(|u| {
+            let incident_route_ids: HashSet<i64> = u.incidents.iter().map(|c| c.route_id).collect();
+            u.routes
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| incident_route_ids.contains(&r.id))
+                .map(|(i, _)| i)
+                .collect()
+        })
+        .unwrap_or_default();
+    let conditions = classify_conditions(&f.vehicles, vehicle_count, &incident_idxs, BUNCH_RADIUS);
     // Grow the entity pool (rare; only when this session has never had this
     // many vehicles on screen at once before). Only meaningful when a new
     // frame actually arrived — `vehicle_count` can't move on a
@@ -575,11 +712,23 @@ fn update_vehicles_system(
             }
         }
 
+        let condition = conditions.get(i).copied().unwrap_or(VehCondition::Normal);
         let mut color = palette::vivid_route_color(color_idx);
         if overlay.mode != mf_state::OverlayMode::Off {
             // Owner rule: active overlays reduce the network's color strength.
             color = color.mix(&Color::WHITE, 0.6);
         }
+        // Condition recolor (v0.9 A3): a stalled/broken vehicle is stark hazard
+        // red regardless of route or overlay so a breakdown reads instantly; a
+        // bunched vehicle keeps its route color but brightened so a jam glows
+        // hotter than free-running traffic. `paint_color` feeds both the brick
+        // material and the scripted-model tint below, so the treatment shows
+        // whether or not the model swap is active.
+        let paint_color = match condition {
+            VehCondition::Broken => BREAKDOWN_COLOR,
+            VehCondition::Bunched => palette::brighten(color, 0.35),
+            VehCondition::Normal => color,
+        };
         let brightness = 0.6 + occupancy.clamp(0.0, 1.0) * 0.4;
         // Quantize to 1/64 steps: `occupancy` (and thus `brightness`) drifts
         // continuously tick to tick, and comparing raw floats would defeat
@@ -587,14 +736,21 @@ fn update_vehicles_system(
         // player could see.
         let brightness_bucket = (brightness * 64.0).round() as i32;
         let overlay_dimmed = overlay.mode != mf_state::OverlayMode::Off;
-        let paint_key = (color_idx, brightness_bucket, unlit, overlay_dimmed);
+        let paint_key = (
+            color_idx,
+            brightness_bucket,
+            unlit,
+            overlay_dimmed,
+            condition.key(),
+        );
         if pool.applied_paint.get(i).copied().flatten() != Some(paint_key) {
             let handle = material_for_paint(
                 &mut pool.material_cache,
                 &mut materials,
                 paint_key,
-                color,
+                paint_color,
                 brightness,
+                condition,
             );
             material_handle.0 = handle;
             if let Some(slot) = pool.applied_paint.get_mut(i) {
@@ -636,7 +792,7 @@ fn update_vehicles_system(
                                 *mxf = model_xf;
                             }
                             *mvis = Visibility::Visible;
-                            mslot.tint = color;
+                            mslot.tint = paint_color;
                         }
                     }
                     None => {
@@ -648,7 +804,7 @@ fn update_vehicles_system(
                                 VehicleModelSlot {
                                     index: i,
                                     mode_tag: want_tag,
-                                    tint: color,
+                                    tint: paint_color,
                                     applied: None,
                                     body_entities: Vec::new(),
                                 },
@@ -823,5 +979,73 @@ fn apply_vehicle_model_tint_system(
         if done {
             slot.applied = Some(want);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a stride-6 wire vehicle array from `(x, y, route_idx)` triples.
+    fn wire(vs: &[(f32, f32, usize)]) -> Vec<f32> {
+        let mut out = Vec::with_capacity(vs.len() * 6);
+        for (i, &(x, y, route)) in vs.iter().enumerate() {
+            out.extend_from_slice(&[i as f32, x, y, 0.0, 0.5, route as f32]);
+        }
+        out
+    }
+
+    #[test]
+    fn isolated_vehicles_are_normal() {
+        // Two vehicles far apart on the same route: neither bunched.
+        let v = wire(&[(0.0, 0.0, 0), (1000.0, 0.0, 0)]);
+        let out = classify_conditions(&v, 2, &HashSet::new(), BUNCH_RADIUS);
+        assert_eq!(out, vec![VehCondition::Normal, VehCondition::Normal]);
+    }
+
+    #[test]
+    fn near_vehicles_same_route_bunch() {
+        // Within BUNCH_RADIUS on the same route -> both bunched.
+        let v = wire(&[(0.0, 0.0, 0), (10.0, 0.0, 0)]);
+        let out = classify_conditions(&v, 2, &HashSet::new(), BUNCH_RADIUS);
+        assert_eq!(out, vec![VehCondition::Bunched, VehCondition::Bunched]);
+    }
+
+    #[test]
+    fn near_vehicles_different_routes_do_not_bunch() {
+        // Physically close but on DIFFERENT routes: not a bunch (they just
+        // cross); route index gates the neighbor test.
+        let v = wire(&[(0.0, 0.0, 0), (10.0, 0.0, 1)]);
+        let out = classify_conditions(&v, 2, &HashSet::new(), BUNCH_RADIUS);
+        assert_eq!(out, vec![VehCondition::Normal, VehCondition::Normal]);
+    }
+
+    #[test]
+    fn bunched_on_incident_route_is_broken() {
+        let v = wire(&[(0.0, 0.0, 3), (10.0, 0.0, 3)]);
+        let mut incident = HashSet::new();
+        incident.insert(3usize);
+        let out = classify_conditions(&v, 2, &incident, BUNCH_RADIUS);
+        assert_eq!(out, vec![VehCondition::Broken, VehCondition::Broken]);
+    }
+
+    #[test]
+    fn incident_without_bunching_stays_normal() {
+        // An incident on the route, but the two vehicles are far apart: nothing
+        // is stalled yet, so no broken paint (avoids painting a whole healthy
+        // route red the instant an incident is filed).
+        let v = wire(&[(0.0, 0.0, 3), (1000.0, 0.0, 3)]);
+        let mut incident = HashSet::new();
+        incident.insert(3usize);
+        let out = classify_conditions(&v, 2, &incident, BUNCH_RADIUS);
+        assert_eq!(out, vec![VehCondition::Normal, VehCondition::Normal]);
+    }
+
+    #[test]
+    fn radius_boundary_is_inclusive() {
+        // Exactly BUNCH_RADIUS apart counts as bunched (<=).
+        let v = wire(&[(0.0, 0.0, 0), (BUNCH_RADIUS, 0.0, 0)]);
+        let out = classify_conditions(&v, 2, &HashSet::new(), BUNCH_RADIUS);
+        assert_eq!(out, vec![VehCondition::Bunched, VehCondition::Bunched]);
     }
 }

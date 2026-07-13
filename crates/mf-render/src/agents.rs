@@ -14,13 +14,67 @@ use bevy::prelude::*;
 use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_asset::RenderAssetUsages;
 
-use mf_state::{EffectiveKnobs, HeightAt, LatestFrame};
+use mf_protocol::UiState;
+use mf_state::{EffectiveKnobs, HeightAt, LatestFrame, LatestUi};
 
 use crate::mesh_utils::MeshBuffers;
 use crate::RenderCacheStats;
 
 const AGENT_SIZE: f32 = 2.2;
 const AGENT_Y_OFFSET: f32 = 0.8;
+
+/// Cohort passenger swell (v0.9 B4): floor on how thin the visible crowd goes
+/// at the quietest hour (2am). Never zero, so a live network still shows a
+/// skeleton crowd overnight rather than an empty city.
+const SWELL_MIN: f32 = 0.22;
+/// Demand-factor window mapped onto `[SWELL_MIN, 1.0]`. `cohort_demand.factor`
+/// (and `demand_factor`) have a daily mean of 1.0, dipping well under overnight
+/// and peaking ~1.3+ at the AM/PM rushes.
+const SWELL_DEMAND_LOW: f32 = 0.45;
+const SWELL_DEMAND_HIGH: f32 = 1.30;
+
+/// Fraction of the sampled agent population to draw right now, sourced from the
+/// wire's cohort-driven demand shape so the visible crowd swells at the peaks
+/// and thins overnight. Preference order (richest signal first):
+///   1. `cohort_demand.factor` — the live cohort demand multiplier,
+///   2. `demand_factor` — the sim-depth peak/off-peak multiplier,
+///   3. `service_period` — the coarse period id (amPeak/midday/.../night),
+///   4. no signal -> 1.0 (draw the full sample, pre-v0.9 behavior).
+///
+/// Pure (takes the decoded `UiState`, returns a scalar) so the mapping is
+/// unit-testable and deterministic — no RNG, no wall-clock.
+fn swell_factor(ui: Option<&UiState>) -> f32 {
+    let Some(u) = ui else {
+        return 1.0;
+    };
+    if let Some(cd) = &u.cohort_demand {
+        return swell_from_demand(cd.factor);
+    }
+    if let Some(df) = u.demand_factor {
+        return swell_from_demand(df);
+    }
+    if let Some(period) = u.service_period.as_deref() {
+        return swell_from_period(period);
+    }
+    1.0
+}
+
+/// Map a demand multiplier (daily mean 1.0) onto `[SWELL_MIN, 1.0]`.
+fn swell_from_demand(d: f64) -> f32 {
+    let t = (d as f32 - SWELL_DEMAND_LOW) / (SWELL_DEMAND_HIGH - SWELL_DEMAND_LOW);
+    SWELL_MIN + t.clamp(0.0, 1.0) * (1.0 - SWELL_MIN)
+}
+
+/// Coarse fallback when only the service-period id is on the wire.
+fn swell_from_period(period: &str) -> f32 {
+    match period {
+        "amPeak" | "pmPeak" => 1.0,
+        "midday" => 0.72,
+        "evening" => 0.55,
+        "night" => SWELL_MIN,
+        _ => 1.0,
+    }
+}
 
 // Phase: 0 walk, 1 ride, 2 wait (spec §1.2).
 // Art direction: vivid color is reserved for the transit network — agents
@@ -60,6 +114,11 @@ struct AgentsState {
     mesh: Option<Handle<Mesh>>,
     /// CPU scratch reused across ~20 Hz rebuilds (cleared, not reallocated).
     scratch: MeshBuffers,
+    /// Last cohort-swell fraction applied, quantized to 1/64 buckets. `LatestUi`
+    /// changes every 2 Hz tick (so `is_changed()` is always true and would
+    /// defeat the frame-rate skip gate); only a bucket step in the swell
+    /// actually changes how many agents to draw, so this gates the rebuild.
+    last_swell_bucket: Option<u8>,
 }
 
 /// Flip the shared agents material's `unlit` flag when the quality tier
@@ -83,6 +142,7 @@ fn apply_quality_to_agents_material_system(
 #[allow(clippy::too_many_arguments)]
 fn update_agents_system(
     frame: Res<LatestFrame>,
+    ui: Res<LatestUi>,
     height_at: Res<HeightAt>,
     effective: Res<EffectiveKnobs>,
     mut state: ResMut<AgentsState>,
@@ -125,17 +185,30 @@ fn update_agents_system(
         return;
     }
 
+    // Cohort passenger swell (v0.9 B4): fraction of the sampled population to
+    // draw right now, from the wire's cohort demand shape. Quantized to 1/64 so
+    // a barely-moved factor doesn't rebuild the mesh every 2 Hz UI tick.
+    let swell = swell_factor(ui.0.as_ref());
+    let swell_bucket = (swell * 64.0).round() as u8;
+    let swell_changed = state.last_swell_bucket != Some(swell_bucket);
+
     // `LatestFrame` arrives at the sim's tick rate, well under render frame
     // rate; an `EffectiveKnobs` change can move `cap` (and thus `draw_count`)
-    // without any new frame data. Neither changing means the agent mesh
-    // can't possibly need to look any different from what's already built.
-    if !frame.is_changed() && !effective.is_changed() {
+    // without any new frame data, and a swell-bucket step moves how many of the
+    // sample we draw without any new positions. None changing means the agent
+    // mesh can't possibly need to look any different from what's already built.
+    if !frame.is_changed() && !effective.is_changed() && !swell_changed {
         return;
     }
+    state.last_swell_bucket = Some(swell_bucket);
     let Some(f) = &frame.0 else {
         return;
     };
-    let draw_count = (f.agent_count as usize).min(cap);
+    // Prefix subsample by the swell fraction: agents 0..draw_count of the
+    // sampled array. Deterministic (index-based, no RNG), so a peak crowd is a
+    // superset of the off-peak one — passengers swell/thin, never teleport.
+    let sampled = (f.agent_count as usize).min(cap);
+    let draw_count = ((sampled as f32 * swell).round() as usize).min(sampled);
     if draw_count == 0 {
         if let Ok(mut vis) = visibility.get_mut(entity) {
             *vis = Visibility::Hidden;
@@ -197,4 +270,46 @@ fn update_agents_system(
         *vis = Visibility::Visible;
     }
     stats.agent_entities = if state.entity.is_some() { 1 } else { 0 };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_ui_draws_full_sample() {
+        assert_eq!(swell_factor(None), 1.0);
+    }
+
+    #[test]
+    fn demand_peak_saturates_to_one() {
+        // At/above the high window, draw the full sample.
+        assert!((swell_from_demand(1.30) - 1.0).abs() < 1e-4);
+        assert!((swell_from_demand(1.8) - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn demand_trough_floors_at_swell_min() {
+        // At/below the low window, thin to the overnight floor (never zero).
+        assert!((swell_from_demand(0.45) - SWELL_MIN).abs() < 1e-4);
+        assert!((swell_from_demand(0.1) - SWELL_MIN).abs() < 1e-4);
+    }
+
+    #[test]
+    fn demand_is_monotonic_between_trough_and_peak() {
+        let a = swell_from_demand(0.7);
+        let b = swell_from_demand(1.0);
+        let c = swell_from_demand(1.2);
+        assert!(SWELL_MIN <= a && a < b && b < c && c <= 1.0);
+    }
+
+    #[test]
+    fn period_fallback_peaks_full_and_night_thin() {
+        assert_eq!(swell_from_period("amPeak"), 1.0);
+        assert_eq!(swell_from_period("pmPeak"), 1.0);
+        assert!(swell_from_period("midday") > swell_from_period("evening"));
+        assert!((swell_from_period("night") - SWELL_MIN).abs() < 1e-4);
+        // Unknown period is treated as full (never accidentally blanks the city).
+        assert_eq!(swell_from_period("brunch"), 1.0);
+    }
 }
