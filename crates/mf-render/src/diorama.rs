@@ -478,6 +478,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::assertions_on_constants)] // documents a compile-time invariant
     fn slab_bottom_is_below_ground_plane() {
         assert!(SLAB_BOTTOM_Y < 0.0);
         assert_eq!(SLAB_BOTTOM_Y, -SLAB_DEPTH_M);

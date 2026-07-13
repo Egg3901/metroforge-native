@@ -24,6 +24,10 @@ Palette values mirror `crates/mf-render/src/palette.rs` (LIGHT theme). See
 | `turntable.py` | **Critique renderer.** Given a `.glb` (or the in-memory scene) renders 6 flat-shaded views (front/side/3quarter/top + a game-camera oblique + a ~2km far view) to PNG in ~1.5s (Cycles-CPU, uniform light, neutral grey bg — no GPU/EGL needed). The vision-critique half of the loop. |
 | `gen_bridge.py` | Suspension bridge family: `generic` (steel portal towers, 2 cables, no fan) + `brooklyn` (stone twin towers with TWO pointed gothic arches, 4-cable catenary + hanger curtain + signature diagonal stay fan + anchorages). |
 | `gen_truss.py` | Generic Warren through-truss box (120–350m spans) so mid-length crossings stop using flat deck ribbons. |
+| `gen_tunnel.py` | **Kit:** generic concrete tunnel portal (posts + lintel + coping frame around a recessed near-black mouth, flaring wing walls). Replaces the box/trapezoid portal marks for road tunnels AND metro track tunnels. +X faces outward (approach side); Z scaled to corridor width. |
+| `gen_viaduct.py` | **Kit:** tileable elevated ROAD viaduct segment — black box-girder deck + parapet + crosshead T-pier. Tiled along `gradeLevel>=1` roads on Medium+ (`~24m` seg). |
+| `gen_rail_viaduct.py` | **Kit:** tileable elevated RAIL viaduct segment — narrow black deck + grey ballast bed + rails on a white steel trestle (twin columns + X-brace). Tiled along elevated transit track on Medium+ (`~20m` seg). |
+| `gen_rail_bridge.py` | **Kit:** girder RAIL bridge for track water crossings — twin deep plate girders (ribbed) + ballast deck + abutments. Scaled X to the over-water chord (all tiers). |
 | `gen_train.py` | 3-car metro consist (cab window, door pattern, continuous window band, visible bogies). |
 | `gen_clouds.py` | 3–4 low-poly rounded cloud clumps. |
 | `make-assets.sh` | Regenerates every `.glb` into `crates/mf-game/assets/models/`. `--preview` also renders a turntable sheet per asset into `previews/`. |
@@ -86,6 +90,14 @@ blender -b --factory-startup --python tools/blender/turntable.py -- \
   flat deck slab/piers/shadow under a placed model (no double-render, #144).
 - `crates/mf-render/src/vehicles.rs` swaps the metro brick for the consist
   model behind `METRO_MODEL_SWAP` (Medium+, metro only).
+- `crates/mf-render/src/structures.rs` places the structure KIT: tunnel portals
+  at road + metro tunnel mouths, tileable road/rail viaduct segments along
+  elevated runs (Medium+ upgrade — Potato/Low keep the cheap extrusion), and a
+  girder rail bridge over track water crossings (all tiers). `roads.rs` and
+  `transit.rs` call its pure predicates (`is_road_viaduct`,
+  `track_gets_rail_bridge`) to suppress their extruded deck/piers/portals/rails
+  under a placed model (no double-render). Elevation-channel rekey + per-model
+  AABB log mirror `bridges.rs`.
 
 ## Cel-outline compatibility (reported)
 

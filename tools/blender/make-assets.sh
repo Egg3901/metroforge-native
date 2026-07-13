@@ -45,6 +45,11 @@ gen gen_bridge.py "$OUT/bridge_suspension.glb" bridge_suspension generic
 gen gen_bridge.py "$OUT/bridge_brooklyn.glb"   bridge_brooklyn   brooklyn
 # through-truss bridge (120-250m spans)
 gen gen_truss.py  "$OUT/bridge_truss.glb"      bridge_truss
+# generic structure kit (portals + viaducts + rail bridge)
+gen gen_tunnel.py       "$OUT/portal_tunnel.glb"  portal_tunnel
+gen gen_viaduct.py      "$OUT/viaduct_road.glb"   viaduct_road
+gen gen_rail_viaduct.py "$OUT/viaduct_rail.glb"   viaduct_rail
+gen gen_rail_bridge.py  "$OUT/rail_bridge.glb"    rail_bridge
 # metro consist
 gen gen_train.py  "$OUT/train_metro.glb"       train_metro
 # cloud puffs

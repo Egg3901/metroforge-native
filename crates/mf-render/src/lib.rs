@@ -32,6 +32,7 @@ mod roads;
 mod sky;
 mod stats;
 mod street_lamps;
+mod structures;
 mod subway;
 mod terrain;
 mod terrain_material;
@@ -120,6 +121,7 @@ impl Plugin for MfRenderPlugin {
                 // model placement. Statics/Dynamic sets are chosen inside each.
                 models::MfModelsPlugin,
                 bridges::MfBridgesPlugin,
+                structures::MfStructuresPlugin,
             ),
         ))
         .add_plugins(photomode::MfPhotoModeRenderPlugin)
