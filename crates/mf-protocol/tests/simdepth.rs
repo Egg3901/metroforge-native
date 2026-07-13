@@ -194,8 +194,8 @@ fn route_missing_only_some_sim_depth_fields_defaults_the_rest() {
 fn cohort_demand_summary_roundtrips_and_defaults() {
     // v0.9 cohort living-city: `cohortDemand` (+ per-district `growthDelta`).
     // Old payloads omit both → decode with None/absent; new payloads carry them.
-    let legacy: UiState = serde_json::from_str(&legacy_ui_state_json())
-        .expect("legacy payload must still decode");
+    let legacy: UiState =
+        serde_json::from_str(&legacy_ui_state_json()).expect("legacy payload must still decode");
     assert!(legacy.cohort_demand.is_none());
 
     let json = r##"{

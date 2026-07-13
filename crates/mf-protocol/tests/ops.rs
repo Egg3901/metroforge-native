@@ -85,7 +85,11 @@ fn route_ops_fields_default_when_absent() {
 
 #[test]
 fn set_route_frequency_command_roundtrips() {
-    let c = Command::SetRouteFrequency { route_id: 7, period: "pmPeak".to_string(), headway_seconds: 240.0 };
+    let c = Command::SetRouteFrequency {
+        route_id: 7,
+        period: "pmPeak".to_string(),
+        headway_seconds: 240.0,
+    };
     let json = serde_json::to_string(&c).unwrap();
     assert!(json.contains("\"kind\":\"setRouteFrequency\""));
     assert!(json.contains("\"routeId\":7"));
@@ -96,7 +100,10 @@ fn set_route_frequency_command_roundtrips() {
 
 #[test]
 fn build_depot_command_roundtrips() {
-    let c = Command::BuildDepot { mode: TransitMode::Metro, pos: Vec2 { x: 3.0, y: -4.0 } };
+    let c = Command::BuildDepot {
+        mode: TransitMode::Metro,
+        pos: Vec2 { x: 3.0, y: -4.0 },
+    };
     let json = serde_json::to_string(&c).unwrap();
     assert!(json.contains("\"kind\":\"buildDepot\""));
     assert!(json.contains("\"mode\":\"metro\""));
