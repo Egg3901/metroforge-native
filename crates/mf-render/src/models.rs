@@ -25,6 +25,7 @@ use mf_state::QualityTier;
 /// Asset paths (relative to the Bevy asset root, `crates/mf-game/assets`).
 pub const BRIDGE_SUSPENSION_GLB: &str = "models/bridge_suspension.glb";
 pub const BRIDGE_BROOKLYN_GLB: &str = "models/bridge_brooklyn.glb";
+pub const BRIDGE_TRUSS_GLB: &str = "models/bridge_truss.glb";
 pub const TRAIN_METRO_GLB: &str = "models/train_metro.glb";
 pub const CLOUD_PUFFS_GLB: &str = "models/cloud_puffs.glb";
 
@@ -48,6 +49,7 @@ const CLOUD_PUFF_SCALE: f32 = 1.0;
 pub struct ModelHandles {
     pub bridge_suspension: Handle<Scene>,
     pub bridge_brooklyn: Handle<Scene>,
+    pub bridge_truss: Handle<Scene>,
     pub train_metro: Handle<Scene>,
     pub cloud_puffs: Handle<Scene>,
 }
@@ -80,6 +82,7 @@ fn load_models_system(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(ModelHandles {
         bridge_suspension: scene(BRIDGE_SUSPENSION_GLB),
         bridge_brooklyn: scene(BRIDGE_BROOKLYN_GLB),
+        bridge_truss: scene(BRIDGE_TRUSS_GLB),
         train_metro: scene(TRAIN_METRO_GLB),
         cloud_puffs: scene(CLOUD_PUFFS_GLB),
     });

@@ -538,7 +538,20 @@ fn build_roads_system(
     // `road_shadow_distance_fade_system`.
     let shadows_enabled = true;
 
-    for road in &city_json.roads {
+    // Double-render fix (#144): where `bridges.rs` places a scripted bridge
+    // model over a span, suppress THIS module's elevated grade structure (slab
+    // edge, support piers, blob shadow, deck hairlines) for that road so the
+    // model's own towers/piers/deck don't render on top of the flat causeway.
+    // Same pure decision function the placer uses, so the two never disagree.
+    // The thin road ribbon itself is kept — it rides on the model deck as the
+    // black roadway surface and keeps the approaches continuous.
+    let bridged_roads: std::collections::HashSet<usize> =
+        crate::bridges::plan_bridge_placements(city_json, &height_at)
+            .into_iter()
+            .map(|p| p.road_idx)
+            .collect();
+
+    for (road_idx, road) in city_json.roads.iter().enumerate() {
         let raw: Vec<Vec2> = road
             .points
             .chunks_exact(2)
@@ -620,7 +633,7 @@ fn build_roads_system(
             .zip(pts.iter())
             .map(|(h, p)| h - sample(p.x, p.y))
             .fold(0.0_f32, f32::max);
-        if peak_lift > ELEVATED_EPS {
+        if peak_lift > ELEVATED_EPS && !bridged_roads.contains(&road_idx) {
             // Visible slab thickness on both edges...
             append_deck_slab(
                 &mut state.scratch_detail,

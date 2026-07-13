@@ -21,10 +21,30 @@ Palette values mirror `crates/mf-render/src/palette.rs` (LIGHT theme). See
 | File | Role |
 |---|---|
 | `mf_bpy/__init__.py` | Shared lib: palette materials, flat shading, deterministic mesh build, `.glb` export (1 unit : 1 m, +Y up = Bevy). |
-| `gen_bridge.py` | Pilot A. Parametric suspension bridge family (`generic` + `brooklyn` variants). |
-| `gen_train.py` | Pilot B. 3-car metro consist (window band, curved roof, bogie hint). |
-| `gen_clouds.py` | Pilot C. 3–4 low-poly rounded cloud clumps. |
-| `make-assets.sh` | Regenerates every `.glb` into `crates/mf-game/assets/models/`. |
+| `turntable.py` | **Critique renderer.** Given a `.glb` (or the in-memory scene) renders 6 flat-shaded views (front/side/3quarter/top + a game-camera oblique + a ~2km far view) to PNG in ~1.5s (Cycles-CPU, uniform light, neutral grey bg — no GPU/EGL needed). The vision-critique half of the loop. |
+| `gen_bridge.py` | Suspension bridge family: `generic` (steel portal towers, 2 cables, no fan) + `brooklyn` (stone twin towers with TWO pointed gothic arches, 4-cable catenary + hanger curtain + signature diagonal stay fan + anchorages). |
+| `gen_truss.py` | Generic Warren through-truss box (120–350m spans) so mid-length crossings stop using flat deck ribbons. |
+| `gen_train.py` | 3-car metro consist (cab window, door pattern, continuous window band, visible bogies). |
+| `gen_clouds.py` | 3–4 low-poly rounded cloud clumps. |
+| `make-assets.sh` | Regenerates every `.glb` into `crates/mf-game/assets/models/`. `--preview` also renders a turntable sheet per asset into `previews/`. |
+| `previews/` | Committed turntable sheets for the final iteration of each asset (the model-craft gate). |
+
+## The model-craft critique loop (BINDING)
+
+Adopted 2026-07-13 (ops-knowledge doc `metroforge-model-craft-method`) after the
+pilot bridge was rejected. **Never export blind.** Every iteration of every
+asset: regenerate → render the turntable → *read* the images → score a written
+silhouette checklist pass/fail per item → edit the generator. Minimum 4
+iterations per hero asset; stop at all-pass (or 8, reporting honestly). Each
+generator takes `--preview <prefix>` to render its own turntable inline:
+
+```bash
+blender -b --factory-startup --python tools/blender/gen_bridge.py -- \
+    brooklyn --preview /tmp/bk_iter7 /tmp/bk.glb
+# render an existing .glb:
+blender -b --factory-startup --python tools/blender/turntable.py -- \
+    --glb crates/mf-game/assets/models/bridge_brooklyn.glb --out /tmp/bk
+```
 
 ## The loop
 
@@ -59,8 +79,11 @@ Palette values mirror `crates/mf-render/src/palette.rs` (LIGHT theme). See
 - `bevy_gltf` feature is enabled in the root `Cargo.toml`.
 - `crates/mf-render/src/models.rs` loads the `.glb` scenes at startup into a
   `ModelHandles` resource and drives the cloud puffs.
-- `crates/mf-render/src/bridges.rs` places suspension models on long over-water
-  spans.
+- `crates/mf-render/src/bridges.rs` places ONE bridge model per qualifying
+  over-water span, picked by chord length (>350m → suspension family, the single
+  longest getting the Brooklyn variant; 120–350m → truss; shorter → left as a
+  ribbon). `roads.rs` calls the same `plan_bridge_placements` to suppress its
+  flat deck slab/piers/shadow under a placed model (no double-render, #144).
 - `crates/mf-render/src/vehicles.rs` swaps the metro brick for the consist
   model behind `METRO_MODEL_SWAP` (Medium+, metro only).
 

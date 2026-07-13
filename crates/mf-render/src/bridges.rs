@@ -1,19 +1,27 @@
-//! `bridges.rs` — Pilot A placement. Replaces the flat deck ribbon of long
-//! bridge road spans over water with a scripted suspension-bridge glTF model
-//! (see `tools/blender/gen_bridge.py`), scaled to the span.
+//! `bridges.rs` — long-span bridge model placement (issue #144).
 //!
-//! Reads the SAME source data `roads.rs` consumes (`CurrentCity.static_city`)
-//! WITHOUT touching `roads.rs`: each `RoadDto` carries `is_bridge` and a
-//! polyline of world-meter points. A span qualifies when it is bridge-flagged
-//! (or runs over water) AND its over-water chord is longer than
-//! `MIN_BRIDGE_SPAN_M`. The single longest qualifying span gets the Brooklyn
-//! signature variant (the East-River-scale crossing); the rest get the generic
-//! suspension model. Fallback: if no model fits or assets aren't ready, the
-//! `roads.rs` ribbon (which we do not remove) remains — so nothing regresses.
+//! Replaces the flat deck ribbon of a qualifying over-water span with a
+//! scripted Blender glTF bridge (see `tools/blender/`), scaled to the span.
+//!
+//! ONE style per span, picked by the over-water chord length ([`plan_bridge_placements`]):
+//!   * `> SUSPENSION_MIN_M` (350m) over water → suspension family. The single
+//!     longest such span gets the **Brooklyn** signature variant (the East-River
+//!     -scale crossing) until name-matching data lands; the rest get the plain
+//!     suspension model.
+//!   * `TRUSS_MIN_M..=SUSPENSION_MIN_M` (120–350m) → through-**truss** model, so
+//!     mid-length crossings stop using flat deck ribbons.
+//!   * shorter → no model; the `roads.rs` deck ribbon stays.
+//!
+//! Never mixes models within one span. The placement decision is a pure
+//! function of `(city, terrain)`; `roads.rs` calls the SAME function to
+//! suppress its ribbon + piers under a placed model (the double-render fix),
+//! so the two systems can never disagree regardless of schedule order.
 //!
 //! Coordinate convention (matches roads.rs / terrain.rs): a DTO point (px, py)
-//! is world position `Vec3::new(px, height, py)` — world X→Bevy X, world Y→Bevy
-//! Z, Bevy Y is up. Models are authored facing +X along the span.
+//! is world `Vec3::new(px, height, py)`. Models are authored facing +X along
+//! the span, deck top at y≈0, and are scaled X→real span, Z→target deck width.
+//! Tower/cable HEIGHT (model Y) is left at scale 1 so verticals are never
+//! stretched — only the deck/span axis stretches (mandate #144).
 
 use bevy::prelude::*;
 use bevy::scene::SceneRoot;
@@ -22,18 +30,47 @@ use mf_state::{CurrentCity, HeightAt};
 
 use crate::models::ModelHandles;
 
-/// Minimum over-water chord (meters) to swap in a suspension model.
-const MIN_BRIDGE_SPAN_M: f32 = 250.0;
-/// Authored total deck length of the bridge models (gen_bridge.py:
-/// SPAN 480 + 2*OVERHANG 90 = 660). Used to scale X to the real span.
-const MODEL_DECK_LEN_M: f32 = 660.0;
-/// Authored deck width of the bridge models (gen_bridge.py DECK_W).
-const MODEL_DECK_W_M: f32 = 26.0;
+/// Longest over-water chord (m) that still uses the flat ribbon: below this a
+/// crossing is left to `roads.rs`.
+const TRUSS_MIN_M: f32 = 120.0;
+/// Chord length (m) at/above which a crossing uses the suspension family
+/// instead of the truss model.
+const SUSPENSION_MIN_M: f32 = 350.0;
+
+/// Authored total deck length of the suspension models (gen_bridge.py:
+/// SPAN 486 + 2*OVERHANG 90 = 666).
+const SUSP_DECK_LEN_M: f32 = 666.0;
+/// Authored deck width of the suspension models (gen_bridge.py DECK_W).
+const SUSP_DECK_W_M: f32 = 26.0;
+/// Authored total deck length of the truss model (gen_truss.py: SPAN 180 + 8).
+const TRUSS_DECK_LEN_M: f32 = 188.0;
+/// Authored deck width of the truss model (gen_truss.py DECK_W).
+const TRUSS_DECK_W_M: f32 = 16.0;
+
 /// Deck placement height (mirrors roads.rs BRIDGE_DECK_Y).
 const BRIDGE_DECK_Y: f32 = 8.0;
-/// Target deck width the placed model should present (a wide arterial-ish
-/// crossing). Kept fixed for a consistent silhouette.
-const TARGET_DECK_W_M: f32 = 30.0;
+/// Target presented deck width for a suspension crossing (wide arterial feel).
+const SUSP_TARGET_W_M: f32 = 30.0;
+/// Target presented deck width for a truss crossing (narrower).
+const TRUSS_TARGET_W_M: f32 = 18.0;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BridgeKind {
+    Suspension,
+    Brooklyn,
+    Truss,
+}
+
+/// One decided bridge placement: which road it covers, its style, and the
+/// over-water chord endpoints/length it spans.
+#[derive(Clone, Copy, Debug)]
+pub struct BridgePlacement {
+    pub road_idx: usize,
+    pub kind: BridgeKind,
+    pub a: Vec2,
+    pub b: Vec2,
+    pub len: f32,
+}
 
 #[derive(Component)]
 struct BridgeModelInstance;
@@ -81,6 +118,55 @@ fn over_water_chord(pts: &[Vec2], height_at: &HeightAt) -> Option<(Vec2, Vec2, f
     best.map(|(s, e, len)| (pts[s], pts[e], len))
 }
 
+/// Decide, per road, whether a bridge MODEL covers its over-water span and
+/// which style. Pure function of `(city, terrain)` — called by BOTH the model
+/// placer here and the `roads.rs` ribbon suppressor, so they never disagree.
+pub fn plan_bridge_placements(
+    city_json: &mf_protocol::StaticCityJson,
+    height_at: &HeightAt,
+) -> Vec<BridgePlacement> {
+    let mut out: Vec<BridgePlacement> = Vec::new();
+    let mut longest_susp: Option<(usize, f32)> = None; // (out index, len)
+
+    for (road_idx, road) in city_json.roads.iter().enumerate() {
+        let pts: Vec<Vec2> = road
+            .points
+            .chunks_exact(2)
+            .map(|c| Vec2::new(c[0] as f32, c[1] as f32))
+            .collect();
+        if pts.len() < 2 {
+            continue;
+        }
+        let Some((a, b, len)) = over_water_chord(&pts, height_at) else {
+            continue;
+        };
+        let _ = road.is_bridge; // a hint; the span-length gate is authoritative
+        let kind = if len >= SUSPENSION_MIN_M {
+            BridgeKind::Suspension
+        } else if len >= TRUSS_MIN_M {
+            BridgeKind::Truss
+        } else {
+            continue; // short crossing: leave the flat ribbon to roads.rs
+        };
+        if kind == BridgeKind::Suspension && longest_susp.is_none_or(|(_, bl)| len > bl) {
+            longest_susp = Some((out.len(), len));
+        }
+        out.push(BridgePlacement {
+            road_idx,
+            kind,
+            a,
+            b,
+            len,
+        });
+    }
+
+    // Promote the single longest suspension span to the Brooklyn signature.
+    if let Some((idx, _)) = longest_susp {
+        out[idx].kind = BridgeKind::Brooklyn;
+    }
+    out
+}
+
 #[allow(clippy::type_complexity)]
 fn build_bridges_system(
     mut commands: Commands,
@@ -114,58 +200,35 @@ fn build_bridges_system(
         commands.entity(e).despawn();
     }
 
-    // Collect every qualifying span first so we can pick the longest for the
-    // Brooklyn signature variant.
-    let mut candidates: Vec<(Vec2, Vec2, f32)> = Vec::new();
-    for road in &city_json.roads {
-        let pts: Vec<Vec2> = road
-            .points
-            .chunks_exact(2)
-            .map(|c| Vec2::new(c[0] as f32, c[1] as f32))
-            .collect();
-        if pts.len() < 2 {
-            continue;
-        }
-        // Qualify on a real water crossing long enough to be worth a model.
-        // `is_bridge` is respected as a hint but the span gate is what drives
-        // the swap (short bridge-flagged culverts keep the ribbon).
-        let Some((a, b, len)) = over_water_chord(&pts, &height_at) else {
-            continue;
+    for p in plan_bridge_placements(city_json, &height_at) {
+        let (scene, model_len, model_w, target_w) = match p.kind {
+            BridgeKind::Brooklyn => (
+                handles.bridge_brooklyn.clone(),
+                SUSP_DECK_LEN_M,
+                SUSP_DECK_W_M,
+                SUSP_TARGET_W_M,
+            ),
+            BridgeKind::Suspension => (
+                handles.bridge_suspension.clone(),
+                SUSP_DECK_LEN_M,
+                SUSP_DECK_W_M,
+                SUSP_TARGET_W_M,
+            ),
+            BridgeKind::Truss => (
+                handles.bridge_truss.clone(),
+                TRUSS_DECK_LEN_M,
+                TRUSS_DECK_W_M,
+                TRUSS_TARGET_W_M,
+            ),
         };
-        if len < MIN_BRIDGE_SPAN_M {
-            continue;
-        }
-        let _ = road.is_bridge;
-        candidates.push((a, b, len));
-    }
-
-    if candidates.is_empty() {
-        return;
-    }
-    // Longest span → Brooklyn signature variant (East-River-scale crossing).
-    let longest_idx = candidates
-        .iter()
-        .enumerate()
-        .max_by(|x, y| x.1 .2.partial_cmp(&y.1 .2).unwrap())
-        .map(|(i, _)| i)
-        .unwrap();
-
-    for (i, (a, b, len)) in candidates.iter().enumerate() {
-        let scene = if i == longest_idx {
-            handles.bridge_brooklyn.clone()
-        } else {
-            handles.bridge_suspension.clone()
-        };
-        let mid = (*a + *b) * 0.5;
-        let dir = (*b - *a).normalize_or_zero();
+        let mid = (p.a + p.b) * 0.5;
+        let dir = (p.b - p.a).normalize_or_zero();
         // Align authored +X span axis to the chord direction.
         // rotation_y(θ) maps +X → (cosθ, 0, -sinθ); want (dir.x, 0, dir.y).
         let theta = (-dir.y).atan2(dir.x);
-        let scale = Vec3::new(
-            len / MODEL_DECK_LEN_M,
-            1.0,
-            TARGET_DECK_W_M / MODEL_DECK_W_M,
-        );
+        // Stretch ONLY the deck/span axis (X) and the deck width (Z). Height
+        // (Y) stays at 1.0 so towers/cables are never vertically stretched.
+        let scale = Vec3::new(p.len / model_len, 1.0, target_w / model_w);
         commands.spawn((
             SceneRoot(scene),
             Transform {
@@ -177,13 +240,10 @@ fn build_bridges_system(
             BridgeModelInstance,
         ));
         tracing::info!(
-            "mf-render bridges: placed {} span len={:.0}m at ({:.0},{:.0})",
-            if i == longest_idx {
-                "BROOKLYN"
-            } else {
-                "suspension"
-            },
-            len,
+            "mf-render bridges: placed {:?} road#{} span={:.0}m at ({:.0},{:.0})",
+            p.kind,
+            p.road_idx,
+            p.len,
             mid.x,
             mid.y
         );
