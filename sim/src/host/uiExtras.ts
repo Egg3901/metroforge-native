@@ -15,6 +15,7 @@ import {
   type ScenarioState,
 } from '@core/scenario';
 import { diurnalFactor, hourOfDay } from '@core/timeOfDay';
+import { segmentDensity01, segmentEffectiveSpeedMps } from '@core/transit/gradeEffects';
 import type { AnalyticsInsights } from '@core/analytics';
 import type { GameState, LifetimeLedger, RouteDef } from '@core/types';
 
@@ -26,15 +27,37 @@ export interface UiRouteExtras {
   /** crowding scaled by the current time-of-day factor: how full the line is
    *  right now (peaks at the AM/PM rush), vs. the daily-average `crowding`. */
   liveCrowding: number;
+  /** length-weighted average grade-effective speed (m/s) at the current tick —
+   *  surface lines drop under traffic (grade congestion); elevated/tunnel stay
+   *  at mode cruise. 0 when no state/segments are available. */
+  avgEffectiveSpeed: number;
 }
 
-export function routeExtras(r: RouteDef, todFactor: number): UiRouteExtras {
+/** Length-weighted mean of per-segment grade-effective speeds at `todFactor`. */
+export function routeAvgEffectiveSpeed(state: GameState, r: RouteDef, todFactor: number): number {
+  let lenSum = 0;
+  let speedLen = 0;
+  for (const segId of r.segmentIds) {
+    const seg = state.tracks.find((t) => t.id === segId);
+    if (!seg) continue;
+    const len = seg.polyline.length;
+    if (len <= 0) continue;
+    const dens = segmentDensity01(state.fields, seg);
+    const spd = segmentEffectiveSpeedMps(r.mode, seg.grade, todFactor, dens);
+    lenSum += len;
+    speedLen += spd * len;
+  }
+  return lenSum > 0 ? speedLen / lenSum : 0;
+}
+
+export function routeExtras(r: RouteDef, todFactor: number, state?: GameState): UiRouteExtras {
   const operatingCost = routeOperatingCost(r.mode, r.vehicleCount);
   const crowding = r.crowding ?? 0;
   return {
     operatingCost,
     farebox: operatingCost > 0 ? r.dailyRevenue / operatingCost : 0,
     liveCrowding: crowding * todFactor,
+    avgEffectiveSpeed: state ? routeAvgEffectiveSpeed(state, r, todFactor) : 0,
   };
 }
 

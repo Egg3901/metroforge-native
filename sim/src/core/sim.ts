@@ -8,6 +8,7 @@ import {
   BANKRUPTCY_GRACE_DAYS,
   BASE_DAILY_SUBSIDY,
   CROWD_APPROVAL_THRESHOLD,
+  GRADE_MAINT_MULT,
   GROWTH_INTERVAL_DAYS,
   MODES,
   PEAK_HOUR_FRACTION,
@@ -27,8 +28,9 @@ import { routeOperatingCost } from './economy';
 import { diurnalDemand, diurnalFactor } from './timeOfDay';
 import { climateTable, weatherAt, type WeatherEvent } from './weather';
 import { weatherSpeedMult } from './weatherEffects';
+import { segmentDayAverageSpeedMps, segmentDensity01 } from './transit/gradeEffects';
 import type { Vec2 } from './geometry';
-import type { GameState, RouteDef, Station } from './types';
+import type { GameState, RouteDef, Station, TrackSegment } from './types';
 
 /** Ticks per game-hour: weather is refreshed at most this often (it is a cheap
  *  pure function of the tick, so an hourly cadence keeps its cost negligible). */
@@ -268,11 +270,18 @@ function moveVehicles(state: GameState): void {
       stops = allStopDistances(path, route, stationById, state.instanceId);
       stopMemo.set(route.id, stops);
     }
-    // Advance segment-by-segment toward the next stop so we never overshoot
-    // a dwell point on long ticks / high speeds. Weather slows surface running;
-    // a fully-underground route (surfaceExposure 0) is immune.
-    const speedMult = weatherSpeedMult(state.weather, route.mode, route.surfaceExposure ?? 1);
-    let remaining = cfg.speed * speedMult;
+    // Advance segment-by-segment toward the next stop so we never overshoot a
+    // dwell point on long ticks / high speeds. Two orthogonal speed factors
+    // compose MULTIPLICATIVELY here (documented in gradeEffects.ts):
+    //  1. grade congestion — surface running is slower in dense corridors; the
+    //     route's day-average grade speed is cached each assignment
+    //     (route.moveGradeSpeed), so this is a single read (elevated/tunnel keep
+    //     mode cruise). The diurnal sharpness lives in assignment ridership.
+    //  2. weather — rain/snow/blizzard slow surface running, scaled by
+    //     surfaceExposure so a fully-underground line shrugs it off.
+    const gradeSpeed = route.moveGradeSpeed ?? cfg.speed;
+    const weatherMult = weatherSpeedMult(state.weather, route.mode, route.surfaceExposure ?? 1);
+    let remaining = gradeSpeed * weatherMult;
     let guard = 0;
     while (remaining > 1e-6 && guard++ < 8) {
       const nextStop = nextStopAhead(stops, v.along, path.length);
@@ -387,7 +396,13 @@ export function refreshAssignment(state: GameState): void {
   // per-route surface exposure (fraction of segments not in tunnel), for the
   // weather speed model: underground routes shrug off snow/blizzards.
   const gradeById = new Map<number, string>();
-  for (const t of state.tracks) gradeById.set(t.id, t.grade);
+  const trackById = new Map<number, TrackSegment>();
+  for (const t of state.tracks) {
+    gradeById.set(t.id, t.grade);
+    trackById.set(t.id, t);
+    // refresh the grade-congestion density cache (growth shifts land value)
+    if (t.grade === 'surface') t.congestionDensity = segmentDensity01(state.fields, t);
+  }
   for (const r of state.routes) {
     r.dailyRidership = result.routeRidership.get(r.id) ?? 0;
     r.dailyRevenue = result.routeRevenue.get(r.id) ?? 0;
@@ -409,6 +424,22 @@ export function refreshAssignment(state: GameState): void {
     } else {
       r.surfaceExposure = 1;
     }
+    // grade-congestion movement speed: length-weighted DAY-AVERAGE grade speed
+    // over the route's segments, cached so the per-tick vehicle loop is a single
+    // property read. Day-average matches the headway model; the rush sharpness
+    // of the tradeoff lives in the peak-biased assignment ride edges.
+    let totalLen = 0;
+    let speedLen = 0;
+    for (const sid of r.segmentIds) {
+      const seg = trackById.get(sid);
+      if (!seg) continue;
+      const len = seg.polyline.length;
+      if (len <= 0) continue;
+      const dens = seg.grade === 'surface' ? seg.congestionDensity ?? segmentDensity01(state.fields, seg) : 0;
+      speedLen += segmentDayAverageSpeedMps(r.mode, seg.grade, dens) * len;
+      totalLen += len;
+    }
+    r.moveGradeSpeed = totalLen > 0 ? speedLen / totalLen : MODES[r.mode].speed;
   }
   for (const s of state.stations) {
     // rolling blend so numbers move smoothly
@@ -455,7 +486,7 @@ function runDailyEconomy(state: GameState, _day: number, events: TickEvents): vo
   }
   fares *= eventFareMult(state.activeEvents); // fare-free events waive the farebox
   for (const t of state.tracks) {
-    maintenance += (t.polyline.length / 1000) * MODES[t.mode].maintPerKmPerDay;
+    maintenance += (t.polyline.length / 1000) * MODES[t.mode].maintPerKmPerDay * GRADE_MAINT_MULT[t.grade];
   }
   for (const s of state.stations) {
     maintenance += MODES[s.mode].stationCost * 0.0002 * s.level;

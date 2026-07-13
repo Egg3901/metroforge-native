@@ -168,7 +168,7 @@ function buildUi(s: GameState): UiState {
         load: r.load ?? 0,
         crowding: r.crowding ?? 0,
         segmentLoads: r.segmentLoads ? [...r.segmentLoads] : [],
-        ...routeExtras(r, tod),
+        ...routeExtras(r, tod, s),
       };
     }),
     activeEvents: s.activeEvents.map((a) => ({ id: a.id, name: EVENT_DEFS.find((e) => e.id === a.id)?.name ?? a.id, daysLeft: a.daysLeft })),
