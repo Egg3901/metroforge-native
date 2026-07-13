@@ -8,7 +8,6 @@
 //!
 //! Deferred to P3 (stubbed with TODOs, matching the transient-field contract):
 //! * `weather = weatherAt(...)` (weather.ts) — left `None`; transient, unhashed.
-//! * scenario rule/event derivation from a `ScenarioDef` (scenario/evaluate.ts).
 //! * OSM real-city bundles (`options.osm`) — P2 is procedural-only.
 
 use std::collections::BTreeMap;
@@ -35,7 +34,8 @@ pub struct NewGameOptions {
     /// baked masks/elevation/labels/anchors replace procgen. The host layer
     /// (`mf-net`) resolves + parses this from the city key. `None` = procedural.
     pub osm: Option<crate::city::osm::OsmCityData>,
-    // TODO(P5): `scenario` ScenarioDef.
+    /// Active data-driven scenario id (catalog lookup happens at runtime).
+    pub scenario: Option<crate::types::ScenarioDef>,
 }
 
 /// Transient per-process instance-id counter. Mirrors `nextInstanceId()`
@@ -120,7 +120,7 @@ pub fn new_game(seed: u32, difficulty: Difficulty, options: NewGameOptions) -> G
         active_events: Vec::new(),
         next_event_day: 8, // no events in the first week
         scenario_rules: rules,
-        scenario: None,
+        scenario: options.scenario,
         scenario_won: None,
         fired_scenario_events: None,
         district_demand_mult: None,

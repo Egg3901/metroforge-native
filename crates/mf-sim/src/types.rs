@@ -649,11 +649,11 @@ sim_type! {
 // reconciled at integration. The P1 placeholder was removed.
 
 sim_type! {
-    /// Data-driven scenario definition slot. Minimal placeholder for
-    /// `scenario/types.ts::ScenarioDef`; the full win/lose-tree + catalog
-    /// (`scenario/evaluate.rs::ScenarioDef`, `catalog.ts`, `progression.ts`) is
-    /// owned by the content lane and wired in P4/P5. New games leave this
-    /// `None`, so the tick's scenario branch is inert until then.
+    /// Active data-driven scenario handle.
+    ///
+    /// The full catalog definition (`scenario::evaluate::ScenarioDef`) is loaded
+    /// by id at runtime from `scenario::catalog`; only the stable id persists in
+    /// saves/replays.
     #[derive(Clone, Debug, Default, PartialEq)]
     pub struct ScenarioDef {
         /// Scenario id.

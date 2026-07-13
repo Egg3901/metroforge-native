@@ -21,6 +21,7 @@ use crate::fields::cell_center;
 use crate::geometry::{dist, Polyline, Vec2};
 use crate::ops;
 use crate::rng::Rng;
+use crate::scenario;
 use crate::transit::assignment::{run_assignment, CarFlow};
 use crate::transit::grade_effects::{segment_day_average_speed_mps, segment_density01};
 use crate::transit::route_path::get_route_path;
@@ -213,8 +214,30 @@ pub fn sim_tick(state: &mut GameState) -> TickEvents {
         if let Some(payload) = analytics::commit_analytics_day(state, day) {
             events.heatmap = Some(payload);
         }
-        // scenario evaluation is owned by the content lane (P4/P5); `scenario`
-        // is always `None` at present, so this branch is inert. See PORT.md.
+        if let Some(def) = state
+            .scenario
+            .as_ref()
+            .and_then(|s| scenario::catalog::playable_scenario(&s.id))
+        {
+            let sr = scenario::evaluate_scenario_day(state, def, day);
+            events.messages.extend(sr.messages);
+            for t in sr.toasts {
+                events.toasts.push(Toast {
+                    message: t.message,
+                    tone: match t.tone {
+                        scenario::events::ScenarioTone::Info => ToastTone::Info,
+                        scenario::events::ScenarioTone::Warn => ToastTone::Warn,
+                        scenario::events::ScenarioTone::Good => ToastTone::Good,
+                    },
+                });
+            }
+            if sr.won {
+                events.won = true;
+            }
+            if sr.lost_condition {
+                events.failed = Some(TickFail::Condition);
+            }
+        }
         check_failure(state, day, &mut events);
     }
 

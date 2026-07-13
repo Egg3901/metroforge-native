@@ -174,6 +174,15 @@ fn rules_from_wire(r: &mf_protocol::ScenarioRules) -> mf_sim::types::ScenarioRul
     }
 }
 
+fn scenario_from_init(
+    p: &mf_protocol::envelope::InitPayload,
+) -> Option<&'static mf_sim::scenario::evaluate::ScenarioDef> {
+    p.scenario_id
+        .as_deref()
+        .or_else(|| p.rules.as_ref().and_then(|r| r.scenario_id.as_deref()))
+        .and_then(mf_sim::scenario::catalog::playable_scenario)
+}
+
 fn run_worker(
     to_sim_rx: Receiver<ToSim>,
     from_sim_tx: Sender<FromSimMsg>,
@@ -249,14 +258,24 @@ fn handle_inbound(host: &mut Host, msg: ToSim, tx: &Sender<FromSimMsg>) -> bool 
             true
         }
         ToSim::Init(p) => {
+            let scenario = scenario_from_init(&p);
+            let preset_key = p
+                .preset_key
+                .clone()
+                .or_else(|| scenario.map(|s| s.city_key.clone()));
             let opts = NewGameOptions {
                 size: p.size.map(size_from_wire),
-                preset_key: p.preset_key.clone(),
-                rules: p.rules.as_ref().map(rules_from_wire),
+                preset_key: preset_key.clone(),
+                rules: p
+                    .rules
+                    .as_ref()
+                    .map(rules_from_wire)
+                    .or_else(|| scenario.map(mf_sim::scenario::evaluate::rules_from_scenario)),
                 // real-city bundle (None for procedural keys -> procgen)
-                osm: crate::cities::resolve_city(p.preset_key.as_deref()),
+                osm: crate::cities::resolve_city(preset_key.as_deref()),
+                scenario: scenario.map(|d| mf_sim::types::ScenarioDef { id: d.id.clone() }),
             };
-            host.preset_key = p.preset_key.clone();
+            host.preset_key = preset_key;
             host.size = p.size;
             let state = new_game(
                 p.seed as u32,

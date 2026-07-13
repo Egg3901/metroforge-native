@@ -6,7 +6,7 @@
 //! content-lane catalog / progression manifest. `unlocks` / `requires`
 //! (progression edges) are left to the caller and omitted here.
 
-use crate::types::{DayLedger, FailReason, GameState};
+use crate::types::{DayLedger, Difficulty, FailReason, GameState, ScenarioRules, TransitMode};
 
 /// Farebox recovery ratio: fares / (operations + maintenance). Port of
 /// `economy.ts::fareboxRecovery` (inlined; economy lane owns the full module).
@@ -342,18 +342,68 @@ pub enum Outcome {
     Lost,
 }
 
-/// Minimal scenario definition needed to build the UI snapshot. Placeholder for
-/// `scenario/types.ts::ScenarioDef` (win/lose trees + meta).
+/// Data-driven scenario definition. Port of `scenario/types.ts::ScenarioDef`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScenarioDef {
     /// Scenario id.
     pub id: String,
     /// Display label.
     pub label: String,
+    /// Description shown in the picker.
+    pub description: String,
+    /// Stable city key (`cleveland`/`nyc` today).
+    pub city_key: String,
+    /// Difficulty tier (1..5).
+    pub tier: u8,
+    /// Sim difficulty.
+    pub difficulty: Difficulty,
+    /// Starting cash for this scenario.
+    pub starting_budget: f64,
+    /// Starting unlocked modes.
+    pub starting_modes: Vec<TransitMode>,
+    /// Lock mode unlocks beyond `starting_modes`.
+    pub lock_modes: Option<bool>,
+    /// Optional subsidy override.
+    pub daily_subsidy: Option<f64>,
     /// Win condition tree.
     pub win: ConditionNode,
+    /// Optional lose tree.
+    pub lose: Option<ConditionNode>,
+    /// Scripted day-based events.
+    pub events: Vec<ScenarioEvent>,
     /// Calendar deadline in sim-days; `None` if unlimited.
-    pub deadline_days: Option<i64>,
+    pub deadline_days: u32,
+    /// Optional HUD era label.
+    pub era_label: Option<String>,
+}
+
+/// Mid-run scripted scenario beat.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScenarioEvent {
+    /// Apply a district-specific travel-demand multiplier to the district ranked
+    /// at `density_rank` (0 = densest).
+    DistrictDemandMult {
+        id: String,
+        day: i64,
+        density_rank: usize,
+        mult: f64,
+        message: String,
+    },
+    /// Apply a citywide temporary demand multiplier.
+    GlobalDemandMult {
+        id: String,
+        day: i64,
+        mult: f64,
+        duration_days: u32,
+        message: String,
+    },
+    /// Add/subtract cash immediately.
+    CashDelta {
+        id: String,
+        day: i64,
+        amount: f64,
+        message: String,
+    },
 }
 
 /// UI envelope for the scenario state. Mirrors the additive `ScenarioState`.
@@ -396,7 +446,7 @@ pub fn build_scenario_state(def: &ScenarioDef, state: &GameState) -> ScenarioSta
         } else {
             tree_progress(&def.win, &m)
         },
-        deadline: def.deadline_days,
+        deadline: Some(def.deadline_days as i64),
         day: (state.tick / u64::from(crate::constants::TICKS_PER_DAY)) as i64 + 1,
         won,
         lost,
@@ -408,6 +458,21 @@ pub fn build_scenario_state(def: &ScenarioDef, state: &GameState) -> ScenarioSta
             Outcome::Playing
         },
         lose_reason: if lost { state.failed } else { None },
+    }
+}
+
+/// Map a scenario definition onto `new_game` scenario rules (TS parity:
+/// `rulesFromScenario`).
+pub fn rules_from_scenario(def: &ScenarioDef) -> ScenarioRules {
+    ScenarioRules {
+        scenario_id: Some(def.id.clone()),
+        starting_modes: def.starting_modes.clone(),
+        lock_modes: def.lock_modes,
+        max_day: Some(def.deadline_days),
+        approval_floor: None,
+        starting_cash: Some(def.starting_budget),
+        daily_subsidy: def.daily_subsidy,
+        era_label: def.era_label.clone(),
     }
 }
 
@@ -471,13 +536,50 @@ mod tests {
         let def = ScenarioDef {
             id: "test".into(),
             label: "Test".into(),
+            description: "d".into(),
+            city_key: "cleveland".into(),
+            tier: 1,
+            difficulty: Difficulty::Easy,
+            starting_budget: 1.0,
+            starting_modes: vec![TransitMode::Bus],
+            lock_modes: Some(true),
+            daily_subsidy: Some(1.0),
             win: ConditionNode::And(vec![leaf(ScenarioMetric::Population, CompareOp::Ge, 100.0)]),
-            deadline_days: Some(30),
+            lose: None,
+            events: Vec::new(),
+            deadline_days: 30,
+            era_label: Some("Test".into()),
         };
         let snap = build_scenario_state(&def, &state);
         assert_eq!(snap.objectives.len(), 1);
         assert_eq!(snap.outcome, Outcome::Playing);
         assert_eq!(snap.day, 1);
+    }
+
+    #[test]
+    fn rules_from_scenario_maps_fields() {
+        let def = ScenarioDef {
+            id: "cleveland-first-riders".into(),
+            label: "First Riders".into(),
+            description: "desc".into(),
+            city_key: "cleveland".into(),
+            tier: 1,
+            difficulty: Difficulty::Easy,
+            starting_budget: 12_000_000.0,
+            starting_modes: vec![TransitMode::Bus],
+            lock_modes: Some(true),
+            daily_subsidy: Some(35_000.0),
+            win: leaf(ScenarioMetric::DailyTransitTrips, CompareOp::Ge, 300.0),
+            lose: None,
+            events: Vec::new(),
+            deadline_days: 45,
+            era_label: Some("Starter".into()),
+        };
+        let rules = rules_from_scenario(&def);
+        assert_eq!(rules.scenario_id.as_deref(), Some("cleveland-first-riders"));
+        assert_eq!(rules.starting_cash, Some(12_000_000.0));
+        assert_eq!(rules.max_day, Some(45));
+        assert_eq!(rules.starting_modes, vec![TransitMode::Bus]);
     }
 
     fn zero_metrics() -> MetricSnapshot {
