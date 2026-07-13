@@ -623,6 +623,7 @@ mod tests {
 
     fn route(id: i64, name: &str, station_ids: Vec<i64>) -> UiRoute {
         UiRoute {
+            avg_effective_speed: None,
             id,
             name: name.to_string(),
             color: "#000000".to_string(),

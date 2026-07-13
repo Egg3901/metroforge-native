@@ -1102,6 +1102,7 @@ mod tests {
         cost: Option<f64>,
     ) -> UiRoute {
         UiRoute {
+            avg_effective_speed: None,
             id,
             name: format!("R{id}"),
             color: "#007aff".to_string(),
