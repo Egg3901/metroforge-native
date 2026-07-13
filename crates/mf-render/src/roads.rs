@@ -546,10 +546,7 @@ fn build_roads_system(
     // The thin road ribbon itself is kept — it rides on the model deck as the
     // black roadway surface and keeps the approaches continuous.
     let bridged_roads: std::collections::HashSet<usize> =
-        crate::bridges::plan_bridge_placements(city_json, &height_at)
-            .into_iter()
-            .map(|p| p.road_idx)
-            .collect();
+        crate::bridges::plan_bridge_placements(city_json, &height_at).covered_roads;
 
     for (road_idx, road) in city_json.roads.iter().enumerate() {
         let raw: Vec<Vec2> = road

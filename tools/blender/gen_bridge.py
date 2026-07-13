@@ -34,26 +34,37 @@ SPAN = 486.0        # tower-to-tower main span (Brooklyn ~486m)
 OVERHANG = 90.0     # side span deck beyond each tower toward the anchorages
 DECK_W = 26.0       # deck width
 DECK_BAND = 4.2     # truss-band depth (deck reads HEAVY, not a slab)
-CAMBER = 3.0        # deck rises this much at midspan (slight arch)
+CAMBER = 1.2        # deck rises this much at midspan (kept below the roads.rs
+                    # ribbon so the two black decks never z-fight in-game)
 
-# Real Brooklyn proportions: towers 84m above water, deck ~40% up the tower.
-# Deck top authored at z=0; the 34m of masonry below deck sits in/under the
-# water in-game (deck placed at BRIDGE_DECK_Y). This makes the TURNTABLE read
-# with correct proportions (the scored surface) while the underwater foot is
-# simply unseen in the compressed-clearance game view.
+# Real Brooklyn towers are 84m above WATER with the deck ~40m below the top.
+# The game compresses under-deck clearance: the deck sits only ~8m above the
+# water (roads.rs BRIDGE_DECK_Y), so authoring the real 44m deck-to-top put
+# most of the 84m of masonry UNDERWATER in-game and the tower read ~25-30m
+# tall (owner-rejected in-game shot, 2026-07-13). Tower height is therefore
+# authored ABOVE THE DECK so the in-game silhouette carries the real
+# 84m-above-water proportion.
 TOWER_TX = 12.0     # tower thickness along the span (chunky masonry)
 TOWER_W = DECK_W + 9.0   # tower width across the deck
-TOWER_TOP = 50.0    # tower top above deck (deck ~40% up the 84m tower)
-TOWER_BASE = -34.0  # masonry foot below deck to the waterline (84m total)
+TOWER_TOP = 76.0    # tower top above deck (deck at ~8m -> ~84m above water)
+TOWER_BASE = -12.0  # masonry foot below deck (into the compressed water gap)
 
 # pointed-arch cutout geometry (per tower) — tall gothic openings
 ARCH_BOTTOM = -4.0      # opening springs from just below the deck band
-ARCH_SPRING = 28.0      # top of the rectangular part of the opening
-ARCH_APEX = 42.0        # point of the gothic arch
+ARCH_SPRING = 46.0      # top of the rectangular part of the opening
+ARCH_APEX = 64.0        # point of the gothic arch
 PIER_W = 4.5            # masonry pier width (3 piers -> 2 openings)
 
 HANGERS = 22            # vertical hangers per span (dense curtain)
 CABLE_SAG = 0.86       # fraction of tower height the cable low point drops to
+
+# Member sections (meters). Deliberately fatter than scale-true steel: at the
+# game camera (600-800m oblique) a 0.85m cable was sub-pixel and the whole web
+# vanished in-game; these read as "a dark suggestion" at range while staying
+# thin against the 84m towers up close.
+CABLE_W = 1.5           # main catenary + backstays
+HANGER_W = 0.55         # vertical hanger curtain
+STAY_W = 0.5            # diagonal stay fan
 
 
 # ----------------------------------------------------------------------------
@@ -243,18 +254,18 @@ def build_cables(mat, n_cables, saddle_z):
             x = -tower_x + t * SPAN
             pts.append((x, y, cable_z(t)))
         for i in range(seg):
-            _beam(verts, faces, pts[i], pts[i + 1], 0.85)
+            _beam(verts, faces, pts[i], pts[i + 1], CABLE_W)
         anchor_x = tower_x + OVERHANG
         for sgn in (-1, 1):
             _beam(verts, faces, (sgn * tower_x, y, saddle_z),
-                  (sgn * anchor_x, y, DECK_BAND + 2), 0.85)
+                  (sgn * anchor_x, y, DECK_BAND + 2), CABLE_W)
     for y in (ys[0], ys[-1]):
         for h in range(1, HANGERS):
             t = h / HANGERS
             x = -tower_x + t * SPAN
             top = cable_z(t)
             bot = _camber_z(x)
-            _append(verts, faces, _box(x, y, (top + bot) / 2, 0.3, 0.3, top - bot))
+            _append(verts, faces, _box(x, y, (top + bot) / 2, HANGER_W, HANGER_W, top - bot))
     return mf.new_mesh_object("cables", verts, faces, mat)
 
 
@@ -273,7 +284,7 @@ def build_stay_fan(mat, saddle_z):
                 t = i / n
                 for bx in (tpos - s * t * mid_reach, tpos + s * t * anchor_reach):
                     _beam(verts, faces, (tpos, y, saddle_z),
-                          (bx, y, _camber_z(bx) + 0.4), 0.3)
+                          (bx, y, _camber_z(bx) + 0.4), STAY_W)
     return mf.new_mesh_object("stays", verts, faces, mat)
 
 

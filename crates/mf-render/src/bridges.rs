@@ -49,6 +49,10 @@ const TRUSS_DECK_W_M: f32 = 16.0;
 
 /// Deck placement height (mirrors roads.rs BRIDGE_DECK_Y).
 const BRIDGE_DECK_Y: f32 = 8.0;
+/// Drop applied to the model root so its deck-top (authored z=0, cambering up
+/// to +1.2m) stays strictly BELOW the roads.rs ribbon riding at BRIDGE_DECK_Y
+/// — exactly one visible deck surface, no z-fight.
+const MODEL_DECK_DROP: f32 = 1.4;
 /// Target presented deck width for a suspension crossing (wide arterial feel).
 const SUSP_TARGET_W_M: f32 = 30.0;
 /// Target presented deck width for a truss crossing (narrower).
@@ -87,7 +91,7 @@ impl Plugin for MfBridgesPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BridgesState>().add_systems(
             Update,
-            build_bridges_system.in_set(crate::MfRenderSet::Statics),
+            (build_bridges_system, log_bridge_aabb_system).in_set(crate::MfRenderSet::Statics),
         );
     }
 }
@@ -118,15 +122,31 @@ fn over_water_chord(pts: &[Vec2], height_at: &HeightAt) -> Option<(Vec2, Vec2, f
     best.map(|(s, e, len)| (pts[s], pts[e], len))
 }
 
+/// The full placement decision: which spans get a model, and every road whose
+/// over-water chord is covered by one (twin carriageways of the same crossing
+/// share a single model but ALL get their ribbon grade-structure suppressed).
+pub struct BridgePlan {
+    /// Deduplicated, one model per physical crossing.
+    pub models: Vec<BridgePlacement>,
+    /// Road indices whose elevated slab/piers/shadow `roads.rs` must suppress.
+    pub covered_roads: std::collections::HashSet<usize>,
+}
+
 /// Decide, per road, whether a bridge MODEL covers its over-water span and
 /// which style. Pure function of `(city, terrain)` — called by BOTH the model
 /// placer here and the `roads.rs` ribbon suppressor, so they never disagree.
+///
+/// DEDUP (in-game bug, 2026-07-13): NYC ships the same physical crossing as
+/// several road DTOs (twin carriageways / split directions), which spawned
+/// 2-3 overlapping bridge models per river at slightly different rotations.
+/// Candidates whose chord midpoints sit within half their mean span of an
+/// already-accepted (longer) candidate are treated as the same crossing:
+/// they keep ribbon suppression but spawn no second model.
 pub fn plan_bridge_placements(
     city_json: &mf_protocol::StaticCityJson,
     height_at: &HeightAt,
-) -> Vec<BridgePlacement> {
-    let mut out: Vec<BridgePlacement> = Vec::new();
-    let mut longest_susp: Option<(usize, f32)> = None; // (out index, len)
+) -> BridgePlan {
+    let mut candidates: Vec<BridgePlacement> = Vec::new();
 
     for (road_idx, road) in city_json.roads.iter().enumerate() {
         let pts: Vec<Vec2> = road
@@ -148,10 +168,7 @@ pub fn plan_bridge_placements(
         } else {
             continue; // short crossing: leave the flat ribbon to roads.rs
         };
-        if kind == BridgeKind::Suspension && longest_susp.is_none_or(|(_, bl)| len > bl) {
-            longest_susp = Some((out.len(), len));
-        }
-        out.push(BridgePlacement {
+        candidates.push(BridgePlacement {
             road_idx,
             kind,
             a,
@@ -160,11 +177,38 @@ pub fn plan_bridge_placements(
         });
     }
 
-    // Promote the single longest suspension span to the Brooklyn signature.
-    if let Some((idx, _)) = longest_susp {
-        out[idx].kind = BridgeKind::Brooklyn;
+    let covered_roads: std::collections::HashSet<usize> =
+        candidates.iter().map(|p| p.road_idx).collect();
+
+    // Longest-first greedy dedup: keep a candidate only if its midpoint is not
+    // on a crossing we already accepted.
+    candidates.sort_by(|x, y| {
+        y.len
+            .partial_cmp(&x.len)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut models: Vec<BridgePlacement> = Vec::new();
+    for c in candidates {
+        let mid = (c.a + c.b) * 0.5;
+        let dup = models.iter().any(|m| {
+            let mmid = (m.a + m.b) * 0.5;
+            mid.distance(mmid) < (m.len + c.len) * 0.25
+        });
+        if !dup {
+            models.push(c);
+        }
     }
-    out
+
+    // Promote the single longest suspension span to the Brooklyn signature.
+    // (`models` is sorted longest-first, so the first suspension wins.)
+    if let Some(first_susp) = models.iter_mut().find(|m| m.kind == BridgeKind::Suspension) {
+        first_susp.kind = BridgeKind::Brooklyn;
+    }
+
+    BridgePlan {
+        models,
+        covered_roads,
+    }
 }
 
 #[allow(clippy::type_complexity)]
@@ -190,7 +234,13 @@ fn build_bridges_system(
         city_json.roads.len(),
         city_json.roads.iter().map(|r| r.points.len()).sum(),
     );
-    if state.signature == Some(signature) {
+    // Rekey on the terrain sampler like roads.rs does: on some boots this
+    // system first runs against the flat pre-DEM `HeightAt` (nothing samples
+    // as water -> "plan 0 models") and the structural signature alone would
+    // then cache that empty plan forever. `height_at.is_changed()` is true
+    // the frame terrain rewrites the sampler, so the real water mask always
+    // gets a replan (found via the plan-count log, 2026-07-13).
+    if state.signature == Some(signature) && !height_at.is_changed() {
         return;
     }
     state.signature = Some(signature);
@@ -200,7 +250,13 @@ fn build_bridges_system(
         commands.entity(e).despawn();
     }
 
-    for p in plan_bridge_placements(city_json, &height_at) {
+    let plan = plan_bridge_placements(city_json, &height_at);
+    tracing::info!(
+        "mf-render bridges: plan {} model(s), {} covered road(s)",
+        plan.models.len(),
+        plan.covered_roads.len()
+    );
+    for p in plan.models {
         let (scene, model_len, model_w, target_w) = match p.kind {
             BridgeKind::Brooklyn => (
                 handles.bridge_brooklyn.clone(),
@@ -232,7 +288,7 @@ fn build_bridges_system(
         commands.spawn((
             SceneRoot(scene),
             Transform {
-                translation: Vec3::new(mid.x, BRIDGE_DECK_Y, mid.y),
+                translation: Vec3::new(mid.x, BRIDGE_DECK_Y - MODEL_DECK_DROP, mid.y),
                 rotation: Quat::from_rotation_y(theta),
                 scale,
             },
@@ -240,12 +296,69 @@ fn build_bridges_system(
             BridgeModelInstance,
         ));
         tracing::info!(
-            "mf-render bridges: placed {:?} road#{} span={:.0}m at ({:.0},{:.0})",
+            "mf-render bridges: placed {:?} road#{} span={:.0}m a=({:.0},{:.0}) b=({:.0},{:.0}) mid=({:.0},{:.0})",
             p.kind,
             p.road_idx,
             p.len,
+            p.a.x,
+            p.a.y,
+            p.b.x,
+            p.b.y,
             mid.x,
             mid.y
         );
+    }
+}
+
+/// One-shot world-space AABB log per spawned bridge model, once its glTF
+/// children have streamed in. Diagnostic for placement/scale bugs: a placed
+/// Brooklyn span should log ~span-length long and ~90m tall; a short or flat
+/// AABB means the scene was scaled or partially spawned (owner-rejected
+/// in-game shot 2026-07-13 read the towers at a third of their height).
+fn log_bridge_aabb_system(
+    instances: Query<Entity, With<BridgeModelInstance>>,
+    children: Query<&Children>,
+    meshes: Query<(&GlobalTransform, &bevy::render::primitives::Aabb)>,
+    mut logged: Local<std::collections::HashSet<Entity>>,
+) {
+    for root in &instances {
+        if logged.contains(&root) {
+            continue;
+        }
+        let mut lo = Vec3::splat(f32::MAX);
+        let mut hi = Vec3::splat(f32::MIN);
+        let mut n = 0usize;
+        for e in children.iter_descendants(root) {
+            let Ok((gt, aabb)) = meshes.get(e) else {
+                continue;
+            };
+            let c: Vec3 = aabb.center.into();
+            let he: Vec3 = aabb.half_extents.into();
+            for i in 0..8 {
+                let corner = c + he
+                    * Vec3::new(
+                        if i & 1 == 0 { -1.0 } else { 1.0 },
+                        if i & 2 == 0 { -1.0 } else { 1.0 },
+                        if i & 4 == 0 { -1.0 } else { 1.0 },
+                    );
+                let w = gt.transform_point(corner);
+                lo = lo.min(w);
+                hi = hi.max(w);
+            }
+            n += 1;
+        }
+        if n > 0 {
+            logged.insert(root);
+            let size = hi - lo;
+            tracing::info!(
+                "mf-render bridges: model AABB meshes={} size=({:.0},{:.0},{:.0}) y=[{:.1}..{:.1}]",
+                n,
+                size.x,
+                size.y,
+                size.z,
+                lo.y,
+                hi.y
+            );
+        }
     }
 }
