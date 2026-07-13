@@ -173,14 +173,28 @@ fn frame_elevated(rig: &mut CameraRig, center: Vec2) {
 /// `MF_VERIFY_DIST` / `MF_VERIFY_PITCH` / `MF_VERIFY_YAW` tune it. Inert (leaves
 /// the rig untouched) when `MF_VERIFY_TARGET` is unset, so the default verify
 /// sequence is byte-identical to before.
-fn apply_target_override(rig: &mut CameraRig) {
-    let Some(t) = std::env::var_os("MF_VERIFY_TARGET") else {
-        return;
-    };
-    let s = t.to_string_lossy();
-    let mut it = s.split(',').filter_map(|v| v.trim().parse::<f32>().ok());
-    if let (Some(x), Some(z)) = (it.next(), it.next()) {
-        rig.target = Vec2::new(x, z);
+fn apply_target_override(rig: &mut CameraRig, city: &CurrentCity) {
+    // `MF_VERIFY_TARGET` recenters the framing; it is OPTIONAL — the
+    // dist/pitch/yaw knobs below apply on their own too, so the legibility
+    // capture matrix can re-zoom (street ~800m / overview ~4km) or tilt to an
+    // oblique bridge/interchange angle around the auto-picked dense center
+    // without having to hardcode each city's world coordinates.
+    // `MF_VERIFY_TARGET=bridge` recenters on the midpoint of the longest
+    // elevated (bridge / grade-separated) road in the loaded city, so the
+    // grade-separation close-up (piers + slab edge + blob shadow) frames a real
+    // elevated deck deterministically instead of the inland dense core.
+    if let Some(t) = std::env::var_os("MF_VERIFY_TARGET") {
+        let s = t.to_string_lossy();
+        if s.trim() == "bridge" {
+            if let Some(p) = longest_elevated_road_midpoint(city) {
+                rig.target = p;
+            }
+        } else {
+            let mut it = s.split(',').filter_map(|v| v.trim().parse::<f32>().ok());
+            if let (Some(x), Some(z)) = (it.next(), it.next()) {
+                rig.target = Vec2::new(x, z);
+            }
+        }
     }
     let envf = |k: &str| {
         std::env::var(k)
@@ -196,6 +210,35 @@ fn apply_target_override(rig: &mut CameraRig) {
     if let Some(y) = envf("MF_VERIFY_YAW") {
         rig.yaw = y;
     }
+}
+
+/// Midpoint of the longest bridge / grade-separated road in the loaded city
+/// (`is_bridge` or `grade_level > 0`), used by `MF_VERIFY_TARGET=bridge` to
+/// frame the grade-separation close-up on a guaranteed elevated deck. `None`
+/// (leaving the framing on the dense center) when the city has no elevated
+/// roads or has not loaded yet.
+fn longest_elevated_road_midpoint(city: &CurrentCity) -> Option<Vec2> {
+    let cj = city.static_city.as_ref()?;
+    let mut best: Option<(f32, Vec2)> = None;
+    for road in &cj.roads {
+        if !road.is_bridge && road.grade_level <= 0 {
+            continue;
+        }
+        let pts: Vec<Vec2> = road
+            .points
+            .chunks_exact(2)
+            .map(|c| Vec2::new(c[0] as f32, c[1] as f32))
+            .collect();
+        if pts.len() < 2 {
+            continue;
+        }
+        let len: f32 = pts.windows(2).map(|w| w[0].distance(w[1])).sum();
+        let mid = pts[pts.len() / 2];
+        if best.is_none_or(|(bl, _)| len > bl) {
+            best = Some((len, mid));
+        }
+    }
+    best.map(|(_, p)| p)
 }
 
 /// Nearest arterial/collector polyline vertex to `center`: with real
@@ -826,7 +869,7 @@ fn verify_sequence_system(
             if elapsed_in_stage == 1 {
                 if let Ok(mut rig) = rigs.single_mut() {
                     frame_elevated(&mut rig, dense_center.0);
-                    apply_target_override(&mut rig);
+                    apply_target_override(&mut rig, &city);
                 }
             }
             if elapsed_in_stage == SETTLE_FRAMES {
@@ -849,7 +892,7 @@ fn verify_sequence_system(
             if elapsed_in_stage == 5 {
                 if let Ok(mut rig) = rigs.single_mut() {
                     frame_elevated(&mut rig, dense_center.0);
-                    apply_target_override(&mut rig);
+                    apply_target_override(&mut rig, &city);
                 }
                 subway.toggle();
             }

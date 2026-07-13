@@ -179,18 +179,30 @@ fn wet_roads_system(
             entry.reflectance = mat.reflectance;
         }
 
-        // Wet asphalt reads darker + far shinier; snow whitens it (stripes,
-        // painted as separate transit meshes, stay vivid).
+        // Wet asphalt reads darker + far shinier; snow turns it to SLUSH — a
+        // grey-white, NOT the near-white the ground/parks whiten to. Roads are
+        // the dark mass that gives the city its street grid, so at full
+        // accumulation they must stay a clearly darker slush line (owner: the
+        // previous ~#eaeaf2 target collapsed roads into the ~#e9eae5 ground and
+        // the whole grid vanished under snow). Target #b8bcc0 (~0.72 luma) keeps
+        // roads ~40/255 luma below the ground even at max snow (see the
+        // road-region delta gate in the capture harness).
         let base = Vec3::new(entry.base.red, entry.base.green, entry.base.blue);
         let wet_col = base * (1.0 - 0.28 * wet);
-        let snow_col = Vec3::new(0.92, 0.93, 0.95);
-        let rgb = wet_col.lerp(snow_col, snow * 0.9);
+        // #b8bcc0 in linear-ish working space (these road materials are authored
+        // in srgb component values, matching `entry.base`).
+        let slush_col = Vec3::new(0.722, 0.737, 0.753);
+        // Cap the lerp so even snow_depth==1 never fully reaches the slush tone,
+        // holding a little of the road's darkness in reserve.
+        let rgb = wet_col.lerp(slush_col, (snow * 0.92).clamp(0.0, 0.92));
         let out = LinearRgba::new(rgb.x, rgb.y, rgb.z, entry.base.alpha);
         mat.base_color = Color::from(out);
         entry.last_written = out;
         // Lower roughness + raise reflectance while wet = crisp street specular.
-        mat.perceptual_roughness = entry.roughness * (1.0 - 0.7 * wet);
-        mat.reflectance = entry.reflectance + (0.55 - entry.reflectance).max(0.0) * wet;
+        // Pushed harder than before (owner: daytime wet streets read matte) so
+        // the sheen actually reads glossy in daylight, not just under night bloom.
+        mat.perceptual_roughness = entry.roughness * (1.0 - 0.85 * wet);
+        mat.reflectance = entry.reflectance + (0.72 - entry.reflectance).max(0.0) * wet;
     }
 
     // Fully restored and clear: drop the baselines so the map doesn't grow.
