@@ -77,7 +77,11 @@ pub fn track_gets_rail_bridge(
     if mode == mf_protocol::TransitMode::Bus {
         return false;
     }
-    over_water_chord(pts, height_at).is_some_and(|(_, _, len)| len >= RAIL_BRIDGE_MIN_M)
+    // A straight track's DTO carries only its endpoints (both on land for a
+    // river crossing), so densify before water-sampling or the chord is
+    // invisible (found 2026-07-13: injected crossing placed no bridge).
+    let dense = crate::mesh_utils::densify_polyline(pts, 25.0);
+    over_water_chord(&dense, height_at).is_some_and(|(_, _, len)| len >= RAIL_BRIDGE_MIN_M)
 }
 
 #[derive(Component)]
@@ -408,7 +412,10 @@ fn build_structures_system(
                 }
             }
             // Rail bridge over the longest over-water chord (all tiers).
-            if let Some((a, b, len)) = over_water_chord(&pts, &height_at) {
+            // Densified: a straight track DTO is endpoint-only (see
+            // track_gets_rail_bridge).
+            let dense = crate::mesh_utils::densify_polyline(&pts, 25.0);
+            if let Some((a, b, len)) = over_water_chord(&dense, &height_at) {
                 if len >= RAIL_BRIDGE_MIN_M {
                     let mid = (a + b) * 0.5;
                     let dir = (b - a).normalize_or_zero();
