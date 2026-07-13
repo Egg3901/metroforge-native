@@ -68,9 +68,14 @@ These are asserted exactly in `rng.rs` unit tests.
 | save.ts | `save.rs` | P1 | DONE (`state_hash` mirrors save.ts field set/order; serde save/load behind `serde` feature) |
 | replay.ts | `replay.rs` | P1 | TODO (needs new_game + sim systems; deferred to P2/P3) |
 | types.ts (full) | `types.rs` | P1 | DONE (full `GameState`, hashed/transient split) |
-| newGame.ts | `new_game.rs` | P2 | TODO |
-| fields.ts | `fields.rs` | P2 | TODO |
-| city/* | `city/` | P2 | TODO |
+| newGame.ts | `new_game.rs` | P2 | DONE (procedural; weather/scenario/OSM stubbed to P3/P4) |
+| fields.ts | `fields.rs` | P2 | DONE (grid + cell/index/sample helpers) |
+| city/generator.ts | `city/generator.rs` | P2 | DONE (procedural path; OSM path stubbed) |
+| city/streamlines.ts | `city/streamlines.rs` | P2 | DONE |
+| city/tensor.ts | `city/tensor.rs` | P2 | DONE |
+| city/presets.ts | `city/presets.rs` | P2 | DONE (all 11 presets verbatim) |
+| city/names.ts | `city/names.rs` | P2 | DONE (all name banks + generators) |
+| city/osmCity.ts, osmRegistry.ts | `city/` (OSM) | P2 | STUB (P4/P5 wires real city data) |
 | scenario/*, scenarioRules.ts | `scenario/` | P2/P3 | TODO |
 | transit/* | `transit/` | P3 | TODO |
 | economy.ts | `economy.rs` | P3 | TODO |
@@ -163,3 +168,65 @@ entity ids are `u32` in `SimCommand` (sim-internal) vs `i64` on the wire.
   separation in Rust.
 - Several `Record<number, ...>` maps exist (`districtDemandMult`); use
   `BTreeMap` in hashed paths to keep iteration order deterministic.
+
+## P2 result: worldgen + new-game
+
+The full procedural worldgen pipeline is ported. `new_game()` assembles a
+complete initial `GameState` (fields, roads, districts, aggregated pop/jobs,
+seeded primary + ops RNG streams, ops sub-state) from a seed + preset.
+
+### What worldgen produces
+terrain (0..1) + water mask, optional meandering river / terminal lake, a CBD
+biased toward water, 3..5 employment subcenters, population + jobs density
+fields (gaussian decay off CBD/subcenters, sprawl-scaled), procedural parks
+(noise pockets + signature blocks), a tensor field (grid patches + global grid
+for rigid presets + CBD radial + shoreline boundaries + value noise), arterial
++ local road streamlines with water bridging and junction snapping, land value +
+NIMBY fields, and 4x4-cell districts with seed-stable unique names.
+
+### Determinism proof (gate 1 — internal)
+`tests/worldgen.rs::generation_is_bit_identical_run_twice` runs `generate_city`
+twice for 4 (seed, preset, difficulty) triples and asserts every field grid
+(terrain/water/parks/population/jobs/land_value/nimby), all road polyline
+points, cbd, and district names are byte-identical.
+`new_game_state_hash_is_deterministic` asserts `state_hash()` matches across two
+`new_game` runs. All randomness draws from the seeded `Rng` (correct stream);
+maps are `BTreeMap`; no wall-clock (`instance_id` is transient, unhashed).
+
+### Behavioral acceptance (gate 2 — structural, tolerance-based)
+TS reference captured by running `sim/src/core/city/generator.ts` under `bun`.
+Rust vs TS (idiomatic f64, NOT bit-parity) landed effectively on the numbers:
+
+| seed / preset / diff | metric | TS ref | Rust | tolerance |
+|---|---|---|---|---|
+| 12345 generic normal | waterFrac / parkFrac | 0.0867 / 0.1574 | 0.0867 / 0.1574 | ±0.03 abs |
+| 12345 generic normal | fieldPop / districts / roads | 133447 / 453 / 1051 | 133447 / 453 / 1051 | ±5% / ±10% / ±10% |
+| 777 generic normal | fieldPop / districts / roads | 130486 / 490 / 1100 | 130486 / 490 / 1100 | within band |
+| 12345 nyc normal | waterFrac / districts / roads | 0.0387 / 433 / 985 | 0.0387 / 433 / 985 | within band |
+| 42 boston easy | fieldPop / districts / roads | 191455 / 454 / 1052 | 191455 / 454 / 1050 | within band (roads -2 = 0.2%) |
+| 999 atlanta hard | waterFrac / fieldPop / roads | 0.0 / 90767 / 1137 | 0.0 / 90767 / 1137 | within band |
+
+The only divergence observed is a couple of local streamline segments (~0.2%,
+boston) from f64 rounding in the tracer — comfortably inside the ±10% road
+band. Asserted in `tests/worldgen.rs::structural_acceptance_vs_ts_reference`.
+(A throwaway `crates/mf-sim/examples/p2_metrics.rs` prints the same metrics for
+manual A/B against the TS harness.)
+
+### Procedural vs OSM coverage
+The **procedural** path is fully ported. Real presets (nyc, boston, ...) still
+generate procedurally (the `else` branch), which is what runs whenever no OSM
+bundle is supplied — always, in P2. The **OSM real-city path** (baked
+water/park/building masks, real elevation, real road network, map labels, POI
+anchors from `osmCity.ts`) is NOT ported: `new_game` has no `osm` option and the
+generator omits the `if (osm)` branch. Those transient fields
+(`osm_*`, `poi_anchors`, `osm_labels`) stay `None`. P4/P5 wires real city data.
+
+### Stubbed / deferred to P3
+- `new_game` leaves `weather` / `last_weather_event` = `None`
+  (TODO: `weatherAt` + `climateTable`, weather.ts).
+- Scenario derivation from a `ScenarioDef` (`rulesFromScenario`) is not wired;
+  `new_game` accepts explicit `ScenarioRules` only.
+- `period_for_tick(0)` is hardcoded to `Night` (tick 0 = midnight); the full
+  `timeOfDay.ts` / `ops/periods.ts` port lands in P3.
+- `initOps`'s route-reconcile loop is a no-op at new-game (no routes yet); the
+  live fleet sync + per-tick ops logic is P3.

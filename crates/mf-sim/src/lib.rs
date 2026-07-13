@@ -11,16 +11,20 @@
 //! Guardrails: seeded RNG only, no wall-clock, no HashMap iteration in hashed
 //! paths. See the individual modules for their TS source mapping.
 
+pub mod city;
 pub mod commands;
 pub mod constants;
+pub mod fields;
 pub mod geometry;
 pub mod hash;
+pub mod new_game;
 pub mod rng;
 pub mod save;
 pub mod types;
 
 pub use commands::{apply_command, CommandResult, SimCommand};
 pub use hash::{Hashable, StateHasher};
+pub use new_game::{new_game, NewGameOptions};
 pub use rng::{Rng, RngState};
 pub use save::state_hash;
 pub use types::GameState;
