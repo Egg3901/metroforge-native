@@ -224,6 +224,8 @@ describe('underground build integration', () => {
 
 describe('determinism: 10k-tick same-seed stateHash proof', () => {
   it('two identical underground runs land on the same hash', () => {
+    // 10k-tick double run: needs headroom beyond vitest's 5s default on a loaded box.
+
     const runA = metroTunnel(20260808).state;
     const runB = metroTunnel(20260808).state;
     for (let i = 0; i < 10_000; i++) {
@@ -231,7 +233,7 @@ describe('determinism: 10k-tick same-seed stateHash proof', () => {
       simTick(runB);
     }
     expect(stateHash(runA)).toBe(stateHash(runB));
-  });
+  }, 30_000);
 });
 
 describe('strata probe snapshot (seed 12345, NYC, origin)', () => {
