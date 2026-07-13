@@ -372,6 +372,11 @@ mod tests {
 
     fn base_state() -> UiState {
         UiState {
+            fleet: None,
+            depots: Vec::new(),
+            incidents: Vec::new(),
+            service_period: None,
+            service_period_label: None,
             weather_state: None,
             weather_intensity: None,
             weather_season: None,

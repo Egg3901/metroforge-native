@@ -840,6 +840,11 @@ mod tests {
 
     fn route(id: i64, name: &str, station_ids: Vec<i64>) -> UiRoute {
         UiRoute {
+            on_time_pct: None,
+            avg_delay_sec: None,
+            in_service_vehicles: None,
+            frequency: None,
+            peak_units_required: None,
             avg_effective_speed: None,
             id,
             name: name.to_string(),
@@ -944,6 +949,11 @@ mod tests {
 
     fn base_ui_state() -> UiState {
         UiState {
+            fleet: None,
+            depots: Vec::new(),
+            incidents: Vec::new(),
+            service_period: None,
+            service_period_label: None,
             weather_state: None,
             weather_intensity: None,
             weather_season: None,

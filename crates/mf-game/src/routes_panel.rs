@@ -493,11 +493,7 @@ pub fn draw_route_line_diagram(ui: &mut egui::Ui, diagram: &RouteLineDiagram<'_>
             if let Some(off) = diagram_progress_to_x(progress, &offsets) {
                 let pos = egui::pos2(rect.left() + off, line_y);
                 painter.circle_filled(pos, DIAGRAM_VEHICLE_RADIUS, ds::text());
-                painter.circle_stroke(
-                    pos,
-                    DIAGRAM_VEHICLE_RADIUS,
-                    egui::Stroke::new(1.0, color),
-                );
+                painter.circle_stroke(pos, DIAGRAM_VEHICLE_RADIUS, egui::Stroke::new(1.0, color));
             }
         }
     }
@@ -1394,6 +1390,11 @@ mod tests {
         cost: Option<f64>,
     ) -> UiRoute {
         UiRoute {
+            on_time_pct: None,
+            avg_delay_sec: None,
+            in_service_vehicles: None,
+            frequency: None,
+            peak_units_required: None,
             avg_effective_speed: None,
             id,
             name: format!("R{id}"),
@@ -1584,14 +1585,29 @@ mod tests {
     fn transfer_station_ids_marks_shared_stops_only() {
         let routes = vec![
             UiRoute {
+                on_time_pct: None,
+                avg_delay_sec: None,
+                in_service_vehicles: None,
+                frequency: None,
+                peak_units_required: None,
                 station_ids: vec![1, 2, 3],
                 ..test_route(1, 0.0, 0.0, None, None)
             },
             UiRoute {
+                on_time_pct: None,
+                avg_delay_sec: None,
+                in_service_vehicles: None,
+                frequency: None,
+                peak_units_required: None,
                 station_ids: vec![3, 4],
                 ..test_route(2, 0.0, 0.0, None, None)
             },
             UiRoute {
+                on_time_pct: None,
+                avg_delay_sec: None,
+                in_service_vehicles: None,
+                frequency: None,
+                peak_units_required: None,
                 station_ids: vec![5],
                 ..test_route(3, 0.0, 0.0, None, None)
             },
