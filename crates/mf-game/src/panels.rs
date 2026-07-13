@@ -58,11 +58,87 @@ const MAX_STATION_LEVEL: u32 = 5;
 // Resources
 // ---------------------------------------------------------------------
 
-/// Finance panel open/closed. Independent of `SelectedTarget`'s station
-/// panel: either can be open, both, or neither.
+/// Finance panel open/closed and active tab. Independent of
+/// `SelectedTarget`'s station panel: either can be open, both, or neither.
 #[derive(Resource, Default)]
 pub struct FinancePanelState {
     pub open: bool,
+    pub tab: FinancePanelTab,
+}
+
+/// Finance panel sub-views: ledger overview vs. painted trend charts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FinancePanelTab {
+    #[default]
+    Overview,
+    Trends,
+}
+
+/// Client-side ring buffer for transit share and population history.
+/// Capacity: [`TRENDS_HISTORY_CAPACITY`] samples, one per sim day (~120
+/// game days, about four months at 1x speed).
+pub const TRENDS_HISTORY_CAPACITY: usize = 120;
+
+/// Fixed-capacity FIFO of `f64` samples in chronological order (oldest
+/// first). When full, the oldest sample is dropped on each push.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TrendsRingBuffer {
+    samples: Vec<f64>,
+}
+
+impl TrendsRingBuffer {
+    pub fn capacity() -> usize {
+        TRENDS_HISTORY_CAPACITY
+    }
+
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
+    pub fn push(&mut self, value: f64) {
+        if self.samples.len() >= TRENDS_HISTORY_CAPACITY {
+            self.samples.remove(0);
+        }
+        self.samples.push(value);
+    }
+
+    pub fn clear(&mut self) {
+        self.samples.clear();
+    }
+
+    pub fn as_slice(&self) -> &[f64] {
+        &self.samples
+    }
+}
+
+/// Rolling per-day transit share and population samples, recorded once per
+/// sim day from incoming `UiState` ticks.
+#[derive(Resource, Default)]
+pub struct TrendsDayHistory {
+    pub transit_share: TrendsRingBuffer,
+    pub population: TrendsRingBuffer,
+    last_recorded_day: Option<u32>,
+}
+
+impl TrendsDayHistory {
+    /// Append one sample when `state.day` advances (or on first sighting).
+    /// Clears both buffers when the day counter rolls backward (reload).
+    pub fn record_if_new_day(&mut self, state: &UiState) {
+        if self.last_recorded_day == Some(state.day) {
+            return;
+        }
+        if self.last_recorded_day.is_some_and(|prev| state.day < prev) {
+            self.transit_share.clear();
+            self.population.clear();
+        }
+        self.last_recorded_day = Some(state.day);
+        self.transit_share.push(state.transit_share);
+        self.population.push(state.population);
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -136,6 +212,29 @@ const ROUTE_COLORS: [egui::Color32; 8] = [
 
 fn vivid_route_color(idx: usize) -> egui::Color32 {
     ROUTE_COLORS[idx % ROUTE_COLORS.len()]
+}
+
+/// Indices of the `n` busiest routes by `daily_ridership`, descending.
+/// Ties break on route id ascending so the leaderboard does not flicker.
+fn top_route_indices_by_ridership(routes: &[UiRoute], n: usize) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..routes.len()).collect();
+    indices.sort_by(|&a, &b| {
+        routes[a]
+            .daily_ridership
+            .total_cmp(&routes[b].daily_ridership)
+            .reverse()
+            .then_with(|| routes[a].id.cmp(&routes[b].id))
+    });
+    indices.truncate(n);
+    indices
+}
+
+fn finance_tab_label(tab: FinancePanelTab) -> &'static str {
+    let s = crate::strings::current();
+    match tab {
+        FinancePanelTab::Overview => s.finance_tab_overview,
+        FinancePanelTab::Trends => s.finance_tab_trends,
+    }
 }
 
 /// Indices (position within `routes`, matching the same 0-based index
@@ -463,6 +562,15 @@ fn finance_keybind_system(keys: Res<ButtonInput<KeyCode>>, mut panel: ResMut<Fin
     }
 }
 
+/// Records one transit-share / population sample per sim day for the
+/// Trends tab charts.
+fn trends_sample_system(ui_state: Res<LatestUi>, mut history: ResMut<TrendsDayHistory>) {
+    let Some(state) = &ui_state.0 else {
+        return;
+    };
+    history.record_if_new_day(state);
+}
+
 /// Cash/loan, yesterday's ledger breakdown, a 7-day net sparkline, three
 /// headline stats, and the sim's own plain-language insights - the
 /// station panel is one particular THING you selected, this one is the
@@ -470,7 +578,8 @@ fn finance_keybind_system(keys: Res<ButtonInput<KeyCode>>, mut panel: ResMut<Fin
 fn finance_panel_system(
     mut contexts: EguiContexts,
     ui_state: Res<LatestUi>,
-    panel: Res<FinancePanelState>,
+    mut panel: ResMut<FinancePanelState>,
+    history: Res<TrendsDayHistory>,
 ) -> Result {
     if !panel.open {
         return Ok(());
@@ -481,6 +590,7 @@ fn finance_panel_system(
     };
 
     let s = crate::strings::current();
+    let chart_w = FINANCE_PANEL_WIDTH - 24.0;
     ds::window(
         ctx,
         ds::WindowOpts {
@@ -515,83 +625,189 @@ fn finance_panel_system(
             }
 
             ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(ds::label_muted(s.cash));
-                    ui.label(ds::value_strong(format_cash(state.cash)));
-                });
-                ui.add_space(ds::SPACE_MD);
-                ui.vertical(|ui| {
-                    ui.label(ds::label_muted(s.loan_balance));
-                    ui.label(ds::value_strong(format_cash(state.loan_balance)));
-                });
-            });
-
-            ui.add_space(ds::SPACE_SM);
-            ds::thin_separator(ui);
-            ui.add_space(ds::SPACE_XXS);
-
-            ui.label(ds::label_muted(s.yesterday));
-            let ld = &state.last_day;
-            money_row(ui, s.fares, ld.fares);
-            money_row(ui, s.subsidy, ld.subsidy);
-            money_row(ui, s.operations, -ld.operations);
-            money_row(ui, s.maintenance, -ld.maintenance);
-            money_row(ui, s.interest, -ld.interest);
-            ui.add_space(ds::SPACE_XXS);
-            ds::thin_separator(ui);
-            money_row(ui, s.net, day_ledger_net(ld));
-
-            ui.add_space(ds::SPACE_SM);
-            ui.label(ds::label_muted(s.net_last_7_days));
-            ds::sparkline(
-                ui,
-                &state.net_history,
-                egui::vec2(FINANCE_PANEL_WIDTH - 24.0, 42.0),
-            );
-
-            ui.add_space(ds::SPACE_SM);
-            ds::thin_separator(ui);
-            ui.add_space(ds::SPACE_XXS);
-            stat_row(
-                ui,
-                s.transit_share,
-                format!("{:.0}%", state.transit_share * 100.0),
-            );
-            stat_row(ui, s.coverage, format!("{:.0}%", state.coverage * 100.0));
-            stat_row(
-                ui,
-                s.daily_transit_trips,
-                format_thousands(state.daily_transit_trips),
-            );
-
-            // Sim-depth (PR #31): farebox recovery + lifetime earnings, shown
-            // only when the sidecar actually sends them (old sidecars omit
-            // both, so these rows simply don't appear rather than reading 0).
-            if let Some(recovery) = state.farebox_recovery {
-                stat_row(ui, s.farebox_recovery, format!("{:.0}%", recovery * 100.0));
-            }
-            if let Some(ledger) = &state.lifetime {
-                let net = ledger.fares + ledger.subsidy
-                    - ledger.operations
-                    - ledger.maintenance
-                    - ledger.interest;
-                stat_row(ui, "Lifetime net", format_cash(net));
-                stat_row(ui, "Lifetime fares", format_cash(ledger.fares));
-            }
-
-            if !state.insights.is_empty() {
-                ui.add_space(ds::SPACE_SM);
-                ds::thin_separator(ui);
-                ui.add_space(ds::SPACE_XXS);
-                ui.label(ds::label_muted(s.insights));
-                for insight in &state.insights {
-                    insight_row(ui, insight);
+                for tab in [FinancePanelTab::Overview, FinancePanelTab::Trends] {
+                    let selected = panel.tab == tab;
+                    if ui
+                        .selectable_label(selected, finance_tab_label(tab))
+                        .clicked()
+                    {
+                        panel.tab = tab;
+                    }
                 }
+            });
+            ui.add_space(ds::SPACE_XS);
+            ds::thin_separator(ui);
+            ui.add_space(ds::SPACE_XXS);
+
+            match panel.tab {
+                FinancePanelTab::Overview => finance_overview_content(ui, state),
+                FinancePanelTab::Trends => finance_trends_content(ui, state, chart_w, &history),
             }
         },
     );
 
     Ok(())
+}
+
+fn finance_overview_content(ui: &mut egui::Ui, state: &UiState) {
+    let s = crate::strings::current();
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.label(ds::label_muted(s.cash));
+            ui.label(ds::value_strong(format_cash(state.cash)));
+        });
+        ui.add_space(ds::SPACE_MD);
+        ui.vertical(|ui| {
+            ui.label(ds::label_muted(s.loan_balance));
+            ui.label(ds::value_strong(format_cash(state.loan_balance)));
+        });
+    });
+
+    ui.add_space(ds::SPACE_SM);
+    ds::thin_separator(ui);
+    ui.add_space(ds::SPACE_XXS);
+
+    ui.label(ds::label_muted(s.yesterday));
+    let ld = &state.last_day;
+    money_row(ui, s.fares, ld.fares);
+    money_row(ui, s.subsidy, ld.subsidy);
+    money_row(ui, s.operations, -ld.operations);
+    money_row(ui, s.maintenance, -ld.maintenance);
+    money_row(ui, s.interest, -ld.interest);
+    ui.add_space(ds::SPACE_XXS);
+    ds::thin_separator(ui);
+    money_row(ui, s.net, day_ledger_net(ld));
+
+    ui.add_space(ds::SPACE_SM);
+    ui.label(ds::label_muted(s.net_last_7_days));
+    ds::sparkline(
+        ui,
+        &state.net_history,
+        egui::vec2(FINANCE_PANEL_WIDTH - 24.0, 42.0),
+    );
+
+    ui.add_space(ds::SPACE_SM);
+    ds::thin_separator(ui);
+    ui.add_space(ds::SPACE_XXS);
+    stat_row(
+        ui,
+        s.transit_share,
+        format!("{:.0}%", state.transit_share * 100.0),
+    );
+    stat_row(ui, s.coverage, format!("{:.0}%", state.coverage * 100.0));
+    stat_row(
+        ui,
+        s.daily_transit_trips,
+        format_thousands(state.daily_transit_trips),
+    );
+
+    if let Some(recovery) = state.farebox_recovery {
+        stat_row(ui, s.farebox_recovery, format!("{:.0}%", recovery * 100.0));
+    }
+    if let Some(ledger) = &state.lifetime {
+        let net = ledger.fares + ledger.subsidy
+            - ledger.operations
+            - ledger.maintenance
+            - ledger.interest;
+        stat_row(ui, "Lifetime net", format_cash(net));
+        stat_row(ui, "Lifetime fares", format_cash(ledger.fares));
+    }
+
+    if !state.insights.is_empty() {
+        ui.add_space(ds::SPACE_SM);
+        ds::thin_separator(ui);
+        ui.add_space(ds::SPACE_XXS);
+        ui.label(ds::label_muted(s.insights));
+        for insight in &state.insights {
+            insight_row(ui, insight);
+        }
+    }
+}
+
+fn finance_trends_content(
+    ui: &mut egui::Ui,
+    state: &UiState,
+    chart_w: f32,
+    history: &TrendsDayHistory,
+) {
+    let s = crate::strings::current();
+    // (1) Daily net cash from the 7-day server history.
+    ui.label(ds::label_muted(s.trends_daily_net));
+    let net_color = if state.net_history.last().is_none_or(|v| *v >= 0.0) {
+        ds::GOOD
+    } else {
+        ds::BAD
+    };
+    ds::line_chart(ui, &state.net_history, net_color, egui::vec2(chart_w, 56.0));
+
+    ui.add_space(ds::SPACE_SM);
+    ds::thin_separator(ui);
+    ui.add_space(ds::SPACE_XXS);
+
+    // (2) Ridership by route for the top 8 routes in route colors.
+    ui.label(ds::label_muted(s.trends_ridership_routes));
+    let top_routes = top_route_indices_by_ridership(&state.routes, 8);
+    if top_routes.is_empty() {
+        ui.label(ds::label_small(s.trends_no_routes));
+    } else {
+        let max_ridership = top_routes
+            .iter()
+            .map(|&idx| state.routes[idx].daily_ridership)
+            .fold(0.0_f64, f64::max);
+        for &idx in &top_routes {
+            let route = &state.routes[idx];
+            let label = route_display_name(route, idx);
+            let color = vivid_route_color(idx);
+            ds::horizontal_bar_row(
+                ui,
+                &label,
+                route.daily_ridership,
+                max_ridership,
+                color,
+                14.0,
+            );
+        }
+    }
+
+    ui.add_space(ds::SPACE_SM);
+    ds::thin_separator(ui);
+    ui.add_space(ds::SPACE_XXS);
+
+    // (3) Transit share and population over time from the client ring buffer.
+    ui.label(ds::label_muted(s.trends_share_population));
+    let share_pct: Vec<f64> = history
+        .transit_share
+        .as_slice()
+        .iter()
+        .map(|v| v * 100.0)
+        .collect();
+    ds::multi_line_chart(
+        ui,
+        &[
+            (&share_pct, ds::ACCENT),
+            (history.population.as_slice(), ds::SPOKE_ORANGE),
+        ],
+        egui::vec2(chart_w, 56.0),
+    );
+    ui.horizontal(|ui| {
+        ui.label(
+            ds::label_small(format!(
+                "{} {:.0}%",
+                s.transit_share,
+                state.transit_share * 100.0
+            ))
+            .color(ds::ACCENT),
+        );
+        ui.add_space(ds::SPACE_SM);
+        ui.label(
+            ds::label_small(format!(
+                "{} {}",
+                s.population,
+                format_thousands(state.population)
+            ))
+            .color(ds::SPOKE_ORANGE),
+        );
+    });
 }
 
 // ---------------------------------------------------------------------
@@ -603,9 +819,10 @@ pub struct MfPanelsPlugin;
 impl Plugin for MfPanelsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FinancePanelState>()
+            .init_resource::<TrendsDayHistory>()
             .add_systems(
                 Update,
-                finance_keybind_system.run_if(in_state(AppState::InGame)),
+                (finance_keybind_system, trends_sample_system).run_if(in_state(AppState::InGame)),
             )
             .add_systems(
                 EguiPrimaryContextPass,
@@ -853,5 +1070,85 @@ mod tests {
     #[test]
     fn format_cash_prefixes_a_dollar_sign() {
         assert_eq!(format_cash(1234.0), "$1,234");
+    }
+
+    // --- TrendsRingBuffer -----------------------------------------------
+
+    #[test]
+    fn trends_ring_buffer_capacity_is_120() {
+        assert_eq!(TrendsRingBuffer::capacity(), 120);
+        assert_eq!(TRENDS_HISTORY_CAPACITY, 120);
+    }
+
+    #[test]
+    fn trends_ring_buffer_drops_oldest_when_full() {
+        let mut ring = TrendsRingBuffer::default();
+        for i in 0..=TRENDS_HISTORY_CAPACITY {
+            ring.push(i as f64);
+        }
+        assert_eq!(ring.len(), TRENDS_HISTORY_CAPACITY);
+        let slice = ring.as_slice();
+        assert!((slice[0] - 1.0).abs() < f64::EPSILON);
+        assert!(
+            (slice[TRENDS_HISTORY_CAPACITY - 1] - TRENDS_HISTORY_CAPACITY as f64).abs()
+                < f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn trends_ring_buffer_clear_empties_samples() {
+        let mut ring = TrendsRingBuffer::default();
+        ring.push(1.0);
+        ring.push(2.0);
+        ring.clear();
+        assert!(ring.is_empty());
+    }
+
+    #[test]
+    fn trends_day_history_records_once_per_day() {
+        let mut history = TrendsDayHistory::default();
+        let mut state = base_ui_state();
+        state.day = 5;
+        state.transit_share = 0.25;
+        state.population = 50_000.0;
+        history.record_if_new_day(&state);
+        history.record_if_new_day(&state);
+        assert_eq!(history.transit_share.len(), 1);
+        assert_eq!(history.population.len(), 1);
+        state.day = 6;
+        state.transit_share = 0.30;
+        history.record_if_new_day(&state);
+        assert_eq!(history.transit_share.len(), 2);
+        assert!((history.transit_share.as_slice()[1] - 0.30).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn trends_day_history_clears_on_day_rollback() {
+        let mut history = TrendsDayHistory::default();
+        let mut state = base_ui_state();
+        state.day = 10;
+        history.record_if_new_day(&state);
+        state.day = 3;
+        history.record_if_new_day(&state);
+        assert_eq!(history.transit_share.len(), 1);
+    }
+
+    // --- top_route_indices_by_ridership ---------------------------------
+
+    #[test]
+    fn top_route_indices_picks_the_busiest_routes_in_order() {
+        let mut r0 = route(1, "A", vec![]);
+        r0.daily_ridership = 100.0;
+        let mut r1 = route(2, "B", vec![]);
+        r1.daily_ridership = 500.0;
+        let mut r2 = route(3, "C", vec![]);
+        r2.daily_ridership = 250.0;
+        let routes = vec![r0, r1, r2];
+        assert_eq!(top_route_indices_by_ridership(&routes, 2), vec![1, 2]);
+    }
+
+    #[test]
+    fn top_route_indices_empty_routes_is_empty() {
+        assert!(top_route_indices_by_ridership(&[], 8).is_empty());
     }
 }
