@@ -19,4 +19,4 @@ const here = dirname(fileURLToPath(import.meta.url));
 // may pass through; first remaining token (if any) is the city key.
 const args = process.argv.slice(2).filter((a) => a !== '--');
 process.argv = [process.argv[0]!, join(here, 'build-cities.ts'), ...args];
-await import('./build-cities.ts');
+await import(new URL('./build-cities.ts', import.meta.url).href);

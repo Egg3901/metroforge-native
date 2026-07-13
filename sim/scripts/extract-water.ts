@@ -12,6 +12,7 @@
  *   (cd .cache/osmdata && unzip -o water.zip)
  */
 import * as shapefile from 'shapefile';
+import type { MultiPolygon, Polygon } from 'geojson';
 import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { expandBboxToSquare } from './geo-utils';
 
@@ -50,7 +51,9 @@ for (const k of Object.keys(CITIES)) out[k] = { outers: [], inners: [] };
 const ringLL = (coords: number[][]): { ring: Ring; minLa: number; maxLa: number; minLo: number; maxLo: number } => {
   const ring: Ring = [];
   let minLa = 1e9, maxLa = -1e9, minLo = 1e9, maxLo = -1e9;
-  for (const [x, y] of coords) {
+  for (const pair of coords) {
+    const x = pair[0]!;
+    const y = pair[1]!;
     const [lon, lat] = toLL(x, y);
     ring.push([lat, lon]);
     minLa = Math.min(minLa, lat); maxLa = Math.max(maxLa, lat);
@@ -67,16 +70,17 @@ const source = await shapefile.open(
   shpBuf.buffer.slice(shpBuf.byteOffset, shpBuf.byteOffset + shpBuf.byteLength),
   dbfBuf.buffer.slice(dbfBuf.byteOffset, dbfBuf.byteOffset + dbfBuf.byteLength),
 );
-let rec: { done: boolean; value?: GeoJSON.Feature };
 let scanned = 0;
-for (rec = await source.read(); !rec.done; rec = await source.read()) {
+for (;;) {
+  const rec = await source.read();
+  if (rec.done) break;
   scanned++;
-  const geom = rec.value?.geometry as GeoJSON.Polygon | GeoJSON.MultiPolygon | undefined;
+  const geom = rec.value?.geometry as Polygon | MultiPolygon | undefined;
   if (!geom) continue;
   const polys = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates;
   for (const poly of polys) {
     // poly[0] = outer ring, poly[1..] = holes
-    poly.forEach((coords, ri) => {
+    poly.forEach((coords: number[][], ri: number) => {
       const { ring, minLa, maxLa, minLo, maxLo } = ringLL(coords as number[][]);
       for (const [key, bb] of Object.entries(CITIES)) {
         if (intersects(bb, minLa, maxLa, minLo, maxLo)) {

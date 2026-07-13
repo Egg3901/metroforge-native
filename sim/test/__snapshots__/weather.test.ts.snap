@@ -1,4 +1,29 @@
-// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`weather-sequence snapshot (seed 12345, NYC, first 20 days) > matches the documented golden sequence 1`] = `
+[
+  "overcast",
+  "snow",
+  "snow",
+  "clear",
+  "snow",
+  "storm",
+  "overcast",
+  "snow",
+  "snow",
+  "rain",
+  "rain",
+  "rain",
+  "snow",
+  "snow",
+  "snow",
+  "storm",
+  "storm",
+  "snow",
+  "snow",
+  "snow",
+]
+`;
 
 exports[`weather-sequence snapshot (seed 12345, NYC, first 20 days) matches the documented golden sequence 1`] = `
 [

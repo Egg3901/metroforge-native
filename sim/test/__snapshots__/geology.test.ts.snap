@@ -1,4 +1,34 @@
-// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`strata probe snapshot (seed 12345, NYC, origin) > matches the documented golden column 1`] = `
+{
+  "bands": [
+    {
+      "bottom": 3.59,
+      "kind": "fill",
+      "top": 0,
+    },
+    {
+      "bottom": 12.12,
+      "kind": "clay",
+      "top": 3.59,
+    },
+    {
+      "bottom": 91.61,
+      "kind": "rock",
+      "top": 12.12,
+    },
+    {
+      "bottom": 1000,
+      "kind": "bedrock",
+      "top": 91.61,
+    },
+  ],
+  "rockHardness": 0.88,
+  "surfaceElevation": 0,
+  "waterTable": 4.66,
+}
+`;
 
 exports[`strata probe snapshot (seed 12345, NYC, origin) matches the documented golden column 1`] = `
 {

@@ -12,7 +12,8 @@ import { simTick } from '../src/core/sim';
 import { stateHash } from '../src/core/save';
 import { generateCity } from '../src/core/city/generator';
 import { presetByKey } from '../src/core/city/presets';
-import type { GameState, Vec2 } from '../src/core/types';
+import type { GameState } from '../src/core/types';
+import type { Vec2 } from '../src/core/geometry';
 
 const SEED = 12345;
 const TICKS = Number(process.env.TICKS ?? 2000);

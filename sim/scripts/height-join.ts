@@ -18,7 +18,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { gunzipSync } from 'node:zlib';
-import { CITIES, type CityCfg } from './build-cities';
+import { CITIES } from './build-cities';
 import { expandBboxToSquare } from './geo-utils';
 
 const WORLD = 12000;

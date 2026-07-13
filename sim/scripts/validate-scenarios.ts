@@ -10,6 +10,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Ajv2020 from 'ajv/dist/2020.js';
+import type { AnySchema } from 'ajv';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIR = join(ROOT, 'src/content/scenarios');
@@ -38,8 +39,8 @@ async function main(): Promise<void> {
   const ajv = new Ajv2020({ allErrors: true, strict: false });
   const scenarioSchema = await loadJson(SCHEMA_PATH);
   const progressionSchema = await loadJson(PROG_SCHEMA_PATH);
-  const validateScenario = ajv.compile(scenarioSchema);
-  const validateProgression = ajv.compile(progressionSchema);
+  const validateScenario = ajv.compile(scenarioSchema as AnySchema);
+  const validateProgression = ajv.compile(progressionSchema as AnySchema);
 
   const files = (await readdir(DIR)).filter((f) => f.endsWith('.json') && !RESERVED.has(f)).sort();
   if (files.length === 0) {

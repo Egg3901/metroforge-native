@@ -16,4 +16,4 @@ import { join, dirname } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2).filter((a) => a !== '--');
 process.argv = [process.argv[0]!, join(here, 'height-join.ts'), ...args];
-await import('./height-join.ts');
+await import(new URL('./height-join.ts', import.meta.url).href);
