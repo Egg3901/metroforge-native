@@ -48,6 +48,9 @@ export interface UiRoute {
   farebox?: number;
   /** crowding scaled by the current time-of-day factor (fullness right now) */
   liveCrowding?: number;
+  /** length-weighted avg grade-effective speed (m/s) at the current tick;
+   *  surface drops under traffic ("23 km/h"), elevated/tunnel stay at cruise */
+  avgEffectiveSpeed?: number;
 }
 
 export interface UiState {

@@ -59,14 +59,15 @@ describe('uiExtras economy + time-of-day summary (A + D)', () => {
     expect(ex.lifetime).toBeDefined();
   });
 
-  it('per-route extras: operating cost, farebox, live crowding', () => {
+  it('per-route extras: operating cost, farebox, live crowding, avg effective speed', () => {
     const state = runningNetwork(8888);
     const tod = todFactorOf(state);
     const r = state.routes[0]!;
-    const rx = routeExtras(r, tod);
+    const rx = routeExtras(r, tod, state);
     expect(rx.operatingCost).toBeGreaterThan(0);
     expect(rx.farebox).toBeCloseTo(r.dailyRevenue / rx.operatingCost, 6);
     expect(rx.liveCrowding).toBeCloseTo((r.crowding ?? 0) * tod, 6);
+    expect(rx.avgEffectiveSpeed).toBeGreaterThan(0);
   });
 });
 

@@ -100,6 +100,13 @@ export interface TrackSegment {
   toStationId: number;
   polyline: Polyline;
   buildCost: number;
+  /**
+   * Cached corridor density (land value → [0,1]) at the segment midpoint, for
+   * the grade congestion model (Egg3901/metroforge#38). Set on build and
+   * refreshed each assignment (same cadence/lag as route.surfaceExposure), so
+   * the per-tick movement loop reads a number instead of resampling the field.
+   */
+  congestionDensity?: number;
 }
 
 export interface RouteDef {
@@ -129,9 +136,21 @@ export interface RouteDef {
    * Fraction of the route NOT in tunnel (0 = fully underground, 1 = fully
    * surface/elevated), derived from its track grades each assignment. Weather
    * speed penalties scale with this, so grade-separated lines shrug off snow.
+   *
+   * (see gradeProfile below for the grade-congestion movement cache.)
    * Optional/derived; absent on legacy saves (treated as 1 = fully exposed).
    */
   surfaceExposure?: number;
+  /**
+   * Length-weighted day-average grade-effective running speed (m/s), refreshed
+   * each assignment (Egg3901/metroforge#38). Surface segments in dense corridors
+   * pull it below mode cruise; elevated/tunnel keep cruise. The per-tick vehicle
+   * loop just reads this, so grade adds no per-tick cost. Day-average matches the
+   * cycle-time → headway model; the diurnal (rush) sharpness of the tradeoff
+   * lives in the peak-biased assignment ride edges. Derived — absent on legacy
+   * saves (falls back to mode cruise until the next assignment).
+   */
+  moveGradeSpeed?: number;
 }
 
 export interface VehicleState {

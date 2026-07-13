@@ -12,7 +12,8 @@ import { dist } from '../geometry';
 import { eventDemandMult } from '../events';
 import { weatherCarPenaltyMin, weatherDemandMult, weatherWalkMult } from '../weatherEffects';
 import { stationDepthAccessPenaltySec } from '../geologyCost';
-import type { District, FlowResult, GameState, RouteDef, Station } from '../types';
+import { segmentAssignmentSpeedMps, segmentDensity01 } from './gradeEffects';
+import type { District, FlowResult, GameState, RouteDef, Station, TrackSegment } from '../types';
 
 const CAR_SPEED = 8.3; // m/s effective urban driving
 const CAR_OVERHEAD_MIN = 8; // parking, access
@@ -43,7 +44,12 @@ interface AssignmentGraph {
   nodeCount: number;
 }
 
-function buildGraph(stations: Station[], routes: RouteDef[]): AssignmentGraph {
+function buildGraph(
+  stations: Station[],
+  routes: RouteDef[],
+  tracks: TrackSegment[],
+  fields: GameState['fields'],
+): AssignmentGraph {
   const streetNodeOf = new Map<number, number>();
   const nodeStation: number[] = [];
   const nodeRoute: number[] = [];
@@ -53,6 +59,7 @@ function buildGraph(stations: Station[], routes: RouteDef[]): AssignmentGraph {
     nodeRoute.push(-1);
   });
   const stationById = new Map(stations.map((s) => [s.id, s]));
+  const trackById = new Map(tracks.map((t) => [t.id, t]));
 
   // (station, route) nodes
   const routeNode = new Map<string, number>();
@@ -99,7 +106,15 @@ function buildGraph(stations: Station[], routes: RouteDef[]): AssignmentGraph {
       const na = routeNode.get(`${r.stationIds[i]}:${r.id}`);
       const nb = routeNode.get(`${r.stationIds[i + 1]}:${r.id}`);
       if (!a || !b || na === undefined || nb === undefined) continue;
-      const rideMin = (dist(a.pos, b.pos) / cfg.speed + cfg.dwellSeconds) / 60;
+      // Grade-aware ride time: a surface segment in a dense corridor rides slower
+      // at the peak (when demand/crowding is measured), so grade separation shows
+      // up in the mode split. Elevated/tunnel keep full mode cruise.
+      const seg = trackById.get(r.segmentIds[i] as number);
+      const len = seg?.polyline.length ?? dist(a.pos, b.pos);
+      const dens = seg ? segmentDensity01(fields, seg) : 0.5;
+      const grade = seg?.grade ?? 'surface';
+      const spd = segmentAssignmentSpeedMps(r.mode, grade, dens);
+      const rideMin = (len / spd + cfg.dwellSeconds) / 60;
       edges[na]!.push({ to: nb, cost: rideMin, routeId: r.id });
       edges[nb]!.push({ to: na, cost: rideMin, routeId: r.id });
     }
@@ -194,8 +209,8 @@ export interface AssignmentOutput {
 }
 
 export function runAssignment(state: GameState): AssignmentOutput {
-  const { districts, stations, routes } = state;
-  const graph = buildGraph(stations, routes);
+  const { districts, stations, routes, tracks, fields } = state;
+  const graph = buildGraph(stations, routes, tracks, fields);
   const flows: FlowResult[] = [];
   const carFlows: CarFlow[] = [];
   const routeRidership = new Map<number, number>();
