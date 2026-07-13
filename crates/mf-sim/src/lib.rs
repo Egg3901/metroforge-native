@@ -11,13 +11,19 @@
 //! Guardrails: seeded RNG only, no wall-clock, no HashMap iteration in hashed
 //! paths. See the individual modules for their TS source mapping.
 
+pub mod commands;
+pub mod constants;
+pub mod geometry;
 pub mod hash;
 pub mod rng;
-pub mod state;
+pub mod save;
+pub mod types;
 
+pub use commands::{apply_command, CommandResult, SimCommand};
 pub use hash::{Hashable, StateHasher};
 pub use rng::{Rng, RngState};
-pub use state::GameState;
+pub use save::state_hash;
+pub use types::GameState;
 
 /// Advance the simulation by one tick. Mirrors the TS entry `simTick`
 /// (sim/src/core/sim.ts:164).
@@ -29,10 +35,14 @@ pub use state::GameState;
 /// is purely to exercise the deterministic tick + RNG + hash pipeline.
 pub fn sim_tick(state: &mut GameState) {
     state.tick += 1;
-    // Draw from the seeded stream so RNG state advances every tick.
-    let roll = state.rng.next_f64();
+    // Draw from the seeded primary stream so RNG state advances every tick.
+    // Rebuild the Rng from the saved state, draw, and store the advanced state
+    // back (the real per-tick systems in P3 will hold a live Rng for the pass).
+    let mut rng = state.rng();
+    let roll = rng.next_f64();
+    state.rng_state = rng.state();
     // Deterministic placeholder economy mutation (real economy is P3).
-    state.cash += roll - 0.5;
+    state.budget.cash += roll - 0.5;
 }
 
 #[cfg(test)]

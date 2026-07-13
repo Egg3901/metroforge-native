@@ -3121,6 +3121,7 @@ name = "mf-sim"
 version = "0.5.7"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]

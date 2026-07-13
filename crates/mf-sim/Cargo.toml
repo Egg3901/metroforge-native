@@ -10,7 +10,8 @@ license.workspace = true
 # std-only plus optional serde so it stays trivially portable and auditable.
 [dependencies]
 serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [features]
 default = []
-serde = ["dep:serde"]
+serde = ["dep:serde", "dep:serde_json"]
