@@ -1363,6 +1363,134 @@ pub fn sparkline(ui: &mut egui::Ui, values: &[f64], size: egui::Vec2) -> egui::R
     response
 }
 
+// Line chart + horizontal bars (finance Trends tab)
+// ---------------------------------------------------------------------
+// Reuses [`sparkline_points`] for single-series traces; adds a zero
+// baseline for signed money series and horizontal bars for categorical
+// comparisons (route ridership leaderboard).
+
+/// Y coordinate of `value` inside `rect`, scaled to `min`..=`max`. When
+/// `min == max`, returns the vertical center.
+fn chart_y_for_value(value: f64, min: f64, max: f64, rect: egui::Rect) -> f32 {
+    let span = max - min;
+    if span.abs() < 1e-9 {
+        return rect.center().y;
+    }
+    let norm = ((value - min) / span).clamp(0.0, 1.0) as f32;
+    rect.max.y - norm * rect.height()
+}
+
+/// Paints `values` as a colored polyline (oldest left, newest right),
+/// scaled to the series' own min/max. When the range straddles zero, a
+/// muted horizontal zero line is drawn for context.
+pub fn line_chart(
+    ui: &mut egui::Ui,
+    values: &[f64],
+    color: egui::Color32,
+    size: egui::Vec2,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, CORNER_RADIUS, inactive_bg());
+    if values.is_empty() {
+        return response;
+    }
+    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let inset = rect.shrink(3.0);
+    if min < 0.0 && max > 0.0 {
+        let zero_y = chart_y_for_value(0.0, min, max, inset);
+        painter.line_segment(
+            [
+                egui::pos2(inset.min.x, zero_y),
+                egui::pos2(inset.max.x, zero_y),
+            ],
+            egui::Stroke::new(1.0, muted()),
+        );
+    }
+    let points = sparkline_points(values, inset);
+    match points.as_slice() {
+        [] => {}
+        [only] => {
+            painter.circle_filled(*only, 2.0, color);
+        }
+        _ => {
+            painter.line(points, egui::Stroke::new(1.5, color));
+        }
+    }
+    response
+}
+
+/// Paints multiple independent series on one chart. Each trace is scaled
+/// to its own min/max so unlike magnitudes (share vs. population) can
+/// share one plot without one series flattening the other.
+pub fn multi_line_chart(
+    ui: &mut egui::Ui,
+    series: &[(&[f64], egui::Color32)],
+    size: egui::Vec2,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, CORNER_RADIUS, inactive_bg());
+    let inset = rect.shrink(3.0);
+    for (values, color) in series {
+        if values.is_empty() {
+            continue;
+        }
+        let points = sparkline_points(values, inset);
+        match points.as_slice() {
+            [] => {}
+            [only] => {
+                painter.circle_filled(*only, 2.0, *color);
+            }
+            _ => {
+                painter.line(points, egui::Stroke::new(1.5, *color));
+            }
+        }
+    }
+    response
+}
+
+/// One horizontal bar row: `label` on the left, a filled bar whose width
+/// is `value / max_value` of the remaining space, tinted `color`.
+pub fn horizontal_bar_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: f64,
+    max_value: f64,
+    color: egui::Color32,
+    bar_height: f32,
+) {
+    ui.horizontal(|ui| {
+        ui.label(label_small(label));
+        let bar_w = ui.available_width().max(40.0);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, bar_height), egui::Sense::hover());
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, CORNER_RADIUS, inactive_bg());
+        if max_value > 0.0 && value > 0.0 {
+            let frac = (value / max_value).clamp(0.0, 1.0) as f32;
+            let fill =
+                egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * frac, rect.height()));
+            painter.rect_filled(fill, CORNER_RADIUS, color);
+        }
+        ui.label(label_small(format_thousands_bar(value)));
+    });
+}
+
+/// Compact thousands grouping for bar value labels (no `$` prefix).
+fn format_thousands_bar(value: f64) -> String {
+    let rounded = value.round().max(0.0) as u64;
+    let digits = rounded.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    grouped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
