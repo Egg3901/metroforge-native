@@ -127,22 +127,30 @@ draw distance in NYC.
 | knob | potato | low | medium | high |
 |---|---|---|---|---|
 | present mode | no vsync | vsync | vsync | vsync |
-| render scale | 0.75 | 1.0 | 1.0 | 1.0 |
 | MSAA | off | off | 4x | 4x |
-| shadows | off | off | 2048 cascade | 4096 cascade |
-| material | unlit vertex color | unlit | lit (StandardMaterial) | lit (StandardMaterial) |
+| shadows | off | 1024 cascade | 2048 cascade | 4096 cascade |
+| roads / vehicles material | unlit (flat black) | unlit | lit (`StandardMaterial`) | lit |
+| buildings | cel-lit (`building_lit`) on every tier | cel-lit | cel-lit + shadows | cel-lit + shadows |
 | building draw distance | 3 km | 6 km | 12 km | unlimited |
 | agent cap | 0 | 100 | 250 | 400 |
-| vehicle mesh | quad billboard | low-poly box | box | chamfered box |
-| terrain subdivision | coarsest | coarse | full | full |
+| metro vehicle mesh | box brick | box brick | glTF consist (`.glb`) | glTF consist |
+| terrain subdivision | coarsest (÷3) | coarse (÷2) | full | full |
 | day/night cycle | off (fixed noon) | on | on | on |
-| weather (fog/clouds) | off | off | dual-layer volumetric (toggleable) | dual-layer volumetric (toggleable) |
+| atmosphere (cloud cards + ground shadows) | off | off | on (Settings toggle) | on (denser steps) |
+| precip particles (rain/snow) | off | up to 400 | up to 1 500 | up to 4 000 |
+| wet-road / snow-slush grading | n/a (unlit roads) | n/a | on when weather active | on |
+| main-menu diorama lighting | golden hour pinned (`AttractLighting`) on `MainMenu` at every tier | same | same | same |
 
-Unlit rendering plus flat vertex colors and zero textures is the whole art style, not
-just the cheap fallback, so Potato still looks like MetroForge. Higher tiers only add
-shadows, MSAA, emissive glow, dual-layer scrolling volumetric fog/clouds (Medium+,
-toggleable in Settings; ground mist + high cloud deck with a shared wind field),
-and chamfered vehicle meshes on top.
+Knob source: `QualityTier::knobs()` in `crates/mf-state/src/quality.rs`. Weather
+rendering also requires sim weather in `UiState` (v0.7) **and** the Settings
+`WeatherEffects` checkbox; precip counts above are caps from
+`crates/mf-render/src/precip.rs` (`tier_count`: Potato = 0). Atmosphere needs
+`atmosphere_enabled` on the tier plus `WeatherEffects::enabled`.
+
+Unlit flat-black streets plus cel-lit near-white buildings are the art style, not
+just the cheap fallback, so Potato still reads as MetroForge (dense-center cel
+outline on every tier). Higher tiers add shadows, MSAA, bloom, stylized water,
+glTF bridge/metro models, atmosphere, and scaled precip on top.
 
 ## Architecture
 
@@ -186,9 +194,12 @@ metroforge-native/
     DEVELOPMENT.md           build/test/release workflow
   scripts/
     package.sh               stages a client + sidecar + font into a release archive
+    tier-smoke.sh            per-tier in-city render smoke (unique-colour floors)
   sim/                       TypeScript sim (metroforge-sim): sim core, host loop,
                              content, city data, and the Bun sidecar (compiled into
                              the sidecar binary the client spawns)
+  tools/blender/             scripted Blender 5 `.glb` asset pipeline (bridge/train/cloud)
+  crates/mf-game/assets/models/  committed `.glb` outputs loaded by `mf-render`
   .github/workflows/         CI and release automation
 ```
 

@@ -141,8 +141,11 @@ cargo check -p mf-game
 
 **Removed by feature trim / pin:**
 
-- `base64` 0.21 + 0.22 → single (dropped `bevy_gltf`'s 0.22 consumer)
-- `bevy_animation`, `bevy_gltf`, `bevy_gilrs`, `bevy_picking`, `bevy_scene`, `sysinfo`, `lewton`/vorbis stack gone from the graph
+- `bevy_animation`, `bevy_gilrs`, `bevy_picking`, `sysinfo`, `lewton`/vorbis stack gone from the graph
+
+**Re-enabled for the asset pipeline:**
+
+- `bevy_gltf` / `bevy_scene` / `gltf-json` (scripted `.glb` loads under `tools/blender/`)
 
 **Unified where we own the pin:**
 
@@ -182,6 +185,33 @@ cargo xwin build --release -p mf-game --target x86_64-pc-windows-msvc
 and caches under `~/.cache/cargo-xwin`. Do not change the release profile or
 Bevy feature set in a way that breaks this target — CI packages the PE next to
 the Windows sidecar.
+
+## Blender 5 scripted assets (glTF re-enabled)
+
+`bevy_gltf` is **on** again in the workspace `Cargo.toml` so the client can load
+committed `.glb` scenes from `crates/mf-game/assets/models/` (bridge, metro
+consist, cloud puffs). Generators live under [`tools/blender/`](tools/blender/);
+full art-direction rules are in [`tools/blender/README.md`](tools/blender/README.md).
+
+Regeneration loop (deterministic, no RNG — re-run should be byte-stable):
+
+```sh
+# requires Blender 5.x on PATH (headless)
+./tools/blender/make-assets.sh
+# or: BLENDER=/path/to/blender ./tools/blender/make-assets.sh
+```
+
+`make-assets.sh` writes:
+
+| Output | Generator |
+|---|---|
+| `bridge_suspension.glb`, `bridge_brooklyn.glb` | `gen_bridge.py` |
+| `train_metro.glb` | `gen_train.py` |
+| `cloud_puffs.glb` | `gen_clouds.py` |
+
+Commit **both** the `.py` sources and the regenerated `.glb` artifacts.
+Runtime loaders: `mf-render/src/models.rs`, `bridges.rs`, `vehicles.rs`,
+`atmosphere.rs`.
 
 ## Sidecar (Bun)
 
