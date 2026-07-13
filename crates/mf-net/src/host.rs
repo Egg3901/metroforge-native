@@ -329,6 +329,12 @@ pub fn build_elevation(s: &GameState) -> Option<wire::StaticElevation> {
     }
 }
 
+/// Build the optional static per-building footprint payload (msgType=5) for a
+/// real city key. Mirrors sidecar `resolveBuildings + encodeStaticBuildings`.
+pub fn build_static_buildings(preset_key: Option<&str>) -> Option<wire::StaticBuildings> {
+    crate::cities::resolve_buildings(preset_key)
+}
+
 /// Build the `ready` static-city payload. For real (OSM) cities this carries
 /// the mask resolution + `has*Mask` flags (the mask BYTES arrive as separate
 /// [`wire::StaticMask`] frames), the OSM place-name labels, and the POI

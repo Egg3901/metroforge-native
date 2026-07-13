@@ -102,6 +102,16 @@ fn ready_and_binary_frames_reflect_real_city() {
     let elev = host::build_elevation(&s).expect("elevation frame");
     assert_eq!(elev.res, 256);
     assert_eq!(elev.heights.len(), 256 * 256);
+
+    // static building vectors (msgType=5) from city data.
+    let buildings = host::build_static_buildings(Some("nyc")).expect("static buildings");
+    assert!(buildings.buildings.len() > 10_000);
+    // run-twice byte-identical framing (determinism + anti-cheat assumptions).
+    let a = buildings.encode();
+    let b = host::build_static_buildings(Some("nyc"))
+        .expect("static buildings run 2")
+        .encode();
+    assert_eq!(a, b, "static buildings frame must be stable");
 }
 
 #[test]

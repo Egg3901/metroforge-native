@@ -281,6 +281,9 @@ fn handle_inbound(host: &mut Host, msg: ToSim, tx: &Sender<FromSimMsg>) -> bool 
             if let Some(elev) = host::build_elevation(&state) {
                 ok = ok && tx.send(FromSimMsg::Elevation(Arc::new(elev))).is_ok();
             }
+            if let Some(buildings) = host::build_static_buildings(host.preset_key.as_deref()) {
+                ok = ok && tx.send(FromSimMsg::Buildings(buildings)).is_ok();
+            }
             ok = ok
                 && tx
                     .send(FromSimMsg::Fields(Arc::new(host::build_fields(

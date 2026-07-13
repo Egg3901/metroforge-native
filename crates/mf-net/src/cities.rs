@@ -17,6 +17,7 @@
 //!
 //! Loading is deterministic: pure parse of static bytes, stable ordering.
 
+use mf_protocol::{BuildingFootprint, StaticBuildings};
 use mf_sim::city::osm::{OsmCityData, OsmRoad};
 use mf_sim::types::{MapLabel, MapLabelKind, PoiAnchor, PoiKind};
 use serde::Deserialize;
@@ -24,6 +25,10 @@ use serde::Deserialize;
 /// Embedded flagship bundles (single-binary friendly).
 static NYC_JSON: &[u8] = include_bytes!("../../../sim/src/data/cities/nyc.json");
 static BOSTON_JSON: &[u8] = include_bytes!("../../../sim/src/data/cities/boston.json");
+static NYC_BUILDINGS_JSON: &[u8] =
+    include_bytes!("../../../sim/src/data/cities/nyc.buildings.json");
+static CLEVELAND_BUILDINGS_JSON: &[u8] =
+    include_bytes!("../../../sim/src/data/cities/cleveland.buildings.json");
 
 /// Compile-time fallback data dir for the non-embedded cities.
 const DEFAULT_DATA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sim/src/data/cities");
@@ -112,6 +117,21 @@ struct AnchorDto {
     area: Option<f64>,
 }
 
+#[derive(Deserialize)]
+struct BuildingsBundleDto {
+    version: u32,
+    #[serde(default)]
+    buildings: Vec<BuildingDto>,
+}
+
+#[derive(Deserialize)]
+struct BuildingDto {
+    h: u16,
+    #[serde(default)]
+    mh: u16,
+    v: Vec<i16>,
+}
+
 fn label_kind(s: &str) -> MapLabelKind {
     match s {
         "water" => MapLabelKind::Water,
@@ -197,6 +217,46 @@ fn parse(bytes: &[u8]) -> Option<OsmCityData> {
     }
 }
 
+fn parse_buildings(bytes: &[u8]) -> Option<StaticBuildings> {
+    let dto: BuildingsBundleDto = match serde_json::from_slice(bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("failed to parse buildings bundle: {e}");
+            return None;
+        }
+    };
+    if dto.version < 2 {
+        tracing::warn!(
+            "unsupported buildings bundle version {}; expected >= 2",
+            dto.version
+        );
+        return None;
+    }
+
+    let mut out: Vec<BuildingFootprint> = Vec::with_capacity(dto.buildings.len());
+    for (idx, b) in dto.buildings.into_iter().enumerate() {
+        let vc = b.v.len() / 2;
+        if b.v.len() % 2 != 0 || !(3..=64).contains(&vc) {
+            tracing::warn!(
+                "invalid building {} in bundle (coords={}, vertex_count={vc})",
+                idx,
+                b.v.len()
+            );
+            return None;
+        }
+        let mut verts: Vec<[f32; 2]> = Vec::with_capacity(vc);
+        for xy in b.v.chunks_exact(2) {
+            verts.push([xy[0] as f32 / 2.0, xy[1] as f32 / 2.0]);
+        }
+        out.push(BuildingFootprint {
+            height_dm: b.h,
+            min_height_dm: b.mh,
+            verts,
+        });
+    }
+    Some(StaticBuildings { buildings: out })
+}
+
 /// Resolve a preset key to a parsed OSM bundle. Embedded flagships (NYC,
 /// Boston) always resolve; the other cities load from the data dir. Returns
 /// `None` for procedural keys or a missing/corrupt data file (caller then
@@ -219,6 +279,30 @@ pub fn resolve_city(key: Option<&str>) -> Option<OsmCityData> {
                     );
                     None
                 }
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Resolve a city key to optional per-building footprint vectors (msgType=5).
+///
+/// Data delivery mirrors [`resolve_city`]:
+/// * NYC + Cleveland bundles are embedded.
+/// * Other keys are loaded from `$MF_CITY_DATA` or the in-repo fallback dir.
+/// * Missing/invalid files return `None` (no static buildings frame).
+pub fn resolve_buildings(key: Option<&str>) -> Option<StaticBuildings> {
+    let key = key?;
+    match key {
+        "nyc" => parse_buildings(NYC_BUILDINGS_JSON),
+        "cleveland" => parse_buildings(CLEVELAND_BUILDINGS_JSON),
+        k if is_osm_city(k) => {
+            let dir =
+                std::env::var("MF_CITY_DATA").unwrap_or_else(|_| DEFAULT_DATA_DIR.to_string());
+            let path = std::path::Path::new(&dir).join(format!("{k}.buildings.json"));
+            match std::fs::read(&path) {
+                Ok(bytes) => parse_buildings(&bytes),
+                Err(_) => None,
             }
         }
         _ => None,
@@ -253,5 +337,19 @@ mod tests {
     fn procedural_key_is_none() {
         assert!(resolve_city(Some("generic")).is_none());
         assert!(resolve_city(None).is_none());
+    }
+
+    #[test]
+    fn embedded_buildings_load_for_nyc_and_cleveland() {
+        let nyc = resolve_buildings(Some("nyc")).expect("nyc buildings");
+        assert!(nyc.buildings.len() > 10_000);
+        let cle = resolve_buildings(Some("cleveland")).expect("cleveland buildings");
+        assert!(cle.buildings.len() > 1_000);
+    }
+
+    #[test]
+    fn procedural_key_has_no_buildings() {
+        assert!(resolve_buildings(Some("generic")).is_none());
+        assert!(resolve_buildings(None).is_none());
     }
 }
