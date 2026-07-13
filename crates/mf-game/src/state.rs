@@ -197,7 +197,8 @@ impl Plugin for MfGameStatePlugin {
                 Update,
                 autostart_system.run_if(in_state(AppState::MainMenu)),
             )
-            .add_systems(Update, graceful_quit_system);
+            .add_systems(Update, graceful_quit_system)
+            .add_systems(Update, sync_geology_context_system);
     }
 }
 
@@ -591,7 +592,32 @@ fn autostart_system(
         return;
     }
     pending.preset_key = preset.to_string();
+    // Optional deterministic seed for the strata / diorama screenshot harness
+    // (the autostart default otherwise randomizes via `rand_seed`, which makes
+    // the geology noise draw non-reproducible). `MF_SEED=<u64>`; a malformed
+    // value is ignored so a stray env var can't strand the boot.
+    if let Ok(s) = std::env::var("MF_SEED") {
+        if let Ok(seed) = s.trim().parse::<u64>() {
+            pending.seed = seed;
+        }
+    }
     next_state.set(AppState::Loading);
+}
+
+/// Publish `PendingInit`'s `(seed, preset_key)` into `mf_state`'s
+/// [`GeologyContext`] whenever they change, so `mf-render`'s diorama slab can
+/// reconstruct the sim's subsurface strata client-side (no `strataProbe`
+/// round-trips). Runs cheaply every frame, gated on `PendingInit` change
+/// detection; `GeologyContext::set` further avoids tripping its own change
+/// detection when nothing actually moved.
+fn sync_geology_context_system(
+    pending: Res<PendingInit>,
+    mut geology: ResMut<mf_state::GeologyContext>,
+) {
+    if !pending.is_changed() {
+        return;
+    }
+    geology.set(pending.seed, Some(pending.preset_key.clone()));
 }
 
 /// Loading -> InGame once `ready` + all flagged masks + first `fields` +

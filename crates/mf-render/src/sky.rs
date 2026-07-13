@@ -86,6 +86,11 @@ struct SkyMaterial {
     /// horizon band at night; strength lives in `params.z`.
     #[uniform(0)]
     city_glow: Vec4,
+    /// Below-horizon backdrop stop (rgb): the diorama slab floats in a void,
+    /// so under the eye line the gradient eases from `horizon` into this
+    /// (slightly deeper) tone instead of clamping to a flat band.
+    #[uniform(0)]
+    below: Vec4,
 }
 
 impl Material for SkyMaterial {
@@ -131,6 +136,7 @@ fn spawn_sky_dome_system(
         zenith: color_to_vec4(palette::sky_day()),
         params: Vec4::new(DOME_RADIUS, 1.6, 0.0, 0.0),
         city_glow: Vec4::new(1.0, 0.55, 0.22, 0.0),
+        below: color_to_vec4(palette::sky_day()),
     });
     commands.spawn((
         Mesh3d(mesh),
@@ -190,19 +196,40 @@ fn update_sky_colors_system(
         .mix(&dusk, golden * 0.50)
         .mix(&palette::sky_night(), n);
     // Horizon stays slightly paler, but picks up golden warmth at low sun
-    // instead of washing toward plain white (which read as gray soup).
+    // instead of washing toward plain white (which read as gray soup). The
+    // pale mix targets a soft warm grey rather than pure white so the day
+    // backdrop reads as a studio sweep, not a lightbox.
+    let warm_grey = Color::srgb(0.92, 0.88, 0.82);
+    // The pale warm mix is a DAY backdrop treatment: fade it out with
+    // night_factor so the night void stays deep blue-black with only a
+    // subtle lift, instead of washing warm-grey (owner: "deep blue-black
+    // with subtle horizon lift").
     let horizon = zenith
-        .mix(&Color::WHITE, 0.22 * (1.0 - golden * 0.7))
+        .mix(&warm_grey, 0.30 * (1.0 - golden * 0.7) * (1.0 - n * 0.85))
         .mix(&dusk, golden * 0.40);
+    // Below-horizon stop: a smooth continuation of the horizon, easing a
+    // little deeper (day: warm grey; night: deep blue-black keeps a subtle
+    // horizon lift because the ease starts from `horizon`). Deepening is
+    // gentler at night so the void never turns into a black pit.
+    let below = {
+        let h = horizon.to_srgba();
+        let deepen = 0.86 + 0.06 * n;
+        Color::srgb(h.red * deepen, h.green * deepen, h.blue * deepen)
+    };
     // Soft sodium/amber city glow — real light-pollution dome. Strength
     // tracks night_factor; color stays warm regardless of theme so the
     // night money-shot reads the same across Light/Dark/Purple.
-    let glow_strength = (day_night.night_factor * 0.55).clamp(0.0, 1.0);
-    let glow = Color::srgb(1.0, 0.55, 0.22);
+    // Toned well down for the diorama era (owner 2026-07-13): the void must
+    // stay deep blue-black with only a SUBTLE lift — the old 0.55 strength
+    // was tuned to mask a horizon city silhouette that no longer exists and
+    // read as a warm beige wash across the whole overview backdrop.
+    let glow_strength = (day_night.night_factor * 0.16).clamp(0.0, 1.0);
+    let glow = Color::srgb(1.0, 0.62, 0.35);
     for mat in &domes {
         if let Some(m) = materials.get_mut(&mat.0) {
             m.zenith = color_to_vec4(zenith);
             m.horizon = color_to_vec4(horizon);
+            m.below = color_to_vec4(below);
             m.params.z = glow_strength;
             m.city_glow = color_to_vec4(glow);
         }

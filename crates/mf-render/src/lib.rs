@@ -14,6 +14,10 @@ mod atmosphere;
 mod bridges;
 mod buildings;
 mod daynight;
+mod diorama;
+/// Public so the diorama slab and any cross-section UI can reconstruct the
+/// sim's strata client-side (see `diorama.rs`).
+pub mod geology;
 mod mesh_utils;
 mod models;
 mod outline;
@@ -98,6 +102,7 @@ impl Plugin for MfRenderPlugin {
                 roads::MfRoadsPlugin,
                 buildings::MfBuildingsPlugin,
                 transit::MfTransitPlugin,
+                diorama::MfDioramaPlugin,
             ),
             (
                 trees::MfTreesPlugin,
