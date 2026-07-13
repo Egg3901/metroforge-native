@@ -8,13 +8,16 @@
 //! separate process — a future in-process (e.g. mobile) engine implements
 //! the same trait with zero call-site changes elsewhere.
 
+pub mod embedded;
+pub mod host;
 pub mod plugin;
 pub mod reconnect;
 pub mod sidecar;
 pub mod transport;
 pub mod ws_transport;
 
-pub use plugin::{MfNetPlugin, NetSet, SimAlive, SimEvent, SimLink};
+pub use embedded::EmbeddedTransport;
+pub use plugin::{MfNetPlugin, NetSet, SimAlive, SimBackend, SimEvent, SimLink};
 pub use reconnect::{
     FatalDiagnostics, NetStatus, ReconnectPhase, ReconnectState, ResumePolicy, MAX_ATTEMPTS,
 };

@@ -253,7 +253,10 @@ fn boot_system(
     // preference so palette remaps are correct before the first Settings open.
     commands.insert_resource(config.colorblind);
 
-    match SimLink::spawn_and_connect(None) {
+    // `MF_SIM=embedded` opts into the in-process Rust sim (P4); the default is
+    // the Bun sidecar. See `mf_net::SimBackend` / `crates/mf-sim/PORT.md`.
+    let backend = mf_net::SimBackend::from_env();
+    match SimLink::connect_for_backend(backend, None) {
         Ok(link) => {
             commands.insert_resource(link);
             reconnect.status = NetStatus::Connected;

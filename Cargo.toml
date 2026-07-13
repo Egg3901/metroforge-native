@@ -88,6 +88,7 @@ thiserror = "2"
 tracing = "0.1"
 
 mf-protocol = { path = "crates/mf-protocol" }
+mf-sim = { path = "crates/mf-sim" }
 mf-net = { path = "crates/mf-net" }
 mf-state = { path = "crates/mf-state" }
 mf-render = { path = "crates/mf-render" }

@@ -3089,6 +3089,7 @@ dependencies = [
  "directories",
  "libc",
  "mf-protocol",
+ "mf-sim",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

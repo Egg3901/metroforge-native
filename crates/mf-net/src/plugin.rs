@@ -8,10 +8,37 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use mf_protocol::{FromSimMsg, ToSim};
 
+use crate::embedded::EmbeddedTransport;
 use crate::reconnect::{reconnect_system, ReconnectState};
 use crate::sidecar::SidecarProcess;
 use crate::transport::SimTransport;
 use crate::ws_transport::WsTransport;
+
+/// Which sim backend `SimLink` boxes behind the `dyn SimTransport` seam.
+///
+/// Selected by the `MF_SIM` environment variable (`embedded` | `sidecar`).
+/// Default is [`SimBackend::Sidecar`] (the shipping Bun sidecar) — the
+/// in-process Rust sim ([`SimBackend::Embedded`], `MF_SIM=embedded`) is P4's
+/// opt-in path and does not yet own OSM real cities, scenarios, or saves. See
+/// `crates/mf-sim/PORT.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimBackend {
+    /// The out-of-process Bun sidecar over a WebSocket ([`WsTransport`]).
+    Sidecar,
+    /// The in-process native Rust sim ([`EmbeddedTransport`]).
+    Embedded,
+}
+
+impl SimBackend {
+    /// Resolve the backend from `MF_SIM` (case-insensitive). Anything other than
+    /// `embedded` — including unset — is [`SimBackend::Sidecar`] (safe default).
+    pub fn from_env() -> Self {
+        match std::env::var("MF_SIM").ok().as_deref().map(str::trim) {
+            Some(v) if v.eq_ignore_ascii_case("embedded") => SimBackend::Embedded,
+            _ => SimBackend::Sidecar,
+        }
+    }
+}
 
 /// Client pings at half the websocket liveness window so an idle-but-healthy
 /// connection (e.g. sitting at `MainMenu` before `init`, where the sidecar
@@ -50,6 +77,29 @@ impl SimLink {
             transport: Box::new(transport),
             sidecar: Some(sidecar),
         })
+    }
+
+    /// Connect the in-process Rust sim ([`EmbeddedTransport`]). No child
+    /// process, so `sidecar` is `None` and there is nothing for `reconnect.rs`
+    /// to respawn (an in-process sim cannot die independently). Infallible.
+    pub fn connect_embedded() -> Self {
+        SimLink {
+            transport: Box::new(EmbeddedTransport::connect()),
+            sidecar: None,
+        }
+    }
+
+    /// Boot entry point that honors the `MF_SIM` flag: [`SimBackend::Embedded`]
+    /// connects the in-process Rust sim; [`SimBackend::Sidecar`] (default)
+    /// spawns and connects the Bun sidecar.
+    pub fn connect_for_backend(
+        backend: SimBackend,
+        headless_speed: Option<f64>,
+    ) -> anyhow::Result<Self> {
+        match backend {
+            SimBackend::Embedded => Ok(Self::connect_embedded()),
+            SimBackend::Sidecar => Self::spawn_and_connect(headless_speed),
+        }
     }
 
     /// Test/harness helper: force-kill the owned sidecar process (if any)

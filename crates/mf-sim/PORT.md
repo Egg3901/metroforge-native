@@ -329,12 +329,82 @@ assignment path (the accepted NEW RUST BASELINE), not a wiring defect.
 - **OSM real-city path** stays stubbed (transient `osm_*` fields `None`,
   `MapLabel` still a placeholder) - P5.
 
+## P4 status: in-process swap DONE (additive + flagged)
+
+The native Rust sim now runs IN-PROCESS behind the existing `SimTransport`
+seam, selected by a flag, with the Bun-sidecar `WsTransport` kept as the
+default fallback. The sidecar / dist-sidecar / `WsTransport` are UNTOUCHED
+(their deletion is P5).
+
+### Flag
+- **`MF_SIM`** env var, read by `mf_net::SimBackend::from_env()` in
+  `mf-game`'s `boot_system`:
+  - `MF_SIM=embedded` -> in-process Rust sim (`EmbeddedTransport`).
+  - unset / anything else -> Bun sidecar (`WsTransport`). **Default is
+    sidecar** (safe), because the embedded sim still lacks OSM real cities,
+    scenarios, and saves (below).
+
+### Where the code lives (mf-sim stays bevy-free AND serde-free)
+- **`crates/mf-net/src/host.rs`** — the `GameState -> wire` serializer + the
+  command bridge. Placed in `mf-net` (the one crate that already depends on
+  BOTH `mf_sim` and the `mf_protocol` DTOs) so `mf-sim` needs no new deps.
+- **`crates/mf-net/src/embedded.rs`** — `EmbeddedTransport impl SimTransport`.
+- Selection lives in `crates/mf-net/src/plugin.rs` (`SimBackend`,
+  `SimLink::connect_for_backend` / `connect_embedded`).
+
+### Serializer coverage (`host.rs`, port of `host/protocol.ts` + `uiExtras.ts`)
+- **`UiState`**: budget (cash/loan/lastDay/netHistory/lifetime), stats
+  (population/approval/transitShare/coverage/dailyTransitTrips), unlockedModes,
+  stations, tracks, routes, activeEvents (names via `event_by_id`), districts
+  (+ `growthDelta`), insights (`compute_insights`), fieldsVersion, bankrupt,
+  failed, maxDay/eraLabel, commandCount, hourOfDay/demandFactor/fareboxRecovery,
+  overcrowdedRoutes, weather (state/intensity/season/event), and the full v0.9
+  ops block: `fleet` summary, `depots`, `incidents`, `servicePeriod(+Label)`.
+- **`UiRoute`**: base fields + v0.4.2 extras (operatingCost/farebox/liveCrowding/
+  avgEffectiveSpeed) + v0.9 ops (onTimePct/avgDelaySec/inServiceVehicles/
+  peakUnitsRequired/per-period `frequency`).
+- **`FrameSnapshot`** (binary msgType=1): vehicles stride-6
+  `[id,x,y,heading,occupancy,routeColorIdx]` via `point_along`, plus the packed
+  `color_table` (parsed from route color hex).
+- **`ready`** (`StaticCityJson`) + **`Fields`** (binary msgType=2) are emitted
+  on `init` so the client can render the map/grids.
+- Command bridge: `command_to_sim` (wire `Command` -> `SimCommand`, `i64`->`u32`
+  ids, period string -> `Period`), `command_result_to_wire` (`u32`->`i64`).
+- `queryTrackCost` -> `mf_sim::transit::build::track_cost`; `strataProbe` ->
+  `geology::column_at`; `requestReplay` -> a `ReplayPayload` (see TODOs).
+
+### EmbeddedTransport lifecycle + tick cadence
+- `connect()` spawns a `mf-net-embedded` thread (crossbeam channels, same
+  liveness model as `WsTransport`), and immediately queues `hello` so the
+  client handshake completes. No tokio, no child process (`SimLink.sidecar =
+  None`, so `reconnect.rs` never tries to respawn an in-process sim).
+- The worker owns the `GameState` and mirrors `sim.worker.ts`: a 20 Hz step
+  timer (`accumulator += speed/20`, up to 400 ticks/step), a `FrameSnapshot`
+  every step, `UiState` at 2 Hz, `Fields` re-emitted every 7 sim-days, toasts
+  from `TickEvents`. Only the step CADENCE uses a wall clock; the sim math
+  stays seeded/deterministic. `SetSpeed`/`Command`/`init` handled inline.
+
+### host/protocol.ts pieces NOT reproduced yet (flagged)
+- **Agents** (`FrameSnapshot.agents`): the pedestrian particle pool
+  (`host/agents.ts`, resampled from `state.flows`) is a host-side cosmetic
+  layer, not sim state. `agent_count = 0` for now. TODO(P5).
+- **`cohortDemand`** UiState field: needs `transit/cohorts.ts` HUD helpers
+  (`cohort_mix` / `hourly_demand_curve`) not yet ported. Emitted as `None`
+  (additive; client ignores). TODO(P5).
+- **Saves** (`requestSave` / `loadSave`): need `mf-sim`'s `serde` feature,
+  which `mf-net` does not enable; surfaced as a warn toast. TODO(P5).
+- **`traffic` / `demand` / `heatmap`** overlays and OSM masks/labels/anchors
+  are not emitted (procedural cities have no masks; overlays are P5).
+- `requestReplay` returns tick/hash/seed but an empty `command_log` (a
+  `SimCommand -> wire::Command` reverse bridge is still TODO); `replay.rs`
+  itself remains unwritten.
+
 ## Remaining for P4 / P5
-- **P4 (transport swap):** bridge `SimCommand`/`CommandResult`/`TickEvents` to
-  the `mf-protocol` wire enums (variant-for-variant already; ids `u32` <-> `i64`)
-  and run `mf-sim` in-process, deleting the Bun sidecar. `replay.rs` (compose
-  `new_game` + `sim_tick` over `command_log`) is now unblocked and still TODO.
-- **P5 (OSM city data, sidecar deletion):** port the OSM real-city path
+- **P4 residual:** reverse command bridge (`SimCommand -> wire::Command`) to
+  populate replay `command_log`; `replay.rs` (compose `new_game` + `sim_tick`
+  over `command_log`); perf measurement of the embedded path vs the sidecar.
+- **P5 (OSM city data, sidecar deletion):** DELETE the sidecar / dist-sidecar /
+  `WsTransport`; port the OSM real-city path
   (`osmCity.ts` / `osmRegistry.ts`): baked water/park/building masks, real
   elevation, real road network, `MapLabel`, POI anchors; fill the transient
   `osm_*` slots and the `MapLabel` placeholder; wire the data-driven scenario
