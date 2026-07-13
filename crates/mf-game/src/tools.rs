@@ -182,6 +182,10 @@ pub struct ToolState {
     /// `edit_stops` instead of firing `CreateRoute` immediately — the panel
     /// owns the Delete+Create apply step so name/fare/vehicles survive.
     pub editing_route_id: Option<i64>,
+    /// Mode the next depot placement will use (v0.9 A4). The toolbar's depot
+    /// mode picker writes it; the main Depot button re-activates whatever was
+    /// last chosen. Defaults to Bus (the always-unlocked starter mode).
+    pub depot_mode: TransitMode,
 }
 
 impl Default for ToolState {
@@ -202,6 +206,7 @@ impl Default for ToolState {
             ghost_quarter_turns: 0,
             right_press_pos: None,
             editing_route_id: None,
+            depot_mode: TransitMode::Bus,
         }
     }
 }

@@ -540,7 +540,7 @@ pub static EN: Strings = Strings {
     tool_bulldoze: "Bulldoze (3)",
     tool_undo: "Undo",
     tool_depot: "Depot",
-    tool_depot_context: "Click to place a maintenance depot for this mode. One per mode.",
+    tool_depot_context: "depot: click the map to place it. One depot per mode.",
     routes: "Routes",
     place_station_context_prefix: "Click to place a ",
     place_station_cash_mid: " station. Cash on hand: ",

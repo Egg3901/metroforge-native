@@ -81,6 +81,17 @@ fn mode_word(mode: TransitMode) -> &'static str {
     }
 }
 
+/// Title-case mode label for a button face (the lowercase `mode_word` reads
+/// oddly on a button). Plain words, no dashes.
+fn mode_title(mode: TransitMode) -> &'static str {
+    match mode {
+        TransitMode::Bus => "Bus",
+        TransitMode::Tram => "Tram",
+        TransitMode::Metro => "Metro",
+        TransitMode::Rail => "Rail",
+    }
+}
+
 /// Heuristic for "has the player unlocked Tram yet": `UiState.unlockedModes`
 /// (`unlocked_modes` here) is the sidecar's own progression signal - a
 /// mode only appears in it once its unlock milestone has actually fired -
@@ -91,10 +102,21 @@ fn mode_word(mode: TransitMode) -> &'static str {
 /// so is still disabled). Documented here since it's the one place this
 /// mission's brief and the wire protocol disagree on the simplest signal.
 fn tram_unlocked(ui_state: &LatestUi) -> bool {
+    mode_unlocked(ui_state, TransitMode::Tram)
+}
+
+/// Generalized form of [`tram_unlocked`]: whether `mode` is in the sidecar's
+/// `unlocked_modes` progression list. Bus is the always-available starter
+/// mode, so it reads as unlocked even in the pre-load window (no `UiState`
+/// yet) where every other mode reads locked.
+fn mode_unlocked(ui_state: &LatestUi, mode: TransitMode) -> bool {
+    if mode == TransitMode::Bus {
+        return true;
+    }
     ui_state
         .0
         .as_ref()
-        .map(|s| s.unlocked_modes.contains(&TransitMode::Tram))
+        .map(|s| s.unlocked_modes.contains(&mode))
         .unwrap_or(false)
 }
 
@@ -309,8 +331,35 @@ fn build_toolbar_system(
                     &mut hovered,
                     &mut sfx,
                 ) {
-                    tools.active = ActiveTool::PlaceDepot(TransitMode::Bus);
+                    tools.active = ActiveTool::PlaceDepot(tools.depot_mode);
                     sfx.write(PlaySfx(Sfx::Confirm));
+                }
+
+                // Depot mode picker (v0.9 A4): only while the depot tool is
+                // active, a compact segmented control lets the player place a
+                // depot for any UNLOCKED mode (the sim allows one per mode).
+                // Locked modes are shown disabled so the progression reads.
+                if matches!(tools.active, ActiveTool::PlaceDepot(_)) {
+                    for mode in [
+                        TransitMode::Bus,
+                        TransitMode::Tram,
+                        TransitMode::Metro,
+                        TransitMode::Rail,
+                    ] {
+                        let unlocked = mode_unlocked(&ui_state, mode);
+                        let selected = tools.active == ActiveTool::PlaceDepot(mode);
+                        let resp = ui
+                            .add_enabled_ui(unlocked, |ui| {
+                                ds::button(ui, mode_title(mode), ds::ButtonKind::Toggle(selected))
+                            })
+                            .inner;
+                        hover_tick(&resp, &mut hovered, &mut sfx);
+                        if resp.clicked() {
+                            tools.depot_mode = mode;
+                            tools.active = ActiveTool::PlaceDepot(mode);
+                            sfx.write(PlaySfx(Sfx::Confirm));
+                        }
+                    }
                 }
 
                 ui.add_space(ds::SPACE_SM);
@@ -411,7 +460,10 @@ fn contextual_strip_text(
             ))
         }
         ActiveTool::Bulldoze => Some((s.bulldoze_context.to_string(), ds::WARN)),
-        ActiveTool::PlaceDepot(_) => Some((s.tool_depot_context.to_string(), ds::text())),
+        ActiveTool::PlaceDepot(mode) => Some((
+            format!("{} {}", mode_title(mode), s.tool_depot_context),
+            ds::text(),
+        )),
     }
 }
 
