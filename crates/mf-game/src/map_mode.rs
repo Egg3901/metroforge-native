@@ -41,20 +41,22 @@
 //! this module's scope) and reads correctly from directly overhead the same
 //! as from any other camera angle.
 //!
-//! INTEGRATION HANDOFF: `MfMapModePlugin` below is intentionally NOT added
-//! to the `App` in `main.rs` yet. Mission scope for this wave keeps
-//! `main.rs` untouched beyond its `mod map_mode;` declaration (that file's
-//! `.add_plugins((...))` tuple is a known hotspot several parallel v0.3
-//! worktrees touch this same wave) - wiring `MfMapModePlugin` into that
-//! tuple is left for integration. `#![allow(dead_code)]` below covers the
-//! resulting "never constructed" lint the same way `design_system.rs`
-//! already does for its own forward-looking, not-yet-fully-consumed API -
-//! see that file's module doc for the precedent.
-#![allow(dead_code)]
+//! Map intelligence overlay: while active, `map_mode_overlay_system` paints
+//! bridge casing, dashed tunnels, POI anchor glyphs, and named-bridge labels
+//! (at high zoom) over the 3D view via egui — shared helpers in `map_paint.rs`.
 
 use bevy::prelude::*;
+use bevy_egui::{egui, EguiContexts};
+use mf_render::palette;
+use mf_state::{CurrentCity, LatestFields, Theme};
 
 use crate::camera::CameraRig;
+use crate::design_system;
+use crate::map_paint::{
+    build_water_land_image, map_roads_from_dtos, map_zoom_t, paint_bridge_labels, paint_map_roads,
+    paint_poi_anchors, square_map_rect, MapRoadColors, BASE_IMAGE_RES,
+};
+use crate::state::AppState;
 
 /// Pitch (radians) map mode eases the camera toward. Deliberately
 /// near-vertical rather than exactly `FRAC_PI_2` (straight down): a
@@ -118,11 +120,27 @@ pub struct MfMapModePlugin;
 
 impl Plugin for MfMapModePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<MapModeState>().add_systems(
-            Update,
-            map_mode_toggle_system.run_if(in_state(crate::state::AppState::InGame)),
-        );
+        app.init_resource::<MapModeState>()
+            .init_resource::<MapModeOverlayCache>()
+            .add_systems(
+                Update,
+                (
+                    map_mode_toggle_system,
+                    rebuild_map_overlay_base_system,
+                    map_mode_overlay_system,
+                )
+                    .chain()
+                    .run_if(in_state(AppState::InGame)),
+            );
     }
+}
+
+#[derive(Resource, Default)]
+struct MapModeOverlayCache {
+    base_key: Option<(u32, Theme)>,
+    base_texture: Option<egui::TextureHandle>,
+    roads_key: Option<usize>,
+    roads: Vec<crate::map_paint::MapRoadSegment>,
 }
 
 fn map_mode_toggle_system(
@@ -139,10 +157,6 @@ fn map_mode_toggle_system(
 
     match map_mode.saved {
         None => {
-            // Enter: snapshot the rig's CURRENT VALUES (not goals) - if a
-            // wheel-dolly or WASD pan is mid-ease when `M` is pressed, this
-            // restores to where the camera actually was, not to wherever it
-            // was still easing toward.
             map_mode.saved = Some(SavedRig {
                 target: rig.target,
                 yaw: rig.yaw,
@@ -155,8 +169,6 @@ fn map_mode_toggle_system(
             rig.distance_goal = distance_goal;
         }
         Some(saved) => {
-            // Exit: ease back to the saved rig via goals - same smooth path
-            // as entering, see the module doc's `camera.rs` walkthrough.
             rig.target_goal = saved.target;
             rig.yaw_goal = saved.yaw;
             rig.pitch_goal = saved.pitch;
@@ -164,6 +176,163 @@ fn map_mode_toggle_system(
             map_mode.saved = None;
         }
     }
+}
+
+fn rebuild_map_overlay_base_system(
+    map_mode: Res<MapModeState>,
+    mut contexts: EguiContexts,
+    fields: Res<LatestFields>,
+    city: Res<CurrentCity>,
+    theme: Res<Theme>,
+    mut cache: ResMut<MapModeOverlayCache>,
+) {
+    if !map_mode.is_active() {
+        return;
+    }
+    let Some(fields) = fields.0.as_ref() else {
+        return;
+    };
+    let Some(static_city) = city.static_city.as_ref() else {
+        return;
+    };
+    let key = (fields.version, *theme);
+    if cache.base_key == Some(key) {
+        return;
+    }
+    let field_w = static_city.field_w as usize;
+    let field_h = static_city.field_h as usize;
+    if field_w == 0 || field_h == 0 || fields.water.len() != field_w * field_h {
+        return;
+    }
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+    let image = build_water_land_image(
+        &fields.water,
+        field_w,
+        field_h,
+        BASE_IMAGE_RES,
+        color32_from(palette::ground()),
+        color32_from(palette::water()),
+    );
+    let handle = ctx.load_texture("map_mode_base", image, egui::TextureOptions::NEAREST);
+    cache.base_texture = Some(handle);
+    cache.base_key = Some(key);
+}
+
+fn map_mode_overlay_system(
+    map_mode: Res<MapModeState>,
+    mut contexts: EguiContexts,
+    city: Res<CurrentCity>,
+    mut cache: ResMut<MapModeOverlayCache>,
+    rigs: Query<&CameraRig>,
+) -> Result {
+    if !map_mode.is_active() {
+        return Ok(());
+    }
+    let ctx = contexts.ctx_mut()?;
+    let Some(static_city) = city.static_city.as_ref() else {
+        return Ok(());
+    };
+    let Ok(rig) = rigs.single() else {
+        return Ok(());
+    };
+
+    let world_half = (static_city.world_size as f32 / 2.0).max(1.0);
+    let zoom_t = map_zoom_t(rig.distance, world_half);
+    let s = crate::strings::current();
+
+    let screen = ctx.screen_rect();
+    egui::Area::new(egui::Id::new("map_mode_overlay"))
+        .order(egui::Order::Background)
+        .fixed_pos(screen.min)
+        .show(ctx, |ui| {
+            ui.set_width(screen.width());
+            ui.set_height(screen.height());
+            let (rect, _response) = ui.allocate_exact_size(screen.size(), egui::Sense::hover());
+            let map_rect = square_map_rect(rect);
+            let painter = ui.painter_at(rect);
+
+            if let Some(tex) = cache.base_texture.as_ref() {
+                painter.image(
+                    tex.id(),
+                    map_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            } else {
+                painter.rect_filled(map_rect, 0.0, color32_from(palette::ground()));
+            }
+
+            map_overlay_roads(&mut cache, static_city);
+            let roads = &cache.roads;
+            let colors = map_road_colors();
+            paint_map_roads(&painter, map_rect, roads, world_half, colors, 1.0);
+            if let Some(anchors) = static_city.poi_anchors.as_deref() {
+                paint_poi_anchors(&painter, ui, map_rect, anchors, world_half, zoom_t);
+            }
+            paint_bridge_labels(
+                &painter,
+                ui,
+                map_rect,
+                roads,
+                world_half,
+                zoom_t,
+                design_system::WHITE,
+            );
+
+            let badge = egui::Rect::from_min_size(
+                egui::pos2(rect.left() + 12.0, rect.top() + 12.0),
+                egui::vec2(52.0, 24.0),
+            );
+            painter.rect_filled(badge, 0.0, design_system::SURFACE);
+            painter.rect_stroke(
+                badge,
+                egui::CornerRadius::ZERO,
+                egui::Stroke::new(design_system::ACCENT_EDGE_PX, design_system::ACCENT),
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                badge.center(),
+                egui::Align2::CENTER_CENTER,
+                s.map_mode_badge,
+                design_system::body_font(design_system::TEXT_XS),
+                design_system::WHITE,
+            );
+        });
+    Ok(())
+}
+
+fn map_overlay_roads(cache: &mut MapModeOverlayCache, static_city: &mf_protocol::StaticCityJson) {
+    let fingerprint = static_city.roads.len()
+        ^ (static_city.field_w as usize).wrapping_mul(31)
+        ^ (static_city.field_h as usize).wrapping_mul(97);
+    if cache.roads_key != Some(fingerprint) {
+        cache.roads = map_roads_from_dtos(&static_city.roads);
+        cache.roads_key = Some(fingerprint);
+    }
+}
+
+fn map_road_colors() -> MapRoadColors {
+    let road = color32_from(palette::road()).gamma_multiply(0.55);
+    let edge = color32_from(palette::road_edge());
+    MapRoadColors {
+        ground: color32_from(palette::ground()),
+        road,
+        bridge_fill: road,
+        bridge_casing: edge,
+        tunnel: road.gamma_multiply(0.45),
+    }
+}
+
+fn color32_from(color: Color) -> egui::Color32 {
+    let srgba = color.to_srgba();
+    egui::Color32::from_rgba_unmultiplied(
+        (srgba.red * 255.0).round() as u8,
+        (srgba.green * 255.0).round() as u8,
+        (srgba.blue * 255.0).round() as u8,
+        (srgba.alpha * 255.0).round() as u8,
+    )
 }
 
 #[cfg(test)]
@@ -180,8 +349,6 @@ mod tests {
 
     #[test]
     fn enter_goals_keeps_distance_when_already_zoomed_out_further() {
-        // `max(current, floor)`, never a hard set - a player already
-        // further out than the floor must not get pulled in.
         let (_, _, distance) = enter_goals(9_000.0);
         assert_eq!(distance, 9_000.0);
     }

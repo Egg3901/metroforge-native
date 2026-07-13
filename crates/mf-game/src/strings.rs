@@ -298,6 +298,8 @@ pub struct Strings {
     // --- Minimap --------------------------------------------------------
     pub minimap: &'static str,
     pub no_city_loaded: &'static str,
+    /// Small HUD badge while top-down map mode is active.
+    pub map_mode_badge: &'static str,
 
     // --- City select ----------------------------------------------------
     pub city_select_hint: &'static str,
@@ -608,6 +610,7 @@ pub static EN: Strings = Strings {
 
     minimap: "Minimap",
     no_city_loaded: "No city loaded",
+    map_mode_badge: "Map",
 
     city_select_hint: "Arrows move. Enter plays. Hover for the accent edge.",
 
@@ -1228,6 +1231,7 @@ pub fn all_static_strings(s: &Strings) -> Vec<&'static str> {
         s.star_net_positive_suffix,
         s.minimap,
         s.no_city_loaded,
+        s.map_mode_badge,
         s.city_select_hint,
         s.sort,
         s.sort_crowding,

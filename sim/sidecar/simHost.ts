@@ -33,6 +33,7 @@ import { getRoutePath } from '@core/transit/routePath';
 import type { Command, Difficulty, GameState, TrackGrade, TransitMode } from '@core/types';
 import { AgentPool } from '@host/agents';
 import type { ReplayPayload, UiState } from '@host/protocol';
+import { poiAnchorsFromOsm, roadMetaFromOsm, staticRoadWire, type PoiAnchorWire } from '@host/staticCityWire';
 import { routeExtras, todFactorOf, uiExtras } from '@host/uiExtras';
 import { analyticsInsightLines, encodeHeatmapPayload, type HeatmapPayload } from '@core/analytics';
 import { resolveBuildings, resolveCity, type BuildingsData } from './cities';
@@ -71,6 +72,9 @@ export class SimHost {
    *  so it clears this rather than risk streaming the wrong city's
    *  buildings — the frame is optional, so silently having none is fine. */
   private buildings: BuildingsData | undefined;
+  /** OSM bundle extras mirrored into `ready.staticCity` (not on GameState). */
+  private osmRoadMeta: { name?: string; wikidata?: string }[] = [];
+  private osmPoiAnchors: PoiAnchorWire[] | undefined;
   private readonly agents = new AgentPool();
   private lastFlowsRef: unknown = null;
 
@@ -171,6 +175,7 @@ export class SimHost {
     if (presetKey !== undefined) this.initMeta.presetKey = presetKey;
     if (p.size !== undefined) this.initMeta.size = p.size;
     const osm = resolveCity(presetKey);
+    this.hydrateOsmExtras(osm);
     const state = newGame(p.seed, p.difficulty, {
       size: p.size,
       presetKey,
@@ -221,6 +226,7 @@ export class SimHost {
         }
         state.osmLabels = osm.labels;
       }
+      this.hydrateOsmExtras(osm);
       this.state = state;
       this.buildings = resolveBuildings(presetKey);
       if (presetKey !== undefined) this.initMeta.presetKey = presetKey;
@@ -276,6 +282,11 @@ export class SimHost {
 
   // ── outbound: static city + masks ──────────────────────────────────────────
 
+  private hydrateOsmExtras(osm: ReturnType<typeof resolveCity>): void {
+    this.osmRoadMeta = roadMetaFromOsm(osm);
+    this.osmPoiAnchors = poiAnchorsFromOsm(osm);
+  }
+
   private sendStatic(s: GameState): void {
     const staticCity = {
       fieldW: s.fields.w,
@@ -291,17 +302,8 @@ export class SimHost {
       hasParkMask: s.osmParkMask !== undefined,
       hasBuildingMask: s.osmBuildingMask !== undefined,
       labels: s.osmLabels,
-      roads: s.roads.map((r) => ({
-        cls: r.cls,
-        points: r.polyline.points.flatMap((p) => [p.x, p.y]),
-        // Grade-separation flags (OSM layer/bridge/tunnel). The web-worker
-        // host has shipped these since the grade-sep lane; this sidecar map
-        // dropped them, so the native client saw every road at grade 0 and
-        // no tunnel/viaduct structure could ever place (found 2026-07-13).
-        gradeLevel: r.gradeLevel ?? 0,
-        isBridge: r.isBridge ?? false,
-        isTunnel: r.isTunnel ?? false,
-      })),
+      poiAnchors: this.osmPoiAnchors,
+      roads: s.roads.map((r, i) => staticRoadWire(r, this.osmRoadMeta[i])),
     };
     this.send(jsonMessage('ready', { staticCity }));
     const res = s.osmMaskRes;
