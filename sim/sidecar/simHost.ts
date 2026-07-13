@@ -294,6 +294,13 @@ export class SimHost {
       roads: s.roads.map((r) => ({
         cls: r.cls,
         points: r.polyline.points.flatMap((p) => [p.x, p.y]),
+        // Grade-separation flags (OSM layer/bridge/tunnel). The web-worker
+        // host has shipped these since the grade-sep lane; this sidecar map
+        // dropped them, so the native client saw every road at grade 0 and
+        // no tunnel/viaduct structure could ever place (found 2026-07-13).
+        gradeLevel: r.gradeLevel ?? 0,
+        isBridge: r.isBridge ?? false,
+        isTunnel: r.isTunnel ?? false,
       })),
     };
     this.send(jsonMessage('ready', { staticCity }));

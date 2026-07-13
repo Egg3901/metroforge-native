@@ -400,6 +400,11 @@ fn build_structures_system(
                         scale,
                     );
                     n_portal += 1;
+                    tracing::info!(
+                        "mf-render structures: placed metro portal at ({:.0},{:.0})",
+                        mouth.x,
+                        mouth.y
+                    );
                 }
             }
             // Rail bridge over the longest over-water chord (all tiers).
@@ -421,10 +426,25 @@ fn build_structures_system(
                         scale,
                     );
                     n_rail_bridge += 1;
+                    tracing::info!(
+                        "mf-render structures: placed rail-bridge span={:.0}m mid=({:.0},{:.0})",
+                        len,
+                        mid.x,
+                        mid.y
+                    );
                 }
             }
             // Elevated rail viaduct segments (Medium+ upgrade).
             if mplus && is_track_elevated(&t.grade) {
+                if let (Some(a), Some(b)) = (pts.first(), pts.last()) {
+                    tracing::info!(
+                        "mf-render structures: rail viaduct run a=({:.0},{:.0}) b=({:.0},{:.0})",
+                        a.x,
+                        a.y,
+                        b.x,
+                        b.y
+                    );
+                }
                 n_rail_via += tile_viaduct(
                     &mut commands,
                     &handles.viaduct_rail,
