@@ -105,6 +105,7 @@ mod tests {
             has_park_mask: false,
             has_building_mask: false,
             labels: None,
+            poi_anchors: None,
             roads: Vec::new(),
         }
     }

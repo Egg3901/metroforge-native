@@ -2,9 +2,14 @@
 //! city-select card previews. Both surfaces need the same north-up mapping
 //! and the same downsample of a water grid into an egui texture; keeping
 //! that logic here stops `minimap.rs` and `city_select.rs` from drifting.
+//!
+//! Map intelligence (bridge double-edge casing, dashed tunnels, POI anchor
+//! glyphs, named-bridge labels at high zoom) also lives here so `map_mode.rs`
+//! and `minimap.rs` share one implementation.
 
 use bevy::prelude::Vec2;
 use bevy_egui::egui;
+use mf_protocol::{PoiAnchorDto, PoiAnchorKind, RoadDto};
 
 /// Default texel side length for a cached water/land base image. City shape
 /// reads fine at this resolution and the upload stays tiny.
@@ -12,6 +17,64 @@ pub const BASE_IMAGE_RES: usize = 96;
 
 /// One arterial polyline in world meters (x,y pairs already decoded).
 pub type WorldPolyline = Vec<Vec2>;
+
+/// Road segment prepared for map-mode / minimap painting.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapRoadSegment {
+    /// World-space polyline vertices.
+    pub points: WorldPolyline,
+    /// Road class string (`arterial`, `collector`, `local`, …).
+    pub cls: String,
+    pub is_bridge: bool,
+    pub is_tunnel: bool,
+    /// Named bridge label, when present on the wire DTO.
+    pub name: Option<String>,
+}
+
+/// Stroke colors for [`paint_map_roads`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MapRoadColors {
+    pub ground: egui::Color32,
+    pub road: egui::Color32,
+    pub bridge_fill: egui::Color32,
+    pub bridge_casing: egui::Color32,
+    pub tunnel: egui::Color32,
+}
+
+/// Minimum [`map_zoom_t`] before named-bridge labels are drawn.
+pub const BRIDGE_LABEL_MIN_ZOOM: f32 = 0.55;
+
+/// Normalized map zoom in `0..1` from camera distance (higher = more zoomed out).
+pub fn map_zoom_t(camera_distance: f32, world_half: f32) -> f32 {
+    if world_half <= 0.0 {
+        return 0.0;
+    }
+    (camera_distance / world_half).clamp(0.0, 1.0)
+}
+
+/// Build [`MapRoadSegment`] list from static-city road DTOs.
+pub fn map_roads_from_dtos(roads: &[RoadDto]) -> Vec<MapRoadSegment> {
+    roads
+        .iter()
+        .filter_map(|road| {
+            let points: WorldPolyline = road
+                .points
+                .chunks_exact(2)
+                .map(|xy| Vec2::new(xy[0] as f32, xy[1] as f32))
+                .collect();
+            if points.len() < 2 {
+                return None;
+            }
+            Some(MapRoadSegment {
+                points,
+                cls: road.cls.clone(),
+                is_bridge: road.is_bridge,
+                is_tunnel: road.is_tunnel,
+                name: road.name.clone(),
+            })
+        })
+        .collect()
+}
 
 /// Nearest-neighbor downsample of a row-major water grid into a square
 /// north-up [`egui::ColorImage`]. World +Y (north) maps to image top, matching
@@ -169,6 +232,202 @@ pub fn paint_water_land_and_arterials(
     }
 }
 
+/// Paint map-intelligence road segments (bridge casing, dashed tunnels).
+pub fn paint_map_roads(
+    painter: &egui::Painter,
+    map_rect: egui::Rect,
+    roads: &[MapRoadSegment],
+    world_half: f32,
+    colors: MapRoadColors,
+    detail_scale: f32,
+) {
+    let scale = (map_rect.width() / 220.0).clamp(0.35, 4.0) * detail_scale.max(0.25);
+    for road in roads {
+        if road.points.len() < 2 {
+            continue;
+        }
+        let width = road_stroke_width(&road.cls, scale);
+        let pts: Vec<egui::Pos2> = road
+            .points
+            .iter()
+            .map(|w| world_to_map(*w, world_half, map_rect))
+            .collect();
+        if road.is_tunnel {
+            paint_dashed_polyline(
+                painter,
+                &pts,
+                egui::Stroke::new(width, colors.tunnel),
+                5.0 * scale,
+                4.0 * scale,
+            );
+        } else if road.is_bridge {
+            let casing = egui::Stroke::new(width + 2.6 * scale, colors.bridge_casing);
+            let fill = egui::Stroke::new(width, colors.bridge_fill);
+            painter.add(egui::Shape::line(pts.clone(), casing));
+            painter.add(egui::Shape::line(pts, fill));
+        } else {
+            painter.add(egui::Shape::line(
+                pts,
+                egui::Stroke::new(width, colors.road),
+            ));
+        }
+    }
+}
+
+/// Named-bridge labels at high map zoom. One label per named bridge segment,
+/// placed at the polyline midpoint.
+pub fn paint_bridge_labels(
+    painter: &egui::Painter,
+    ui: &egui::Ui,
+    map_rect: egui::Rect,
+    roads: &[MapRoadSegment],
+    world_half: f32,
+    zoom_t: f32,
+    label_color: egui::Color32,
+) {
+    if zoom_t < BRIDGE_LABEL_MIN_ZOOM {
+        return;
+    }
+    let font = egui::FontId::proportional((10.0 + zoom_t * 4.0).clamp(10.0, 14.0));
+    for road in roads {
+        if !road.is_bridge {
+            continue;
+        }
+        let Some(name) = road.name.as_deref() else {
+            continue;
+        };
+        if road.points.len() < 2 {
+            continue;
+        }
+        let mid = road.points[road.points.len() / 2];
+        let pos = world_to_map(mid, world_half, map_rect);
+        let galley = ui.fonts(|f| f.layout_no_wrap(name.to_string(), font.clone(), label_color));
+        let size = galley.size();
+        let rect = egui::Rect::from_center_size(pos, size + egui::vec2(6.0, 2.0));
+        painter.rect_filled(
+            rect,
+            0.0,
+            egui::Color32::from_rgba_unmultiplied(11, 13, 16, 190),
+        );
+        painter.galley(pos - size * 0.5, galley, label_color);
+    }
+}
+
+/// POI anchor glyphs (stadium / airport / university) with hover tooltips.
+pub fn paint_poi_anchors(
+    painter: &egui::Painter,
+    ui: &egui::Ui,
+    map_rect: egui::Rect,
+    anchors: &[PoiAnchorDto],
+    world_half: f32,
+    zoom_t: f32,
+) {
+    if zoom_t < 0.2 {
+        return;
+    }
+    let icon = (8.0 + zoom_t * 6.0).clamp(8.0, 18.0);
+    for anchor in anchors {
+        let Some(kind) = poi_glyph_kind(anchor.kind) else {
+            continue;
+        };
+        let world = Vec2::new(anchor.centroid[0] as f32, anchor.centroid[1] as f32);
+        let center = world_to_map(world, world_half, map_rect);
+        let rect = egui::Rect::from_center_size(center, egui::vec2(icon, icon));
+        let color = poi_glyph_color(kind);
+        paint_poi_glyph(painter, rect, kind, color, (icon * 0.12).clamp(1.0, 2.0));
+        let response = ui.interact(
+            rect.expand(2.0),
+            egui::Id::new(("poi", &anchor.id)),
+            egui::Sense::hover(),
+        );
+        response.on_hover_text(&anchor.name);
+    }
+}
+
+/// Which POI kinds get a map glyph (task scope: stadium / airport / university).
+pub fn poi_glyph_kind(kind: PoiAnchorKind) -> Option<PoiGlyphKind> {
+    match kind {
+        PoiAnchorKind::Stadium => Some(PoiGlyphKind::Stadium),
+        PoiAnchorKind::Airport => Some(PoiGlyphKind::Airport),
+        PoiAnchorKind::University => Some(PoiGlyphKind::University),
+        PoiAnchorKind::Hospital | PoiAnchorKind::Museum => None,
+    }
+}
+
+/// POI glyph variants painted by [`paint_poi_glyph`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoiGlyphKind {
+    Stadium,
+    Airport,
+    University,
+}
+
+fn poi_glyph_color(kind: PoiGlyphKind) -> egui::Color32 {
+    use crate::design_system::{ACCENT, GOOD, WARN};
+    match kind {
+        PoiGlyphKind::Stadium => WARN,
+        PoiGlyphKind::Airport => ACCENT,
+        PoiGlyphKind::University => GOOD,
+    }
+}
+
+/// Paint one POI glyph inside `rect` using design-system spoke colors.
+pub fn paint_poi_glyph(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    kind: PoiGlyphKind,
+    color: egui::Color32,
+    stroke_w: f32,
+) {
+    let stroke = egui::Stroke::new(stroke_w, color);
+    let pt = |nx: f32, ny: f32| {
+        egui::pos2(
+            rect.min.x + nx * rect.width(),
+            rect.min.y + ny * rect.height(),
+        )
+    };
+    match kind {
+        PoiGlyphKind::Stadium => {
+            let body = egui::Rect::from_min_max(pt(0.12, 0.42), pt(0.88, 0.78));
+            painter.rect_stroke(
+                body,
+                egui::CornerRadius::same(2),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.line(vec![pt(0.18, 0.42), pt(0.5, 0.16), pt(0.82, 0.42)], stroke);
+        }
+        PoiGlyphKind::Airport => {
+            let center = pt(0.5, 0.5);
+            let wing = rect.width().min(rect.height()) * 0.34;
+            painter.line(
+                vec![
+                    center + egui::vec2(-wing, 0.0),
+                    center + egui::vec2(wing, 0.0),
+                ],
+                stroke,
+            );
+            painter.line(
+                vec![
+                    center + egui::vec2(0.0, -wing * 0.55),
+                    center + egui::vec2(0.0, wing * 0.55),
+                ],
+                stroke,
+            );
+            painter.circle_stroke(center, wing * 0.18, stroke);
+        }
+        PoiGlyphKind::University => {
+            let base = pt(0.5, 0.82);
+            painter.line(vec![pt(0.22, 0.82), pt(0.78, 0.82)], stroke);
+            painter.line(vec![pt(0.22, 0.82), pt(0.22, 0.34)], stroke);
+            painter.line(vec![pt(0.78, 0.82), pt(0.78, 0.34)], stroke);
+            painter.line(vec![pt(0.22, 0.34), pt(0.5, 0.18)], stroke);
+            painter.line(vec![pt(0.78, 0.34), pt(0.5, 0.18)], stroke);
+            painter.circle_filled(base, stroke_w * 1.1, color);
+        }
+    }
+}
+
 /// Largest centered square inside `rect` (letterbox when the rect isn't square).
 pub fn square_map_rect(rect: egui::Rect) -> egui::Rect {
     let size = rect.width().min(rect.height());
@@ -187,6 +446,60 @@ pub fn map_to_world(pos: egui::Pos2, world_half: f32, map_rect: egui::Rect) -> V
     let scale = map_rect.width() / (world_half * 2.0);
     let center = map_rect.center();
     Vec2::new((pos.x - center.x) / scale, -(pos.y - center.y) / scale)
+}
+
+fn road_stroke_width(cls: &str, scale: f32) -> f32 {
+    let base = match cls {
+        "arterial" => 2.0,
+        "collector" => 1.4,
+        _ => 0.9,
+    };
+    base * scale
+}
+
+fn paint_dashed_polyline(
+    painter: &egui::Painter,
+    pts: &[egui::Pos2],
+    stroke: egui::Stroke,
+    dash_len: f32,
+    gap_len: f32,
+) {
+    if pts.len() < 2 || dash_len <= 0.0 {
+        return;
+    }
+    let mut drawing = true;
+    let mut remaining = dash_len;
+    for window in pts.windows(2) {
+        let mut a = window[0];
+        let b = window[1];
+        let mut seg_len = a.distance(b);
+        if seg_len < 0.001 {
+            continue;
+        }
+        let dir = (b - a) / seg_len;
+        let mut traveled = 0.0;
+        while traveled < seg_len - 0.001 {
+            let step = remaining.min(seg_len - traveled);
+            let end = a + dir * (traveled + step);
+            if drawing {
+                painter.line_segment([a + dir * traveled, end], stroke);
+            }
+            traveled += step;
+            remaining -= step;
+            if remaining <= 0.001 {
+                if drawing {
+                    drawing = false;
+                    remaining = gap_len;
+                } else {
+                    drawing = true;
+                    remaining = dash_len;
+                }
+            }
+        }
+        a = b;
+        seg_len = 0.0;
+        let _ = (a, seg_len);
+    }
 }
 
 fn draw_line_px(
@@ -291,5 +604,34 @@ mod tests {
         // py=1 samples gy=0 → water[0]=1 water on left
         assert_eq!(img.pixels[2], egui::Color32::BLUE);
         assert_eq!(img.pixels[0], egui::Color32::BLACK);
+    }
+
+    #[test]
+    fn map_zoom_t_clamps_to_unit_interval() {
+        assert_eq!(map_zoom_t(0.0, 5_000.0), 0.0);
+        assert!((map_zoom_t(7_500.0, 5_000.0) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn map_roads_from_dtos_skips_degenerate_polylines() {
+        let roads = map_roads_from_dtos(&[RoadDto {
+            cls: "local".to_string(),
+            points: vec![1.0],
+            grade_level: 0,
+            is_bridge: false,
+            is_tunnel: false,
+            name: None,
+            wikidata: None,
+        }]);
+        assert!(roads.is_empty());
+    }
+
+    #[test]
+    fn poi_glyph_kind_filters_to_task_scope() {
+        assert_eq!(
+            poi_glyph_kind(PoiAnchorKind::Stadium),
+            Some(PoiGlyphKind::Stadium)
+        );
+        assert_eq!(poi_glyph_kind(PoiAnchorKind::Hospital), None);
     }
 }

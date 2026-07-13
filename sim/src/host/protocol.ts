@@ -141,6 +141,8 @@ export interface StaticCity {
   buildingMask?: Uint8Array | undefined;
   maskRes?: number | undefined;
   labels?: import('@core/city/osmCity').MapLabel[] | undefined;
+  /** Named POI anchors from baked city bundles (additive). */
+  poiAnchors?: import('@host/staticCityWire').PoiAnchorWire[] | undefined;
   roads: {
     cls: string;
     points: number[];
@@ -150,6 +152,10 @@ export interface StaticCity {
     isBridge?: boolean;
     /** segment is a tunnel. */
     isTunnel?: boolean;
+    /** OSM bridge name (additive). */
+    name?: string;
+    /** Wikidata id for named bridges (additive). */
+    wikidata?: string;
   }[];
 }
 

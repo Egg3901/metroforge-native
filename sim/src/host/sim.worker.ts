@@ -19,6 +19,7 @@ import type { ScenarioRules } from '@core/scenarioRules';
 import { playableScenario, type ScenarioDef } from '@core/scenario';
 import { AgentPool } from './agents';
 import type { FromSim, ToSim, UiState } from './protocol';
+import { poiAnchorsFromOsm, roadMetaFromOsm, staticRoadWire, type PoiAnchorWire } from './staticCityWire';
 import { routeExtras, todFactorOf, uiExtras } from './uiExtras';
 import { analyticsInsightLines, buildDemandOverlay } from '@core/analytics';
 import type { HeatmapPayload } from '@core/analytics';
@@ -29,6 +30,8 @@ let fieldsVersion = 1;
 let bankrupt = false;
 let won = false;
 let initMeta: { presetKey?: string; size?: 'small' | 'medium' | 'large' } = {};
+let osmRoadMeta: { name?: string; wikidata?: string }[] = [];
+let osmPoiAnchors: PoiAnchorWire[] | undefined;
 const agents = new AgentPool();
 let lastFlowsRef: unknown = null;
 
@@ -59,13 +62,8 @@ function sendStatic(s: GameState): void {
       buildingMask: s.osmBuildingMask,
       maskRes: s.osmMaskRes,
       labels: s.osmLabels,
-      roads: s.roads.map((r) => ({
-        cls: r.cls,
-        points: r.polyline.points.flatMap((p) => [p.x, p.y]),
-        gradeLevel: r.gradeLevel ?? 0,
-        isBridge: r.isBridge ?? false,
-        isTunnel: r.isTunnel ?? false,
-      })),
+      poiAnchors: osmPoiAnchors,
+      roads: s.roads.map((r, i) => staticRoadWire(r, osmRoadMeta[i])),
     },
   });
   sendFields(s);
@@ -336,6 +334,8 @@ self.onmessage = (e: MessageEvent<ToSim>) => {
         const presetKey = msg.presetKey ?? scenario?.cityKey;
         if (presetKey !== undefined) initMeta.presetKey = presetKey;
         loadOsmCity(presetKey).then((osm) => {
+          osmRoadMeta = roadMetaFromOsm(osm ?? undefined);
+          osmPoiAnchors = poiAnchorsFromOsm(osm ?? undefined);
           state = newGame(msg.seed, msg.difficulty, {
             size: msg.size,
             presetKey,

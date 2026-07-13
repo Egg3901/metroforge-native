@@ -37,8 +37,9 @@ use mf_state::{CurrentCity, LatestFields, LatestUi, Theme};
 use crate::camera::CameraRig;
 use crate::config::MfConfig;
 use crate::map_paint::{
-    self, arterial_polylines_from_points, build_water_land_image, paint_water_land_and_arterials,
-    square_map_rect, world_to_map, WorldPolyline, BASE_IMAGE_RES,
+    self, build_water_land_image, map_roads_from_dtos, map_zoom_t, paint_map_roads,
+    paint_poi_anchors, paint_water_land_and_arterials, square_map_rect, world_to_map,
+    MapRoadColors, MapRoadSegment, WorldPolyline, BASE_IMAGE_RES,
 };
 use crate::state::AppState;
 
@@ -87,7 +88,10 @@ struct MinimapCache {
     /// once (`roads_built_for` guards against rebuilding every frame) and
     /// left alone until the city itself changes.
     roads_built_for: Option<usize>,
+    /// Legacy arterial hairlines (city-select parity); kept for fallback tint.
     roads: Vec<WorldPolyline>,
+    /// Map-intelligence road segments (bridge casing, dashed tunnels).
+    map_roads: Vec<MapRoadSegment>,
     /// Bumped on every `LatestUi` change; compared against `LatestUi`'s own
     /// change tick isn't available across systems cheaply, so this just
     /// mirrors the resource's `is_changed()` each frame it runs.
@@ -165,6 +169,7 @@ fn rebuild_roads_cache_system(
     let Some(static_city) = city.static_city.as_ref() else {
         cache.roads_built_for = None;
         cache.roads.clear();
+        cache.map_roads.clear();
         return;
     };
     let fingerprint = static_city.roads.len()
@@ -173,12 +178,16 @@ fn rebuild_roads_cache_system(
     if cache.roads_built_for == Some(fingerprint) {
         return;
     }
-    cache.roads = arterial_polylines_from_points(
+    cache.roads = map_paint::arterial_polylines_from_points(
         static_city
             .roads
             .iter()
             .map(|r| (r.cls.as_str(), r.points.as_slice())),
     );
+    cache.map_roads = map_roads_from_dtos(&static_city.roads)
+        .into_iter()
+        .filter(|r| r.cls == "arterial")
+        .collect();
     cache.roads_built_for = Some(fingerprint);
 }
 
@@ -274,6 +283,27 @@ fn minimap_ui_system(
                 world_half,
                 road_color,
             );
+
+            let minimap_zoom = map_zoom_t(world_half * 0.55, world_half);
+            let map_colors = MapRoadColors {
+                ground: color32_from(palette::ground()),
+                road: road_color,
+                bridge_fill: road_color,
+                bridge_casing: color32_from(palette::road_edge()).gamma_multiply(0.5),
+                tunnel: road_color.gamma_multiply(0.7),
+            };
+            paint_map_roads(
+                &painter,
+                map_rect,
+                &cache.map_roads,
+                world_half,
+                map_colors,
+                0.85,
+            );
+
+            if let Some(anchors) = static_city.poi_anchors.as_deref() {
+                paint_poi_anchors(&painter, ui, map_rect, anchors, world_half, minimap_zoom);
+            }
 
             for route in &cache.routes {
                 if route.points.len() < 2 {

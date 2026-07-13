@@ -166,6 +166,39 @@ pub enum MapLabelKind {
     Park,
 }
 
+/// POI anchor kind from `scripts/build-cities.ts` (`PoiAnchor.kind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PoiAnchorKind {
+    /// Stadium / arena.
+    Stadium,
+    /// Airport / aerodrome.
+    Airport,
+    /// University campus.
+    University,
+    /// Hospital (additive; may be omitted from map glyphs).
+    Hospital,
+    /// Museum (additive; may be omitted from map glyphs).
+    Museum,
+}
+
+/// Named POI anchor baked into real-city bundles (`poiAnchors` array).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoiAnchorDto {
+    /// Stable OSM id (`w123`, `n456`, …).
+    pub id: String,
+    /// POI category.
+    pub kind: PoiAnchorKind,
+    /// Display name from OSM.
+    pub name: String,
+    /// World-space centroid in meters (`[x, y]`).
+    pub centroid: [f64; 2],
+    /// Footprint area in m² (drives import sorting; optional on wire).
+    #[serde(default)]
+    pub area: f64,
+}
+
 /// `MapLabel` — metroforge/src/core/city/osmCity.ts:26-35
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapLabel {
@@ -205,6 +238,12 @@ pub struct RoadDto {
     /// Segment is a tunnel. Additive: absent → false.
     #[serde(default)]
     pub is_tunnel: bool,
+    /// Named bridge label (OSM `name` on bridge segments). Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Wikidata id for named bridges. Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wikidata: Option<String>,
 }
 
 /// Native-wire `StaticCity`: identical to the TS `StaticCity`
@@ -244,6 +283,9 @@ pub struct StaticCityJson {
     /// Optional map labels (roads, water, parks).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<MapLabel>>,
+    /// Named POI anchors (stadiums, airports, universities, …). Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poi_anchors: Option<Vec<PoiAnchorDto>>,
     /// Road polylines for the static map layer.
     pub roads: Vec<RoadDto>,
 }
@@ -794,6 +836,8 @@ mod tests {
             grade_level: 2,
             is_bridge: true,
             is_tunnel: false,
+            name: None,
+            wikidata: None,
         };
         let json = serde_json::to_string(&r).unwrap();
         // camelCase wire keys matching the TS host payload.
@@ -812,6 +856,8 @@ mod tests {
             grade_level: -1,
             is_bridge: false,
             is_tunnel: true,
+            name: None,
+            wikidata: None,
         };
         let back: RoadDto = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(r, back);
@@ -826,5 +872,69 @@ mod tests {
         assert_eq!(back.grade_level, 0);
         assert!(!back.is_bridge);
         assert!(!back.is_tunnel);
+        assert!(back.name.is_none());
+        assert!(back.wikidata.is_none());
+    }
+
+    #[test]
+    fn road_dto_named_bridge_roundtrip() {
+        let r = RoadDto {
+            cls: "arterial".to_string(),
+            points: vec![1.0, 2.0, 3.0, 4.0],
+            grade_level: 2,
+            is_bridge: true,
+            is_tunnel: false,
+            name: Some("Test Bridge".to_string()),
+            wikidata: Some("Q123".to_string()),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"name\":\"Test Bridge\""));
+        assert!(json.contains("\"wikidata\":\"Q123\""));
+        let back: RoadDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(r, back);
+    }
+
+    #[test]
+    fn poi_anchor_roundtrip() {
+        let a = PoiAnchorDto {
+            id: "w108156090".to_string(),
+            kind: PoiAnchorKind::University,
+            name: "New York University".to_string(),
+            centroid: [-1762.0, 1959.0],
+            area: 227295.0,
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        assert!(json.contains("\"kind\":\"university\""));
+        let back: PoiAnchorDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
+    }
+
+    #[test]
+    fn static_city_poi_anchors_roundtrip() {
+        let city = StaticCityJson {
+            field_w: 4,
+            field_h: 4,
+            cell_size: 10.0,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            world_size: 40.0,
+            road_scale: 1.0,
+            mask_res: None,
+            has_water_mask: false,
+            has_park_mask: false,
+            has_building_mask: false,
+            labels: None,
+            poi_anchors: Some(vec![PoiAnchorDto {
+                id: "w1".to_string(),
+                kind: PoiAnchorKind::Stadium,
+                name: "Arena".to_string(),
+                centroid: [10.0, 20.0],
+                area: 5000.0,
+            }]),
+            roads: Vec::new(),
+        };
+        let back: StaticCityJson =
+            serde_json::from_str(&serde_json::to_string(&city).unwrap()).unwrap();
+        assert_eq!(city, back);
     }
 }

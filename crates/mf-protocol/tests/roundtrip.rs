@@ -984,3 +984,37 @@ fn static_buildings_max_vertex_count_accepted_and_huge_count_truncates() {
         Err(BinaryError::TooShort { .. })
     ));
 }
+
+#[test]
+fn static_city_map_intelligence_fields_roundtrip() {
+    let json = r##"{
+        "fieldW": 4,
+        "fieldH": 4,
+        "cellSize": 10.0,
+        "originX": 0.0,
+        "originY": 0.0,
+        "worldSize": 40.0,
+        "roadScale": 1.0,
+        "poiAnchors": [
+            {"id":"w1","kind":"stadium","name":"Arena","centroid":[10,20],"area":5000}
+        ],
+        "roads": [
+            {
+                "cls":"arterial",
+                "points":[0,0,10,10],
+                "gradeLevel":2,
+                "isBridge":true,
+                "isTunnel":false,
+                "name":"Test Bridge",
+                "wikidata":"Q99"
+            }
+        ]
+    }"##;
+    let city: mf_protocol::StaticCityJson = serde_json::from_str(json).expect("decode");
+    assert_eq!(city.poi_anchors.as_ref().map(|a| a.len()), Some(1));
+    assert_eq!(city.roads[0].name.as_deref(), Some("Test Bridge"));
+    assert_eq!(city.roads[0].wikidata.as_deref(), Some("Q99"));
+    let back: mf_protocol::StaticCityJson =
+        serde_json::from_str(&serde_json::to_string(&city).unwrap()).unwrap();
+    assert_eq!(city, back);
+}
