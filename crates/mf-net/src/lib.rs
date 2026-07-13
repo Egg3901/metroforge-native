@@ -8,6 +8,7 @@
 //! separate process — a future in-process (e.g. mobile) engine implements
 //! the same trait with zero call-site changes elsewhere.
 
+pub mod cities;
 pub mod embedded;
 pub mod host;
 pub mod plugin;

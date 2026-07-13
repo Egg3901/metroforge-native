@@ -2,7 +2,7 @@ use mf_sim::city::{generate_city, preset_by_key};
 use mf_sim::types::{Difficulty, RoadClass};
 
 fn metrics(seed: u32, key: &str, diff: Difficulty) {
-    let c = generate_city(seed, diff, None, preset_by_key(Some(key)));
+    let c = generate_city(seed, diff, None, preset_by_key(Some(key)), None);
     let f = &c.fields;
     let n = (f.w * f.h) as usize;
     let (mut water, mut parks, mut pop, mut jobs) = (0u32, 0u32, 0f64, 0f64);

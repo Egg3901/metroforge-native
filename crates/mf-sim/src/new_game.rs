@@ -31,7 +31,11 @@ pub struct NewGameOptions {
     pub preset_key: Option<String>,
     /// Era / challenge constraints applied at kickoff.
     pub rules: Option<ScenarioRules>,
-    // TODO(P2/P4): `osm` real-city bundle; `scenario` ScenarioDef (P3).
+    /// Preloaded real-city OSM bundle. When `Some`, real land/water/roads +
+    /// baked masks/elevation/labels/anchors replace procgen. The host layer
+    /// (`mf-net`) resolves + parses this from the city key. `None` = procedural.
+    pub osm: Option<crate::city::osm::OsmCityData>,
+    // TODO(P5): `scenario` ScenarioDef.
 }
 
 /// Transient per-process instance-id counter. Mirrors `nextInstanceId()`
@@ -52,7 +56,7 @@ fn period_for_tick_zero() -> Period {
 pub fn new_game(seed: u32, difficulty: Difficulty, options: NewGameOptions) -> GameState {
     let preset = preset_by_key(options.preset_key.as_deref());
     let world_size = options.size.map(|s| s.meters());
-    let city = generate_city(seed, difficulty, world_size, preset);
+    let city = generate_city(seed, difficulty, world_size, preset, options.osm.as_ref());
 
     // secondary stream seeded exactly like the TS newGame (never advanced here)
     let rng = Rng::from_seed(seed ^ 0x5bd1_e995);
@@ -143,14 +147,23 @@ pub fn new_game(seed: u32, difficulty: Difficulty, options: NewGameOptions) -> G
         traffic: None,
         unserved: None,
         analytics: None,
-        osm_water_mask: None,
-        osm_park_mask: None,
-        osm_building_mask: None,
-        osm_mask_res: None,
-        osm_elevation: None,
-        osm_elev_res: None,
-        osm_labels: None,
-        poi_anchors: None,
+        // real-city static channels (None for procedural cities)
+        osm_water_mask: city.water_mask_hi,
+        osm_park_mask: city.park_mask_hi,
+        osm_building_mask: city.building_mask_hi,
+        osm_mask_res: city.mask_res,
+        osm_elevation: city.elevation_hi,
+        osm_elev_res: city.elev_res,
+        osm_labels: if city.labels.is_empty() {
+            None
+        } else {
+            Some(city.labels)
+        },
+        poi_anchors: if city.poi_anchors.is_empty() {
+            None
+        } else {
+            Some(city.poi_anchors)
+        },
     }
 }
 

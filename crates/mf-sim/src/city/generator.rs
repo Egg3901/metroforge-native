@@ -23,8 +23,9 @@ use crate::geometry::{clamp, make_polyline, vec, Noise2D, Vec2};
 use crate::rng::Rng;
 use crate::types::{Difficulty, District, FieldGrid, RoadClass, RoadEdge};
 
-/// The generated city bundle. Mirrors `GeneratedCity` (procedural subset;
-/// OSM mask/label/elevation channels are omitted — P2 is procedural-only).
+/// The generated city bundle. Mirrors `GeneratedCity`. For real (OSM) cities
+/// the `osm_*` channels + `labels` / `poi_anchors` carry the baked static map
+/// data; they are all empty/`None` for procedural cities.
 pub struct GeneratedCity {
     /// Populated scalar field grid.
     pub fields: FieldGrid,
@@ -34,6 +35,22 @@ pub struct GeneratedCity {
     pub districts: Vec<District>,
     /// Central business district anchor.
     pub cbd: Vec2,
+    /// High-res OSM water mask (1 = water), for crisp coastline rendering.
+    pub water_mask_hi: Option<Vec<u8>>,
+    /// High-res OSM park mask.
+    pub park_mask_hi: Option<Vec<u8>>,
+    /// High-res OSM building-footprint mask.
+    pub building_mask_hi: Option<Vec<u8>>,
+    /// Mask side length (`mask_res * mask_res`).
+    pub mask_res: Option<u32>,
+    /// Real-elevation heightfield (meters, `elev_res^2`).
+    pub elevation_hi: Option<Vec<i16>>,
+    /// Elevation side length.
+    pub elev_res: Option<u32>,
+    /// Real OSM place-name labels.
+    pub labels: Vec<crate::types::MapLabel>,
+    /// Named POI anchors from the bundle.
+    pub poi_anchors: Vec<crate::types::PoiAnchor>,
 }
 
 /// Signed smallest angle from `b` to `a`. Mirrors `angleDelta`.
@@ -219,17 +236,23 @@ fn project_onto(lines: &[Vec<Vec2>], p: Vec2, max_dist: f64, skip: Option<usize>
     best_p
 }
 
-/// Generate a procedural city. Mirrors `generateCity` (procedural path).
+/// Generate a city. Mirrors `generateCity`. When `osm` is `Some`, real
+/// land/water/parks + the real road network replace procgen (the shared
+/// population / land-value / district stages still run on top); when `None`,
+/// the fully procedural path runs.
 pub fn generate_city(
     seed: u32,
     difficulty: Difficulty,
     world_size: Option<f64>,
     preset: CityPreset,
+    osm: Option<&crate::city::osm::OsmCityData>,
 ) -> GeneratedCity {
     let mut rng = Rng::from_seed(seed);
     let terrain_noise = Noise2D::new(&mut rng);
     let detail_noise = Noise2D::new(&mut rng);
-    let mut fields = create_field_grid(world_size);
+    // Real cities size the world from the bundle; procedural uses the option.
+    let world_size_opt = osm.map(|o| o.world_size).or(world_size);
+    let mut fields = create_field_grid(world_size_opt);
     let world_size = fields.w as f64 * fields.cell_size;
     let half = world_size / 2.0;
     let w = fields.w as usize;
@@ -244,30 +267,41 @@ pub fn generate_city(
     let water_dir = vec(water_angle.cos(), water_angle.sin());
     let water_offset = water.coast_inset * half;
 
-    for cy in 0..fields.h as usize {
-        for cx in 0..w {
-            let i = cy * w + cx;
-            let p = cell_center(&fields, i);
-            let nx = p.x / world_size;
-            let ny = p.y / world_size;
-            let mut elev = terrain_noise.fbm(nx * 4.0 + 10.0, ny * 4.0 + 10.0, 4, 2.0, 0.5);
-            if !water.coast {
-                // landlocked: keep the noise but never dip below the waterline
-                fields.terrain[i] = clamp(0.35 + elev * 0.5, 0.0, 1.0) as f32;
-                fields.water[i] = 0;
-                continue;
+    // Decoded OSM channels (real cities only), threaded onto GeneratedCity.
+    let osm_channels = if let Some(osm) = osm {
+        // real land/water/parks + shore-faded relief straight from the masks
+        Some(crate::city::osm::apply_osm_terrain(
+            &mut fields,
+            osm,
+            &terrain_noise,
+        ))
+    } else {
+        for cy in 0..fields.h as usize {
+            for cx in 0..w {
+                let i = cy * w + cx;
+                let p = cell_center(&fields, i);
+                let nx = p.x / world_size;
+                let ny = p.y / world_size;
+                let mut elev = terrain_noise.fbm(nx * 4.0 + 10.0, ny * 4.0 + 10.0, 4, 2.0, 0.5);
+                if !water.coast {
+                    // landlocked: keep the noise but never dip below the waterline
+                    fields.terrain[i] = clamp(0.35 + elev * 0.5, 0.0, 1.0) as f32;
+                    fields.water[i] = 0;
+                    continue;
+                }
+                let coast_dist = p.x * water_dir.x + p.y * water_dir.y - water_offset;
+                if coast_dist > 0.0 {
+                    elev -= (coast_dist / half) * 0.9;
+                }
+                fields.terrain[i] = clamp(elev, 0.0, 1.0) as f32;
+                fields.water[i] = if elev < 0.22 { 1 } else { 0 };
             }
-            let coast_dist = p.x * water_dir.x + p.y * water_dir.y - water_offset;
-            if coast_dist > 0.0 {
-                elev -= (coast_dist / half) * 0.9;
-            }
-            fields.terrain[i] = clamp(elev, 0.0, 1.0) as f32;
-            fields.water[i] = if elev < 0.22 { 1 } else { 0 };
         }
-    }
+        None
+    };
 
-    // ── River: meanders from an inland edge downhill to the sea ──
-    if water.river {
+    // ── River: meanders from an inland edge downhill to the sea (procgen only) ──
+    if water.river && osm.is_none() {
         let start_angle = water_angle + PI + rng.range(-0.5, 0.5);
         let mut px = start_angle.cos() * half * 0.95;
         let mut py = start_angle.sin() * half * 0.95;
@@ -421,30 +455,35 @@ pub fn generate_city(
         fields.jobs[i] = ((raw_jobs[i] as f64 / raw_jobs_sum) * jobs_target) as f32;
     }
 
-    // ── Parks (procedural): noise pockets + signature parks; displace residents ──
-    for i in 0..n {
-        if fields.water[i] == 1 {
-            continue;
-        }
-        let c = cell_center(&fields, i);
-        let nz = detail_noise.fbm(c.x / 1400.0 + 300.0, c.y / 1400.0 + 300.0, 3, 2.0, 0.5);
-        let d_cbd = ((c.x - cbd.x).powi(2) + (c.y - cbd.y).powi(2)).sqrt();
-        if nz > 0.66 && d_cbd > 700.0 {
-            fields.parks[i] = 1;
-        }
-    }
-    let big_parks = rng.int(1, 2);
-    for _ in 0..big_parks {
-        let ang = rng.range(0.0, PI * 2.0);
-        let cx0 = cbd.x + ang.cos() * rng.range(1200.0, 2400.0);
-        let cy0 = cbd.y + ang.sin() * rng.range(1200.0, 2400.0);
-        let pw = rng.range(500.0, 900.0);
-        let ph = rng.range(350.0, 650.0);
+    // ── Parks: real parks (OSM) already stamped in apply_osm_terrain; else
+    //    noise pockets + signature parks. Either way, parks displace residents. ──
+    if osm.is_none() {
         for i in 0..n {
+            if fields.water[i] == 1 {
+                continue;
+            }
             let c = cell_center(&fields, i);
-            if (c.x - cx0).abs() < pw / 2.0 && (c.y - cy0).abs() < ph / 2.0 && fields.water[i] == 0
-            {
+            let nz = detail_noise.fbm(c.x / 1400.0 + 300.0, c.y / 1400.0 + 300.0, 3, 2.0, 0.5);
+            let d_cbd = ((c.x - cbd.x).powi(2) + (c.y - cbd.y).powi(2)).sqrt();
+            if nz > 0.66 && d_cbd > 700.0 {
                 fields.parks[i] = 1;
+            }
+        }
+        let big_parks = rng.int(1, 2);
+        for _ in 0..big_parks {
+            let ang = rng.range(0.0, PI * 2.0);
+            let cx0 = cbd.x + ang.cos() * rng.range(1200.0, 2400.0);
+            let cy0 = cbd.y + ang.sin() * rng.range(1200.0, 2400.0);
+            let pw = rng.range(500.0, 900.0);
+            let ph = rng.range(350.0, 650.0);
+            for i in 0..n {
+                let c = cell_center(&fields, i);
+                if (c.x - cx0).abs() < pw / 2.0
+                    && (c.y - cy0).abs() < ph / 2.0
+                    && fields.water[i] == 0
+                {
+                    fields.parks[i] = 1;
+                }
             }
         }
     }
@@ -457,205 +496,232 @@ pub fn generate_city(
 
     let mean_cell_pop = target / n as f64;
 
-    // ── Tensor field ──
-    let base_angle = preset.grid.angle_deg * PI / 180.0;
-    let mut grids: Vec<GridBasis> = Vec::new();
-    let mut grid_seeds: Vec<Vec2> = subcenters.clone();
-    for _ in 0..6 {
-        grid_seeds.push(vec(
-            rng.range(-half * 0.8, half * 0.8),
-            rng.range(-half * 0.8, half * 0.8),
-        ));
-    }
-    for gcenter in &grid_seeds {
-        let raw = detail_noise.at(gcenter.x / 4200.0 + 200.0, gcenter.y / 4200.0 + 200.0) * PI;
-        let theta = if preset.grid.rigid {
-            base_angle
-        } else {
-            base_angle + (raw / (PI / 12.0)).round() * (PI / 12.0)
-        };
-        grids.push(GridBasis {
-            center: *gcenter,
-            theta,
-            sigma: rng.range(1600.0, 2600.0),
-            weight: preset.grid.weight,
-        });
-    }
-    // boundary samples: shoreline cells with tangent from the water gradient
-    let mut boundaries: Vec<BoundarySample> = Vec::new();
-    for cy in 1..fields.h as usize - 1 {
-        for cx in 1..w - 1 {
-            let i = cy * w + cx;
-            if fields.water[i] == 1 {
-                continue;
-            }
-            let w_r = fields.water[cy * w + cx + 1] as i32;
-            let w_l = fields.water[cy * w + cx - 1] as i32;
-            let w_d = fields.water[(cy + 1) * w + cx] as i32;
-            let w_u = fields.water[(cy - 1) * w + cx] as i32;
-            if w_r + w_l + w_d + w_u == 0 {
-                continue;
-            }
-            if (cx + cy) % 2 != 0 {
-                continue;
-            }
-            let gx = (w_r - w_l) as f64;
-            let gy = (w_d - w_u) as f64;
-            boundaries.push(BoundarySample {
-                pos: cell_center(&fields, i),
-                theta: gy.atan2(gx) + PI / 2.0,
-            });
-        }
-    }
-
-    let global_grid = if preset.grid.rigid {
-        Some((base_angle, 3.2))
-    } else {
-        None
-    };
-    let field = TensorField {
-        grids,
-        global_grid,
-        radial_center: cbd,
-        radial_weight: preset.radial_weight,
-        radial_sigma: 2600.0,
-        boundaries,
-        boundary_sigma: 550.0,
-        boundary_weight: 1.6,
-        noise: Box::new(|x: f64, y: f64| detail_noise.at(x / 5200.0 + 400.0, y / 5200.0 + 400.0)),
-        noise_weight: preset.grid.noise_weight,
-    };
-
-    // ── Roads (procedural streamlines) ──
+    // ── Roads ──
     let mut roads: Vec<RoadEdge> = Vec::new();
     let mut road_id = 1u32;
-
-    // Arterials
-    let mut arterial_seeds: Vec<Vec2> = vec![cbd];
-    arterial_seeds.extend_from_slice(&subcenters);
-    for _ in 0..18 {
-        let cand = vec(
-            rng.range(-half * 0.85, half * 0.85),
-            rng.range(-half * 0.85, half * 0.85),
-        );
-        if density_at(&fields, half, mean_cell_pop, cand) > 0.4 {
-            arterial_seeds.push(cand);
+    if let Some(osm) = osm {
+        // real street network straight from the OSM bundle (no tensor field /
+        // streamlines / RNG draws — the geometry is static input)
+        for r in &osm.roads {
+            if r.pts.len() < 4 {
+                continue;
+            }
+            let mut pl: Vec<Vec2> = Vec::with_capacity(r.pts.len() / 2);
+            let mut i = 0;
+            while i + 1 < r.pts.len() {
+                pl.push(vec(r.pts[i], r.pts[i + 1]));
+                i += 2;
+            }
+            roads.push(RoadEdge {
+                id: road_id,
+                cls: crate::city::osm::road_class_of(&r.cls),
+                polyline: make_polyline(pl),
+                grade_level: if r.g != 0 { Some(r.g) } else { None },
+                is_bridge: if r.br { Some(true) } else { None },
+                is_tunnel: if r.tn { Some(true) } else { None },
+            });
+            road_id += 1;
         }
-    }
-    let arterials = {
-        let fields_ref = &fields;
-        let cbd_c = cbd;
-        let opts = TraceOptions {
-            separation: Separation::Const(620.0),
-            in_domain: Box::new(move |p: Vec2| {
-                p.x.abs() < half * 0.97
-                    && p.y.abs() < half * 0.97
-                    && (density_at(fields_ref, half, mean_cell_pop, p) > 0.12
-                        || ((p.x - cbd_c.x).powi(2) + (p.y - cbd_c.y).powi(2)).sqrt() < 2800.0)
-            }),
-            bridge_max_steps: 9,
-            blocked: Box::new(move |p: Vec2| is_water_at(fields_ref, p)),
-            max_length: 11000.0,
-            min_length: 900.0,
-            seeds: arterial_seeds,
-            snap_targets: Vec::new(),
-            spawn_seeds: true,
-            eigen_dirs: vec![0, 1],
-        };
-        trace_streamlines(&field, rng.fork(11), opts)
-    };
-    for line in &arterials {
-        roads.push(RoadEdge {
-            id: road_id,
-            cls: RoadClass::Arterial,
-            polyline: make_polyline(decimate(line)),
-            grade_level: None,
-            is_bridge: None,
-            is_tunnel: None,
-        });
-        road_id += 1;
-    }
-
-    // Locals
-    let mut local_seeds: Vec<Vec2> = vec![cbd];
-    local_seeds.extend_from_slice(&subcenters);
-    for _ in 0..140 {
-        let cand = vec(
-            rng.range(-half * 0.9, half * 0.9),
-            rng.range(-half * 0.9, half * 0.9),
-        );
-        if density_at(&fields, half, mean_cell_pop, cand) > 0.35 {
-            local_seeds.push(cand);
+    } else {
+        // ── Tensor field ──
+        let base_angle = preset.grid.angle_deg * PI / 180.0;
+        let mut grids: Vec<GridBasis> = Vec::new();
+        let mut grid_seeds: Vec<Vec2> = subcenters.clone();
+        for _ in 0..6 {
+            grid_seeds.push(vec(
+                rng.range(-half * 0.8, half * 0.8),
+                rng.range(-half * 0.8, half * 0.8),
+            ));
         }
-    }
-    let mut arterial_samples: Vec<Vec2> = Vec::new();
-    for line in &arterials {
-        arterial_samples.extend_from_slice(line);
-    }
-    let mut locals = {
-        let fields_ref = &fields;
-        let opts = TraceOptions {
-            separation: Separation::Varying(Box::new(move |p: Vec2| {
-                let d = density_at(fields_ref, half, mean_cell_pop, p);
-                if d > 2.5 {
-                    70.0
-                } else if d > 1.2 {
-                    95.0
-                } else {
-                    130.0
+        for gcenter in &grid_seeds {
+            let raw = detail_noise.at(gcenter.x / 4200.0 + 200.0, gcenter.y / 4200.0 + 200.0) * PI;
+            let theta = if preset.grid.rigid {
+                base_angle
+            } else {
+                base_angle + (raw / (PI / 12.0)).round() * (PI / 12.0)
+            };
+            grids.push(GridBasis {
+                center: *gcenter,
+                theta,
+                sigma: rng.range(1600.0, 2600.0),
+                weight: preset.grid.weight,
+            });
+        }
+        // boundary samples: shoreline cells with tangent from the water gradient
+        let mut boundaries: Vec<BoundarySample> = Vec::new();
+        for cy in 1..fields.h as usize - 1 {
+            for cx in 1..w - 1 {
+                let i = cy * w + cx;
+                if fields.water[i] == 1 {
+                    continue;
                 }
-            })),
-            in_domain: Box::new(move |p: Vec2| {
-                density_at(fields_ref, half, mean_cell_pop, p) > 0.22
-            }),
-            bridge_max_steps: 0,
-            blocked: Box::new(move |p: Vec2| is_water_at(fields_ref, p)),
-            max_length: 2600.0,
-            min_length: 330.0,
-            seeds: local_seeds,
-            snap_targets: arterial_samples,
-            spawn_seeds: true,
-            eigen_dirs: vec![0, 1],
-        };
-        trace_streamlines(&field, rng.fork(13), opts)
-    };
+                let w_r = fields.water[cy * w + cx + 1] as i32;
+                let w_l = fields.water[cy * w + cx - 1] as i32;
+                let w_d = fields.water[(cy + 1) * w + cx] as i32;
+                let w_u = fields.water[(cy - 1) * w + cx] as i32;
+                if w_r + w_l + w_d + w_u == 0 {
+                    continue;
+                }
+                if (cx + cy) % 2 != 0 {
+                    continue;
+                }
+                let gx = (w_r - w_l) as f64;
+                let gy = (w_d - w_u) as f64;
+                boundaries.push(BoundarySample {
+                    pos: cell_center(&fields, i),
+                    theta: gy.atan2(gx) + PI / 2.0,
+                });
+            }
+        }
 
-    // Junction snap: pull each local street's dangling ends onto the nearest
-    // arterial (or a nearby local) so streets actually meet.
-    const ARTERIAL_SNAP: f64 = 150.0;
-    const LOCAL_SNAP: f64 = 80.0;
-    let arterial_grid = SegmentGrid::new(&arterials, ARTERIAL_SNAP);
-    for li in 0..locals.len() {
-        if locals[li].len() >= 2 {
-            let last = locals[li].len() - 1;
-            for end_idx in [0usize, last] {
-                let end = locals[li][end_idx];
-                let q = arterial_grid
-                    .nearest(end, ARTERIAL_SNAP)
-                    .or_else(|| project_onto(&locals, end, LOCAL_SNAP, Some(li)));
-                if let Some(q) = q {
-                    if ((q.x - end.x).powi(2) + (q.y - end.y).powi(2)).sqrt() > 12.0
-                        && !is_water_at(&fields, q)
-                    {
-                        if end_idx == 0 {
-                            locals[li].insert(0, q);
-                        } else {
-                            locals[li].push(q);
+        let global_grid = if preset.grid.rigid {
+            Some((base_angle, 3.2))
+        } else {
+            None
+        };
+        let field = TensorField {
+            grids,
+            global_grid,
+            radial_center: cbd,
+            radial_weight: preset.radial_weight,
+            radial_sigma: 2600.0,
+            boundaries,
+            boundary_sigma: 550.0,
+            boundary_weight: 1.6,
+            noise: Box::new(|x: f64, y: f64| {
+                detail_noise.at(x / 5200.0 + 400.0, y / 5200.0 + 400.0)
+            }),
+            noise_weight: preset.grid.noise_weight,
+        };
+
+        // ── Roads (procedural streamlines) ──
+        // Arterials
+        let mut arterial_seeds: Vec<Vec2> = vec![cbd];
+        arterial_seeds.extend_from_slice(&subcenters);
+        for _ in 0..18 {
+            let cand = vec(
+                rng.range(-half * 0.85, half * 0.85),
+                rng.range(-half * 0.85, half * 0.85),
+            );
+            if density_at(&fields, half, mean_cell_pop, cand) > 0.4 {
+                arterial_seeds.push(cand);
+            }
+        }
+        let arterials = {
+            let fields_ref = &fields;
+            let cbd_c = cbd;
+            let opts = TraceOptions {
+                separation: Separation::Const(620.0),
+                in_domain: Box::new(move |p: Vec2| {
+                    p.x.abs() < half * 0.97
+                        && p.y.abs() < half * 0.97
+                        && (density_at(fields_ref, half, mean_cell_pop, p) > 0.12
+                            || ((p.x - cbd_c.x).powi(2) + (p.y - cbd_c.y).powi(2)).sqrt() < 2800.0)
+                }),
+                bridge_max_steps: 9,
+                blocked: Box::new(move |p: Vec2| is_water_at(fields_ref, p)),
+                max_length: 11000.0,
+                min_length: 900.0,
+                seeds: arterial_seeds,
+                snap_targets: Vec::new(),
+                spawn_seeds: true,
+                eigen_dirs: vec![0, 1],
+            };
+            trace_streamlines(&field, rng.fork(11), opts)
+        };
+        for line in &arterials {
+            roads.push(RoadEdge {
+                id: road_id,
+                cls: RoadClass::Arterial,
+                polyline: make_polyline(decimate(line)),
+                grade_level: None,
+                is_bridge: None,
+                is_tunnel: None,
+            });
+            road_id += 1;
+        }
+
+        // Locals
+        let mut local_seeds: Vec<Vec2> = vec![cbd];
+        local_seeds.extend_from_slice(&subcenters);
+        for _ in 0..140 {
+            let cand = vec(
+                rng.range(-half * 0.9, half * 0.9),
+                rng.range(-half * 0.9, half * 0.9),
+            );
+            if density_at(&fields, half, mean_cell_pop, cand) > 0.35 {
+                local_seeds.push(cand);
+            }
+        }
+        let mut arterial_samples: Vec<Vec2> = Vec::new();
+        for line in &arterials {
+            arterial_samples.extend_from_slice(line);
+        }
+        let mut locals = {
+            let fields_ref = &fields;
+            let opts = TraceOptions {
+                separation: Separation::Varying(Box::new(move |p: Vec2| {
+                    let d = density_at(fields_ref, half, mean_cell_pop, p);
+                    if d > 2.5 {
+                        70.0
+                    } else if d > 1.2 {
+                        95.0
+                    } else {
+                        130.0
+                    }
+                })),
+                in_domain: Box::new(move |p: Vec2| {
+                    density_at(fields_ref, half, mean_cell_pop, p) > 0.22
+                }),
+                bridge_max_steps: 0,
+                blocked: Box::new(move |p: Vec2| is_water_at(fields_ref, p)),
+                max_length: 2600.0,
+                min_length: 330.0,
+                seeds: local_seeds,
+                snap_targets: arterial_samples,
+                spawn_seeds: true,
+                eigen_dirs: vec![0, 1],
+            };
+            trace_streamlines(&field, rng.fork(13), opts)
+        };
+
+        // Junction snap: pull each local street's dangling ends onto the nearest
+        // arterial (or a nearby local) so streets actually meet.
+        const ARTERIAL_SNAP: f64 = 150.0;
+        const LOCAL_SNAP: f64 = 80.0;
+        let arterial_grid = SegmentGrid::new(&arterials, ARTERIAL_SNAP);
+        for li in 0..locals.len() {
+            if locals[li].len() >= 2 {
+                let last = locals[li].len() - 1;
+                for end_idx in [0usize, last] {
+                    let end = locals[li][end_idx];
+                    let q = arterial_grid
+                        .nearest(end, ARTERIAL_SNAP)
+                        .or_else(|| project_onto(&locals, end, LOCAL_SNAP, Some(li)));
+                    if let Some(q) = q {
+                        if ((q.x - end.x).powi(2) + (q.y - end.y).powi(2)).sqrt() > 12.0
+                            && !is_water_at(&fields, q)
+                        {
+                            if end_idx == 0 {
+                                locals[li].insert(0, q);
+                            } else {
+                                locals[li].push(q);
+                            }
                         }
                     }
                 }
             }
+            roads.push(RoadEdge {
+                id: road_id,
+                cls: RoadClass::Local,
+                polyline: make_polyline(decimate(&locals[li])),
+                grade_level: None,
+                is_bridge: None,
+                is_tunnel: None,
+            });
+            road_id += 1;
         }
-        roads.push(RoadEdge {
-            id: road_id,
-            cls: RoadClass::Local,
-            polyline: make_polyline(decimate(&locals[li])),
-            grade_level: None,
-            is_bridge: None,
-            is_tunnel: None,
-        });
-        road_id += 1;
-    }
+    } // end procedural road generation
 
     // ── Land value + NIMBY ──
     for i in 0..n {
@@ -770,10 +836,19 @@ pub fn generate_city(
         d.name = names[i].clone();
     }
 
+    let ch = osm_channels.unwrap_or_default();
     GeneratedCity {
         fields,
         roads,
         districts,
         cbd,
+        water_mask_hi: ch.water_mask,
+        park_mask_hi: ch.park_mask,
+        building_mask_hi: ch.building_mask,
+        mask_res: ch.mask_res,
+        elevation_hi: ch.elevation,
+        elev_res: ch.elev_res,
+        labels: osm.map(|o| o.labels.clone()).unwrap_or_default(),
+        poi_anchors: osm.map(|o| o.poi_anchors.clone()).unwrap_or_default(),
     }
 }

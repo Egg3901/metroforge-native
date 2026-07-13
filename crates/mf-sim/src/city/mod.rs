@@ -12,9 +12,11 @@
 
 pub mod generator;
 pub mod names;
+pub mod osm;
 pub mod presets;
 pub mod streamlines;
 pub mod tensor;
 
 pub use generator::{generate_city, GeneratedCity};
+pub use osm::{OsmCityData, OsmRoad};
 pub use presets::{preset_by_key, CityPreset, MapSize};

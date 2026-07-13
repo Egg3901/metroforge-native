@@ -253,6 +253,8 @@ fn handle_inbound(host: &mut Host, msg: ToSim, tx: &Sender<FromSimMsg>) -> bool 
                 size: p.size.map(size_from_wire),
                 preset_key: p.preset_key.clone(),
                 rules: p.rules.as_ref().map(rules_from_wire),
+                // real-city bundle (None for procedural keys -> procgen)
+                osm: crate::cities::resolve_city(p.preset_key.as_deref()),
             };
             host.preset_key = p.preset_key.clone();
             host.size = p.size;
@@ -266,11 +268,20 @@ fn handle_inbound(host: &mut Host, msg: ToSim, tx: &Sender<FromSimMsg>) -> bool 
             host.fields_version += 1;
             host.accumulator = 0.0;
             host.ui_countdown = 0;
-            let ok = tx
+            let mut ok = tx
                 .send(FromSimMsg::Json(FromSimJson::Ready(host::build_ready(
                     &state,
                 ))))
-                .is_ok()
+                .is_ok();
+            // real-city static binary frames (masks/elevation), right after
+            // `ready`, mirroring the sidecar's `sendStatic` ordering.
+            for mask in host::build_masks(&state) {
+                ok = ok && tx.send(FromSimMsg::Mask(mask)).is_ok();
+            }
+            if let Some(elev) = host::build_elevation(&state) {
+                ok = ok && tx.send(FromSimMsg::Elevation(Arc::new(elev))).is_ok();
+            }
+            ok = ok
                 && tx
                     .send(FromSimMsg::Fields(Arc::new(host::build_fields(
                         &state,

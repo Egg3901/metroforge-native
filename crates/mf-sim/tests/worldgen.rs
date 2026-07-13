@@ -12,7 +12,7 @@ use mf_sim::new_game::{new_game, NewGameOptions};
 use mf_sim::types::{Difficulty, FieldGrid, RoadClass};
 
 fn gen(seed: u32, key: &str, diff: Difficulty) -> GeneratedCity {
-    generate_city(seed, diff, None, preset_by_key(Some(key)))
+    generate_city(seed, diff, None, preset_by_key(Some(key)), None)
 }
 
 fn fields_eq(a: &FieldGrid, b: &FieldGrid) -> bool {

@@ -265,9 +265,74 @@ fn road_cls_str(cls: st::RoadClass) -> String {
     .to_string()
 }
 
-/// Build the `ready` static-city payload. Masks (water/park/building) and OSM
-/// labels/anchors are P5 (procedural cities have none), so the mask flags are
-/// false and `labels`/`poi_anchors` are `None`.
+/// Map a sim map-label kind to the wire kind.
+fn label_kind_to_wire(k: st::MapLabelKind) -> wire::MapLabelKind {
+    match k {
+        st::MapLabelKind::Road => wire::MapLabelKind::Road,
+        st::MapLabelKind::Water => wire::MapLabelKind::Water,
+        st::MapLabelKind::Park => wire::MapLabelKind::Park,
+    }
+}
+
+/// Map a sim POI-anchor kind to the wire kind.
+fn poi_kind_to_wire(k: st::PoiKind) -> wire::PoiAnchorKind {
+    match k {
+        st::PoiKind::Stadium => wire::PoiAnchorKind::Stadium,
+        st::PoiKind::Airport => wire::PoiAnchorKind::Airport,
+        st::PoiKind::University => wire::PoiAnchorKind::University,
+        st::PoiKind::Hospital => wire::PoiAnchorKind::Hospital,
+        st::PoiKind::Museum => wire::PoiAnchorKind::Museum,
+    }
+}
+
+/// Build the static binary mask frames (water=0, park=1, building=2) for a real
+/// (OSM) city, in the sidecar's order. Empty for procedural cities. Mirrors
+/// `simHost.ts`'s `encodeStaticMask` calls.
+pub fn build_masks(s: &GameState) -> Vec<wire::StaticMask> {
+    let Some(res) = s.osm_mask_res else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if let Some(m) = &s.osm_water_mask {
+        out.push(wire::StaticMask {
+            which: wire::MaskWhich::Water,
+            res,
+            mask: m.clone(),
+        });
+    }
+    if let Some(m) = &s.osm_park_mask {
+        out.push(wire::StaticMask {
+            which: wire::MaskWhich::Park,
+            res,
+            mask: m.clone(),
+        });
+    }
+    if let Some(m) = &s.osm_building_mask {
+        out.push(wire::StaticMask {
+            which: wire::MaskWhich::Building,
+            res,
+            mask: m.clone(),
+        });
+    }
+    out
+}
+
+/// Build the static real-elevation frame (msgType=7) for a real city, or
+/// `None`. Mirrors `simHost.ts`'s `encodeStaticElevation` call.
+pub fn build_elevation(s: &GameState) -> Option<wire::StaticElevation> {
+    match (&s.osm_elevation, s.osm_elev_res) {
+        (Some(h), Some(res)) => Some(wire::StaticElevation {
+            res,
+            heights: h.clone(),
+        }),
+        _ => None,
+    }
+}
+
+/// Build the `ready` static-city payload. For real (OSM) cities this carries
+/// the mask resolution + `has*Mask` flags (the mask BYTES arrive as separate
+/// [`wire::StaticMask`] frames), the OSM place-name labels, and the POI
+/// anchors. Procedural cities have none of these (flags false, `None`).
 pub fn build_ready(s: &GameState) -> wire::ReadyPayload {
     let f = &s.fields;
     let world_size = f.w as f64 * f.cell_size;
@@ -291,6 +356,29 @@ pub fn build_ready(s: &GameState) -> wire::ReadyPayload {
             wikidata: None,
         })
         .collect();
+    let labels = s.osm_labels.as_ref().map(|ls| {
+        ls.iter()
+            .map(|l| wire::MapLabel {
+                kind: label_kind_to_wire(l.kind),
+                name: l.name.clone(),
+                x: l.x,
+                y: l.y,
+                angle: l.angle,
+                imp: l.imp,
+            })
+            .collect()
+    });
+    let poi_anchors = s.poi_anchors.as_ref().map(|as_| {
+        as_.iter()
+            .map(|a| wire::PoiAnchorDto {
+                id: a.id.clone(),
+                kind: poi_kind_to_wire(a.kind),
+                name: a.name.clone(),
+                centroid: a.centroid,
+                area: a.area.unwrap_or(0.0),
+            })
+            .collect()
+    });
     wire::ReadyPayload {
         static_city: wire::StaticCityJson {
             field_w: f.w,
@@ -300,12 +388,12 @@ pub fn build_ready(s: &GameState) -> wire::ReadyPayload {
             origin_y: f.origin_y,
             world_size,
             road_scale,
-            mask_res: None,
-            has_water_mask: false,
-            has_park_mask: false,
-            has_building_mask: false,
-            labels: None,
-            poi_anchors: None,
+            mask_res: s.osm_mask_res,
+            has_water_mask: s.osm_water_mask.is_some(),
+            has_park_mask: s.osm_park_mask.is_some(),
+            has_building_mask: s.osm_building_mask.is_some(),
+            labels,
+            poi_anchors,
             roads,
         },
     }

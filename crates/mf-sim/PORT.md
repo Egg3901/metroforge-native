@@ -409,3 +409,88 @@ default fallback. The sidecar / dist-sidecar / `WsTransport` are UNTOUCHED
   elevation, real road network, `MapLabel`, POI anchors; fill the transient
   `osm_*` slots and the `MapLabel` placeholder; wire the data-driven scenario
   catalog/progression + `evaluateScenarioDay`.
+
+## P5 status: OSM real-city path DONE (flagship cities render from real data)
+
+The `MF_SIM=embedded` sim now renders real cities (NYC, Boston, ...) from the
+baked OSM bundles instead of falling back to procedural generation.
+
+### What was ported
+- **`osmCity.ts` -> `city/osm.rs`** (mf-sim, serde-free): the `OsmCityData`
+  model + the mask/elevation decoders (`decode_b64_mask`, `decode_elevation`,
+  `mask_at`, a std-only base64 decoder) + `apply_osm_terrain` — the `if (osm)`
+  branch of `generateCity`: AREA-fraction majority vote of the ~19 m mask over
+  each 125 m field cell, multi-source BFS distance-to-water, shore-faded fbm
+  relief. `MapLabel` fleshed out (`{kind, name, x, y, angle, imp}`) +
+  `MapLabelKind` enum.
+- **`generate_city`** now takes `osm: Option<&OsmCityData>` and branches:
+  real land/water/parks + the real road network (with OSM grade/bridge/tunnel
+  tags) replace procgen; the shared population / land-value / district stages
+  still run on top. OSM draws no road RNG (geometry is static input). Procedural
+  path is byte-unchanged (guarded by `osm.is_none()`).
+- **`new_game`** gains `NewGameOptions.osm`; populates the transient
+  `osm_water_mask` / `osm_park_mask` / `osm_building_mask` / `osm_mask_res` /
+  `osm_elevation` / `osm_elev_res` / `osm_labels` / `poi_anchors` slots.
+- **`osmRegistry.ts` + `sidecar/cities.ts` -> `mf-net/src/cities.rs`** (serde
+  lives in mf-net): JSON parse (camelCase DTOs) -> `mf_sim::OsmCityData`, the
+  10-key registry, and `resolve_city(key)`.
+- **Serializer (`host.rs`)**: `build_ready` now emits `mask_res` + `has*Mask`
+  flags + `labels` + `poi_anchors`; new `build_masks` (msgType=4 water/park/
+  building, sidecar order) + `build_elevation` (msgType=7). `embedded.rs` sends
+  them right after `ready`, matching `simHost.ts::sendStatic`.
+
+### Data delivery
+`mf-sim` stays serde-free, so JSON parsing + the base64 payloads live in
+`mf-net`. Embedding all ten bundles (+ buildings) is ~90 MB, so:
+- **NYC + Boston are embedded** via `include_bytes!` (~2 MB) — single-binary,
+  always available, incl. tests.
+- **The other eight load from a data dir** at runtime: `$MF_CITY_DATA` if set,
+  else the compile-time in-repo `sim/src/data/cities`. Missing file -> `None` ->
+  procedural fallback (never a hard failure).
+
+### Acceptance (counts vs TS `osmCity`, nyc.json — EXACT)
+`cargo test -p mf-net --test osm_city` (also asserts run-twice identical):
+
+| channel | Rust | TS decode | note |
+|---|---|---|---|
+| mask res | 640 | 640 | |
+| water mask set-cells | 73838 | 73838 | exact (pure decode) |
+| park mask set-cells | 28636 | 28636 | exact |
+| building mask set-cells | 93046 | 93046 | exact |
+| elevation | 256^2, non-trivial | elevRes 256 | |
+| roads | 13871 | 13871 (>=4 pts) | |
+| labels | 513 | 513 | |
+| POI anchors | 40 | 40 | all 5 kinds valid |
+
+### In-client verify (`MF_SIM=embedded MF_AUTOSTART=nyc`, lavapipe/xvfb)
+Looked at `verify/default.png`: minimap shows the unmistakable **Manhattan
+silhouette** — the island flanked by the Hudson + East River (blue water
+masks), the real street network, and the surrounding boroughs; the 3D view is a
+dense field of real OSM building footprints (renderer log:
+`buildings: mask res=640 set_cells=93046 lots_emitted=32050`,
+`has_building_mask=true non_empty_chunks=64/64`). Real bridges were placed from
+OSM tags (Brooklyn / Suspension / Truss), and station builds were correctly
+rejected on real water ("Cannot build a station on water"). This is the REAL
+city, not a procedural blob.
+
+### Cities that load end-to-end
+NYC + Boston embedded (verified). The other 8 keys resolve from the data dir
+when present (same code path); NYC exercised fully in-client.
+
+### Flagged / not reproduced
+- **Buildings (msgType=5)**: the per-building footprint vectors
+  (`*.buildings.json`, ~75 MB) are NOT emitted by the embedded host yet; the
+  renderer derives massing from the building MASK instead (which it did here,
+  32050 lots). Wiring `StaticBuildings` (embed cleveland+nyc, path-load rest)
+  is a follow-up.
+- **Road name/wikidata meta** (`staticCityWire.ts::roadMetaFromOsm`): bridge
+  name labels are emitted as `None` (the bundles carry little/no road `name`).
+- Default backend is still the sidecar; flip to embedded is a separate call.
+
+### Remaining P5 items
+- DELETE the sidecar / dist-sidecar / `WsTransport` (still the default; untouched
+  per guardrail).
+- `StaticBuildings` real-footprint emission (see above).
+- Scenario catalog / progression + `evaluateScenarioDay`; `replay.rs` + reverse
+  command bridge; agents pool (`FrameSnapshot.agents`); saves (`serde` feature);
+  `cohortDemand`; traffic/demand/heatmap overlays; perf pass.

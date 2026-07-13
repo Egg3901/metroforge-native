@@ -871,10 +871,39 @@ pub struct GameState {
 // None are serialized or hashed. The real shapes land with their systems.
 
 sim_type! {
-    /// Placeholder. TODO(P2/P5): port `city/osmCity.ts::MapLabel` (OSM real-city
-    /// render labels). Still deferred: the OSM path is not ported until P5.
-    #[derive(Clone, Debug, Default, PartialEq)]
-    pub struct MapLabel {}
+    /// Map-label category. Mirrors `MapLabel.kind` (`city/osmCity.ts`) and
+    /// `mf_protocol::MapLabelKind`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    #[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+    pub enum MapLabelKind {
+        /// Road-name label (has a baseline `angle`).
+        Road,
+        /// Water-body label.
+        Water,
+        /// Park / green-space label.
+        Park,
+    }
+}
+
+sim_type! {
+    /// Real OSM place-name label for the map layer. Mirrors
+    /// `city/osmCity.ts::MapLabel`. Transient (render-only), not hashed.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct MapLabel {
+        /// Label category.
+        pub kind: MapLabelKind,
+        /// Display name (real OSM place name).
+        pub name: String,
+        /// World-space X of the anchor.
+        pub x: f64,
+        /// World-space Y of the anchor.
+        pub y: f64,
+        /// Road labels: baseline angle in radians. Absent for water/park.
+        #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+        pub angle: Option<f64>,
+        /// Importance 1..~5 (drives zoom-gated visibility + size).
+        pub imp: f64,
+    }
 }
 
 impl GameState {
