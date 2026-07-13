@@ -39,6 +39,13 @@ PALETTE = {
     "transit_roof":   (0xcf, 0xd3, 0xd6),  # slightly greyer roof
     "cloud":          (0xff, 0xff, 0xff),  # flat white cloud top
     "cloud_under":    (0xcf, 0xd4, 0xd9),  # slight grey underside
+    # Ambient traffic cars: DESATURATED muted tones — traffic is background,
+    # transit stays the only vivid color (art-direction §4). Mirrored in
+    # crates/mf-render/src/traffic.rs::MUTED_CAR_TONES.
+    "car_body_a":     (0xb8, 0xba, 0xbd),  # cool light grey
+    "car_body_b":     (0xa9, 0xa2, 0x99),  # warm taupe
+    "car_body_c":     (0x8f, 0x96, 0x9c),  # slate grey
+    "car_glass":      (0x33, 0x38, 0x40),  # dark cabin glass
 }
 
 

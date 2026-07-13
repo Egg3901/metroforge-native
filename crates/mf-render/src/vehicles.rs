@@ -57,13 +57,44 @@ use mf_state::{EffectiveKnobs, HeightAt, LatestFrame, LatestUi, QualityTier};
 use crate::daynight::DayNightState;
 use crate::models::ModelHandles;
 use crate::palette;
+use crate::vehicle_models::VehicleModelHandles;
 use crate::RenderCacheStats;
 
-/// Pilot B knob: swap the brick metro vehicle for the scripted 3-car metro
-/// consist glTF (tools/blender/gen_train.py) at Medium+ tiers. Default ON for
-/// metro; every other transit mode and the Potato/Low tiers keep the brick.
-/// Flip to `false` to fall the whole game back to bricks.
-const METRO_MODEL_SWAP: bool = true;
+/// Model-swap knob: swap the brick transit vehicle for the scripted glTF
+/// consist for every mode that ships one (bus/tram/metro/rail) at Medium+
+/// tiers. Default ON; the Potato/Low tiers keep the brick, as does any mode
+/// whose model assets have not finished loading. Flip to `false` to fall the
+/// whole game back to bricks.
+const VEHICLE_MODEL_SWAP: bool = true;
+
+/// Stable per-mode tag used to detect when a reused model-instance slot needs
+/// its scene swapped (a vehicle slot can host a different route/mode frame to
+/// frame). `0` = no model for this mode.
+fn mode_model_tag(mode: TransitMode) -> u8 {
+    match mode {
+        TransitMode::Bus => 1,
+        TransitMode::Tram => 2,
+        TransitMode::Metro => 3,
+        TransitMode::Rail => 4,
+    }
+}
+
+/// Resolve the scripted `Scene` handle for a mode, or `None` if that mode has
+/// no model or its assets are not available. Metro comes from `models.rs`'s
+/// `ModelHandles` (owned by the structure lane); bus/tram/rail from this
+/// crate's separate `VehicleModelHandles` loader.
+fn resolve_vehicle_scene(
+    mode: TransitMode,
+    model_handles: &Option<Res<ModelHandles>>,
+    veh_models: &Option<Res<VehicleModelHandles>>,
+) -> Option<Handle<Scene>> {
+    match mode {
+        TransitMode::Metro => model_handles.as_ref().map(|h| h.train_metro.clone()),
+        TransitMode::Bus => veh_models.as_ref().map(|h| h.bus.clone()),
+        TransitMode::Tram => veh_models.as_ref().map(|h| h.tram.clone()),
+        TransitMode::Rail => veh_models.as_ref().map(|h| h.rail.clone()),
+    }
+}
 
 const VEHICLE_BASE_LENGTH: f32 = 10.0;
 const VEHICLE_WIDTH: f32 = 4.5;
@@ -99,7 +130,7 @@ impl Plugin for MfVehiclesPlugin {
             // desired tint.
             .add_systems(
                 Update,
-                apply_metro_tint_system
+                apply_vehicle_model_tint_system
                     .in_set(crate::MfRenderSet::Dynamic)
                     .after(update_vehicles_system),
             );
@@ -112,13 +143,18 @@ struct VehicleSlot;
 #[derive(Component)]
 struct VehicleLightSlot;
 
-/// Metro model instance parented-in-spirit to vehicle slot `index`. Carries
+/// Scripted-model instance parented-in-spirit to vehicle slot `index`. Carries
 /// the desired per-route tint; `applied_tint` on the pool tracks whether the
-/// (async-spawned) scene children have been recolored to it yet.
+/// (async-spawned) scene children have been recolored to it yet. `mode_tag`
+/// records which mode's scene this instance was spawned with, so a slot that
+/// changes mode (e.g. a bus slot reused by a tram) is respawned with the
+/// correct consist rather than reusing the wrong one.
 #[derive(Component)]
-struct MetroModelSlot {
+struct VehicleModelSlot {
     #[allow(dead_code)]
     index: usize,
+    /// Mode tag of the scene this instance holds (see [`mode_model_tag`]).
+    mode_tag: u8,
     /// Desired per-route body tint (updated by the vehicle system each frame).
     tint: Color,
     /// Packed sRGB of the tint currently baked into this instance's cloned
@@ -175,9 +211,10 @@ struct VehiclePool {
     /// frame by the smoothing system, so `is_changed()` is always true and
     /// would defeat the 20 Hz skip-gate below; only a bucket step matters.
     last_night_bucket: Option<i32>,
-    /// Pilot B: parallel metro-model instances, one per vehicle slot, spawned
-    /// lazily the first time a slot is a Medium+ metro. `None` = not spawned
-    /// yet. Reused (shown/hidden) like the brick slots.
+    /// Parallel scripted-model instances, one per vehicle slot, spawned lazily
+    /// the first time a slot is a Medium+ mode that ships a model (bus / tram /
+    /// metro / rail). `None` = not spawned yet. Reused (shown/hidden) like the
+    /// brick slots; respawned if the slot's mode changes (see the swap block).
     metro_models: Vec<Option<Entity>>,
 }
 
@@ -300,15 +337,17 @@ fn update_vehicles_system(
         ),
         (With<VehicleLightSlot>, Without<VehicleSlot>),
     >,
-    // Pilot B params bundled into one tuple SystemParam to stay within Bevy's
-    // 16-param limit: (quality tier, loaded model handles, metro model pool).
-    metro: (
+    // Model-swap params bundled into one tuple SystemParam to stay within
+    // Bevy's 16-param limit: (quality tier, metro/bridge model handles, surface
+    // vehicle-kit handles, model instance pool).
+    models: (
         Res<QualityTier>,
         Option<Res<ModelHandles>>,
+        Option<Res<VehicleModelHandles>>,
         Query<
-            (&mut Transform, &mut Visibility, &mut MetroModelSlot),
+            (&mut Transform, &mut Visibility, &mut VehicleModelSlot),
             (
-                With<MetroModelSlot>,
+                With<VehicleModelSlot>,
                 Without<VehicleSlot>,
                 Without<VehicleLightSlot>,
             ),
@@ -316,7 +355,7 @@ fn update_vehicles_system(
     ),
     mut stats: ResMut<RenderCacheStats>,
 ) {
-    let (quality, model_handles, mut metro_slots) = metro;
+    let (quality, model_handles, veh_models, mut metro_slots) = models;
     // `LatestFrame` arrives at the sim's ~20Hz tick while this system runs
     // every render frame (60+ Hz); `EffectiveKnobs` / `Theme` / overlay / night
     // change independently and flip paint. None changing means nothing about a
@@ -500,13 +539,15 @@ fn update_vehicles_system(
                 .unwrap_or(TransitMode::Bus);
         let is_tram_like = matches!(mode, TransitMode::Tram | TransitMode::Metro);
         let is_tram_mesh = mode == TransitMode::Tram;
-        // Pilot B: this slot shows the scripted 3-car metro consist instead of
-        // the brick when the knob is on, the tier is Medium+, the route is
-        // Metro, and the model assets have loaded.
-        let metro_active = METRO_MODEL_SWAP
-            && is_medium_plus(*quality)
-            && mode == TransitMode::Metro
-            && model_handles.is_some();
+        // This slot shows the scripted glTF consist for its mode instead of the
+        // brick when the knob is on, the tier is Medium+, and that mode's model
+        // assets have loaded. Bus/tram/metro/rail all ship a model.
+        let model_scene = if VEHICLE_MODEL_SWAP && is_medium_plus(*quality) {
+            resolve_vehicle_scene(mode, &model_handles, &veh_models)
+        } else {
+            None
+        };
+        let model_active = model_scene.is_some();
         let length = if is_tram_mesh {
             VEHICLE_BASE_LENGTH * TRAM_LENGTH_MULT
         } else {
@@ -521,8 +562,8 @@ fn update_vehicles_system(
             let ground_y = height_at.sample(x, y);
             transform.translation = Vec3::new(x, ground_y + 3.0, y);
             transform.rotation = Quat::from_rotation_y(-heading);
-            // Brick is hidden when the metro model takes over this slot.
-            *visibility = if metro_active {
+            // Brick is hidden when the scripted model takes over this slot.
+            *visibility = if model_active {
                 Visibility::Hidden
             } else {
                 Visibility::Visible
@@ -561,47 +602,59 @@ fn update_vehicles_system(
             }
         }
 
-        // --- Pilot B: metro consist model swap (parallel model pool) ---
-        if METRO_MODEL_SWAP {
+        // --- Scripted consist model swap (parallel model-instance pool) ---
+        if VEHICLE_MODEL_SWAP {
             if pool.metro_models.len() <= i {
                 pool.metro_models.resize(i + 1, None);
             }
-            if metro_active {
-                if let Some(handles) = &model_handles {
-                    // Model base sits at y=0 authored; the brick center is
-                    // ground+3.0, so drop the model to the deck.
-                    let base = transform.translation - Vec3::Y * 3.0;
-                    let model_xf = Transform {
-                        translation: base,
-                        rotation: transform.rotation,
-                        scale: Vec3::ONE,
-                    };
-                    match pool.metro_models[i] {
-                        Some(e) => {
-                            if let Ok((mut mxf, mut mvis, mut mslot)) = metro_slots.get_mut(e) {
-                                if frame_changed {
-                                    *mxf = model_xf;
-                                }
-                                *mvis = Visibility::Visible;
-                                mslot.tint = color;
+            if let Some(scene) = &model_scene {
+                let want_tag = mode_model_tag(mode);
+                // Model base sits at y=0 authored; the brick center is
+                // ground+3.0, so drop the model to the deck.
+                let base = transform.translation - Vec3::Y * 3.0;
+                let model_xf = Transform {
+                    translation: base,
+                    rotation: transform.rotation,
+                    scale: Vec3::ONE,
+                };
+                // If a reused instance was spawned for a different mode, despawn
+                // it so it can respawn with this mode's consist below.
+                if let Some(e) = pool.metro_models[i] {
+                    let stale = metro_slots
+                        .get(e)
+                        .map(|(_, _, s)| s.mode_tag != want_tag)
+                        .unwrap_or(false);
+                    if stale {
+                        commands.entity(e).despawn();
+                        pool.metro_models[i] = None;
+                    }
+                }
+                match pool.metro_models[i] {
+                    Some(e) => {
+                        if let Ok((mut mxf, mut mvis, mut mslot)) = metro_slots.get_mut(e) {
+                            if frame_changed {
+                                *mxf = model_xf;
                             }
+                            *mvis = Visibility::Visible;
+                            mslot.tint = color;
                         }
-                        None => {
-                            let e = commands
-                                .spawn((
-                                    SceneRoot(handles.train_metro.clone()),
-                                    model_xf,
-                                    Visibility::Visible,
-                                    MetroModelSlot {
-                                        index: i,
-                                        tint: color,
-                                        applied: None,
-                                        body_entities: Vec::new(),
-                                    },
-                                ))
-                                .id();
-                            pool.metro_models[i] = Some(e);
-                        }
+                    }
+                    None => {
+                        let e = commands
+                            .spawn((
+                                SceneRoot(scene.clone()),
+                                model_xf,
+                                Visibility::Visible,
+                                VehicleModelSlot {
+                                    index: i,
+                                    mode_tag: want_tag,
+                                    tint: color,
+                                    applied: None,
+                                    body_entities: Vec::new(),
+                                },
+                            ))
+                            .id();
+                        pool.metro_models[i] = Some(e);
                     }
                 }
             } else if let Some(e) = pool.metro_models.get(i).copied().flatten() {
@@ -711,8 +764,8 @@ fn update_vehicles_system(
 /// clone, so windows/roof/bogies keep their neutral palette). Cheap: skips any
 /// instance already baked to its current tint. The body meshes are located
 /// once by luminance the first time the async scene is present, then reused.
-fn apply_metro_tint_system(
-    mut slots: Query<(Entity, &mut MetroModelSlot)>,
+fn apply_vehicle_model_tint_system(
+    mut slots: Query<(Entity, &mut VehicleModelSlot)>,
     children: Query<&Children>,
     mut mesh_mats: Query<&mut MeshMaterial3d<StandardMaterial>>,
     mut materials: ResMut<Assets<StandardMaterial>>,

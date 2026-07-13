@@ -47,6 +47,12 @@ gen gen_bridge.py "$OUT/bridge_brooklyn.glb"   bridge_brooklyn   brooklyn
 gen gen_truss.py  "$OUT/bridge_truss.glb"      bridge_truss
 # metro consist
 gen gen_train.py  "$OUT/train_metro.glb"       train_metro
+# surface transit vehicle kit (bus / articulated tram / commuter rail)
+gen gen_bus.py    "$OUT/bus.glb"               bus
+gen gen_tram.py   "$OUT/tram.glb"              tram
+gen gen_rail.py   "$OUT/rail.glb"              rail
+# ambient street-traffic cars (3 muted variants, background props)
+gen gen_cars.py   "$OUT/cars.glb"              cars
 # cloud puffs
 gen gen_clouds.py "$OUT/cloud_puffs.glb"       cloud_puffs
 

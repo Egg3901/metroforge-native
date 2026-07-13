@@ -35,8 +35,10 @@ mod street_lamps;
 mod subway;
 mod terrain;
 mod terrain_material;
+mod traffic;
 mod transit;
 mod trees;
+mod vehicle_models;
 mod vehicles;
 mod water;
 mod weather_render;
@@ -120,6 +122,11 @@ impl Plugin for MfRenderPlugin {
                 // model placement. Statics/Dynamic sets are chosen inside each.
                 models::MfModelsPlugin,
                 bridges::MfBridgesPlugin,
+                // Surface transit vehicle-kit loader (bus/tram/rail glTF) +
+                // ambient street-traffic instancer. Separate from models.rs so
+                // the structure-placement lane's registry stays untouched.
+                vehicle_models::MfVehicleModelsPlugin,
+                traffic::MfTrafficPlugin,
             ),
         ))
         .add_plugins(photomode::MfPhotoModeRenderPlugin)

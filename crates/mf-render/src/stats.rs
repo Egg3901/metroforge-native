@@ -20,4 +20,6 @@ pub struct RenderCacheStats {
     pub tree_chunks: usize,
     pub street_lamp_chunks: usize,
     pub agent_entities: usize,
+    /// Live ambient street-traffic car instances (see `traffic.rs`).
+    pub ambient_traffic_cars: usize,
 }
