@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn slab_bottom_is_below_ground_plane() {
-        assert!(SLAB_BOTTOM_Y < 0.0);
+        const { assert!(SLAB_BOTTOM_Y < 0.0) };
         assert_eq!(SLAB_BOTTOM_Y, -SLAB_DEPTH_M);
     }
 
