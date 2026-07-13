@@ -65,6 +65,14 @@ fn grade_from_wire(g: wire::TrackGrade) -> st::TrackGrade {
     }
 }
 
+fn grade_to_wire(g: st::TrackGrade) -> wire::TrackGrade {
+    match g {
+        st::TrackGrade::Surface => wire::TrackGrade::Surface,
+        st::TrackGrade::Elevated => wire::TrackGrade::Elevated,
+        st::TrackGrade::Tunnel => wire::TrackGrade::Tunnel,
+    }
+}
+
 /// Wire difficulty -> sim difficulty (used when handling `init`).
 pub fn difficulty_from_wire(d: wire::Difficulty) -> st::Difficulty {
     match d {
@@ -218,6 +226,91 @@ pub fn command_to_sim(cmd: &wire::Command) -> Option<mf_sim::SimCommand> {
             pos: v(pos),
         },
     })
+}
+
+/// Translate a sim [`mf_sim::SimCommand`] back into the wire
+/// [`wire::Command`] shape for replay payloads.
+pub fn command_from_sim(cmd: &mf_sim::SimCommand) -> wire::Command {
+    let v = |p: &mf_sim::geometry::Vec2| wire::Vec2 { x: p.x, y: p.y };
+    match cmd {
+        mf_sim::SimCommand::BuildStation { mode, pos } => wire::Command::BuildStation {
+            mode: mode_to_wire(*mode),
+            pos: v(pos),
+        },
+        mf_sim::SimCommand::BuildTrack {
+            mode,
+            grade,
+            from_station_id,
+            to_station_id,
+            waypoints,
+        } => wire::Command::BuildTrack {
+            mode: mode_to_wire(*mode),
+            grade: grade_to_wire(*grade),
+            from_station_id: *from_station_id as i64,
+            to_station_id: *to_station_id as i64,
+            waypoints: waypoints.iter().map(v).collect(),
+        },
+        mf_sim::SimCommand::CreateRoute { mode, station_ids } => wire::Command::CreateRoute {
+            mode: mode_to_wire(*mode),
+            station_ids: station_ids.iter().map(|&id| id as i64).collect(),
+        },
+        mf_sim::SimCommand::EditRoute {
+            route_id,
+            headway_seconds,
+            fare,
+            vehicle_count,
+            name,
+            color,
+        } => wire::Command::EditRoute {
+            route_id: *route_id as i64,
+            headway_seconds: *headway_seconds,
+            fare: *fare,
+            vehicle_count: *vehicle_count,
+            name: name.clone(),
+            color: color.clone(),
+        },
+        mf_sim::SimCommand::DeleteRoute { route_id } => wire::Command::DeleteRoute {
+            route_id: *route_id as i64,
+        },
+        mf_sim::SimCommand::DemolishStation { station_id } => wire::Command::DemolishStation {
+            station_id: *station_id as i64,
+        },
+        mf_sim::SimCommand::DemolishTrack { track_id } => wire::Command::DemolishTrack {
+            track_id: *track_id as i64,
+        },
+        mf_sim::SimCommand::UpgradeStation { station_id } => wire::Command::UpgradeStation {
+            station_id: *station_id as i64,
+        },
+        mf_sim::SimCommand::TakeLoan { amount } => wire::Command::TakeLoan { amount: *amount },
+        mf_sim::SimCommand::RepayLoan { amount } => wire::Command::RepayLoan { amount: *amount },
+        mf_sim::SimCommand::RenameStation { station_id, name } => wire::Command::RenameStation {
+            station_id: *station_id as i64,
+            name: name.clone(),
+        },
+        mf_sim::SimCommand::SetRouteFrequency {
+            route_id,
+            period,
+            headway_seconds,
+        } => wire::Command::SetRouteFrequency {
+            route_id: *route_id as i64,
+            period: period_str(*period),
+            headway_seconds: *headway_seconds,
+        },
+        mf_sim::SimCommand::BuildDepot { mode, pos } => wire::Command::BuildDepot {
+            mode: mode_to_wire(*mode),
+            pos: v(pos),
+        },
+    }
+}
+
+/// Translate sim command-log entries into wire replay entries.
+pub fn command_log_to_wire(log: &[st::CommandLogEntry]) -> Vec<wire::CommandLogEntry> {
+    log.iter()
+        .map(|e| wire::CommandLogEntry {
+            tick: e.tick,
+            cmd: command_from_sim(&e.cmd),
+        })
+        .collect()
 }
 
 /// Translate a sim [`mf_sim::CommandResult`] to the wire [`wire::CommandResult`]
@@ -927,5 +1020,29 @@ mod tests {
             headway_seconds: 300.0,
         })
         .is_none());
+    }
+
+    #[test]
+    fn reverse_command_bridge_roundtrips_frequency() {
+        let sim = SimCommand::SetRouteFrequency {
+            route_id: 9,
+            period: st::Period::PmPeak,
+            headway_seconds: 420.0,
+        };
+        let wire_cmd = command_from_sim(&sim);
+        match &wire_cmd {
+            wire::Command::SetRouteFrequency {
+                route_id,
+                period,
+                headway_seconds,
+            } => {
+                assert_eq!(*route_id, 9);
+                assert_eq!(period, "pmPeak");
+                assert_eq!(*headway_seconds, 420.0);
+            }
+            _ => panic!("wrong variant"),
+        }
+        let back = command_to_sim(&wire_cmd).expect("valid bridge");
+        assert_eq!(back, sim);
     }
 }

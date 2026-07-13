@@ -174,6 +174,23 @@ fn rules_from_wire(r: &mf_protocol::ScenarioRules) -> mf_sim::types::ScenarioRul
     }
 }
 
+fn rules_to_wire(r: &mf_sim::types::ScenarioRules) -> mf_protocol::ScenarioRules {
+    mf_protocol::ScenarioRules {
+        scenario_id: r.scenario_id.clone(),
+        starting_modes: r
+            .starting_modes
+            .iter()
+            .map(|&m| host::mode_to_wire(m))
+            .collect(),
+        lock_modes: r.lock_modes,
+        max_day: r.max_day,
+        approval_floor: r.approval_floor,
+        starting_cash: r.starting_cash,
+        daily_subsidy: r.daily_subsidy,
+        era_label: r.era_label.clone(),
+    }
+}
+
 fn scenario_from_init(
     p: &mf_protocol::envelope::InitPayload,
 ) -> Option<&'static mf_sim::scenario::evaluate::ScenarioDef> {
@@ -403,15 +420,34 @@ fn handle_inbound(host: &mut Host, msg: ToSim, tx: &Sender<FromSimMsg>) -> bool 
             let Some(state) = host.state.as_ref() else {
                 return true;
             };
+            let replayed = mf_sim::replay::replay_sync(mf_sim::replay::ReplayInput {
+                seed: state.seed,
+                difficulty: state.difficulty,
+                size: host.size.map(size_from_wire),
+                preset_key: host.preset_key.clone(),
+                rules: state.scenario_rules.clone(),
+                command_log: state.command_log.clone(),
+                final_tick: Some(state.tick),
+                osm: crate::cities::resolve_city(host.preset_key.as_deref()),
+            });
+            let live_hash = state.state_hash();
+            if replayed.hash != live_hash || replayed.failed != state.failed {
+                let _ = tx.send(FromSimMsg::Json(FromSimJson::Toast(
+                    mf_protocol::ToastPayload {
+                        message: "Replay validation mismatch detected for this run.".to_string(),
+                        tone: mf_protocol::ToastTone::Warn,
+                    },
+                )));
+            }
             let payload = mf_protocol::ReplayPayload {
                 seed: state.seed as u64,
                 difficulty: difficulty_to_wire(state.difficulty),
                 preset_key: host.preset_key.clone(),
                 size: host.size,
-                rules: None,
-                command_log: Vec::new(), // TODO(P5): mirror command_log (needs SimCommand->wire).
+                rules: state.scenario_rules.as_ref().map(rules_to_wire),
+                command_log: host::command_log_to_wire(&state.command_log),
                 final_tick: state.tick,
-                state_hash: state.state_hash() as i64,
+                state_hash: live_hash as i64,
                 score_hint: state.stats.daily_transit_trips.round(),
             };
             tx.send(FromSimMsg::Json(FromSimJson::Replay(payload)))
