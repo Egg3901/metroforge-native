@@ -365,17 +365,6 @@ function pointInPolygonPts(x: number, y: number, poly: [number, number][]): bool
   return inside;
 }
 
-/** One outer ring -> one exported outline footprint, or null if it should be
- *  dropped. Outlines are always ground based (mh=0); see processPartFinal for
- *  building:part height/minHeight resolution. */
-function processBuildingRing(ringLL: LL[], tags: Record<string, string>, P: (ll: LL) => [number, number]): BuildingRecord | null {
-  const simp = simplifyRingPoints(ringLL, P);
-  if (!simp) return null;
-  const meters = buildingHeightMeters(tags);
-  const h = meters > 0 ? Math.round(Math.min(500, Math.max(3, meters)) * 10) : 0;
-  return { h, mh: 0, v: pointsToVertexInts(simp) };
-}
-
 /** Resolve a building:part's final {h, mh, v} once its simplified points and
  *  the meters-height of its containing outline (0 if it has none) are known,
  *  or null if the part should be dropped: a mapper-specified min_height/
@@ -741,8 +730,8 @@ function build(cfg: CityCfg): void {
   for (let r = 0; r < N; r++) {
     for (let c = 0; c < N; c++) {
       const i = r * N + c;
-      bits[i] = water[i];
-      if (!water[i]) {
+      bits[i] = water[i] ?? 0;
+      if (!(water[i] ?? 0)) {
         const x = -HALF + (c + 0.5) * cellW;
         const y = -HALF + (r + 0.5) * cellW;
         for (const poly of parkPolys) if (pointInPoly(x, y, poly)) { parkBits[i] = 1; break; }
