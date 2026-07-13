@@ -29,6 +29,14 @@ import { diurnalDemand, diurnalFactor } from './timeOfDay';
 import { climateTable, weatherAt, type WeatherEvent } from './weather';
 import { weatherSpeedMult } from './weatherEffects';
 import { segmentDayAverageSpeedMps, segmentDensity01 } from './transit/gradeEffects';
+import {
+  applyReliabilityDemand,
+  opsApprovalDelta,
+  opsDailyClose,
+  opsDailyOpex,
+  opsDue,
+  opsTick,
+} from './ops';
 import type { Vec2 } from './geometry';
 import type { GameState, RouteDef, Station, TrackSegment } from './types';
 
@@ -163,6 +171,17 @@ export function simTick(state: GameState): TickEvents {
 
   moveVehicles(state);
 
+  // v0.9 System A: per-period frequency, rolling-stock condition/breakdowns,
+  // maintenance, and reliability accrual. Runs on a fixed OPS_INTERVAL grid
+  // (probabilities/decay/timers scaled by the interval) so the subsystem is a
+  // small slice of the tick. Effective headway changes ops makes (throttles,
+  // breakdown-degraded service) are picked up by the periodic assignment
+  // (ASSIGNMENT_INTERVAL_TICKS) and by the setRouteFrequency command's own
+  // demandDirty — so ops does NOT force an extra (full, NYC-scale) reassignment
+  // here. That keeps the subsystem's tick cost within budget while remaining
+  // bit-identical at assignment checkpoints.
+  if (opsDue(state.tick)) opsTick(state, events);
+
   // demand assignment: on dirty flag or periodic refresh
   if (state.demandDirty || state.tick % ASSIGNMENT_INTERVAL_TICKS === 0) {
     refreshAssignment(state);
@@ -174,6 +193,10 @@ export function simTick(state: GameState): TickEvents {
     events.dayCompleted = day;
     updateEvents(state, day, events);
     runDailyEconomy(state, day, events);
+    // ops day-close: finalize on-time% + avg delay, refresh the lagged
+    // reliability→demand multiplier, dispatch maintenance, age the fleet. Runs
+    // before approval so the reliability term is fresh.
+    opsDailyClose(state);
     updateApproval(state);
     checkUnlocks(state, events);
     if (day % GROWTH_INTERVAL_DAYS === 0) runGrowth(state);
@@ -389,10 +412,14 @@ export { diurnalDemand };
 export function refreshAssignment(state: GameState): void {
   const result = runAssignment(state);
   state.flows = result.flows;
-  state.stats.dailyTransitTrips = result.dailyTransitTrips;
-  state.stats.dailyCarTrips = result.dailyCarTrips;
-  const total = result.dailyTransitTrips + result.dailyCarTrips;
-  state.stats.transitShare = total > 0 ? result.dailyTransitTrips / total : 0;
+  // v0.9 keystone: reliability→ridership feedback, applied AFTER assignment so
+  // the demand pipeline the cohort lane owns is never edited. Riders shed by
+  // chronic unreliability move to car, keeping the mode-share stat consistent.
+  const { transitLost } = applyReliabilityDemand(state, result.routeRidership, result.routeRevenue);
+  state.stats.dailyTransitTrips = Math.max(0, result.dailyTransitTrips - transitLost);
+  state.stats.dailyCarTrips = result.dailyCarTrips + transitLost;
+  const total = state.stats.dailyTransitTrips + state.stats.dailyCarTrips;
+  state.stats.transitShare = total > 0 ? state.stats.dailyTransitTrips / total : 0;
   // per-route surface exposure (fraction of segments not in tunnel), for the
   // weather speed model: underground routes shrug off snow/blizzards.
   const gradeById = new Map<number, string>();
@@ -404,8 +431,8 @@ export function refreshAssignment(state: GameState): void {
     if (t.grade === 'surface') t.congestionDensity = segmentDensity01(state.fields, t);
   }
   for (const r of state.routes) {
-    r.dailyRidership = result.routeRidership.get(r.id) ?? 0;
-    r.dailyRevenue = result.routeRevenue.get(r.id) ?? 0;
+    // r.dailyRidership / r.dailyRevenue were set by applyReliabilityDemand above
+    // (raw assignment output scaled by the lagged reliability multiplier).
     // peak-hour capacity vs load → crowding (feeds next assignment's penalty)
     const cfg = MODES[r.mode];
     r.capacity = r.vehicleCount > 0 ? (cfg.vehicleCapacity * 3600) / r.headwaySeconds : 0;
@@ -491,6 +518,9 @@ function runDailyEconomy(state: GameState, _day: number, events: TickEvents): vo
   for (const s of state.stations) {
     maintenance += MODES[s.mode].stationCost * 0.0002 * s.level;
   }
+  // v0.9 ops opex: fleet maintenance per active unit + standing depot cost.
+  // NUMBERS exposed here; the BALANCE constants live in ops/tunables (owner-tuned).
+  maintenance += opsDailyOpex(state);
   // subsidy: base scaled by approval (0.5×..1.5×), declining 2%/year
   const year = Math.floor(state.tick / TICKS_PER_DAY / 365);
   const baseSub = state.scenarioRules?.dailySubsidy ?? BASE_DAILY_SUBSIDY[state.difficulty];
@@ -531,10 +561,12 @@ function updateApproval(state: GameState): void {
     if (r.crowding > CROWD_APPROVAL_THRESHOLD) crowdRiders += r.dailyRidership * (r.crowding - CROWD_APPROVAL_THRESHOLD);
   }
   const crowdDrag = totalRiders > 0 ? Math.min(20, (crowdRiders / totalRiders) * 40) : 0;
+  // v0.9 keystone: reliability (on-time% + delay) lifts or drags approval.
+  const reliabilityDelta = opsApprovalDelta(state);
   // drift toward a target driven by coverage + transit share, plus event mood
   const target = Math.min(
     100,
-    Math.max(0, 25 + s.coverage * 90 + s.transitShare * 60 + eventApprovalDelta(state.activeEvents) * 2 - crowdDrag),
+    Math.max(0, 25 + s.coverage * 90 + s.transitShare * 60 + eventApprovalDelta(state.activeEvents) * 2 - crowdDrag + reliabilityDelta),
   );
   s.approval += (target - s.approval) * 0.08;
   s.approval = Math.max(0, Math.min(100, s.approval));

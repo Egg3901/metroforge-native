@@ -382,6 +382,68 @@ pub struct UiRoute {
     /// (which omit it) parseable.
     #[serde(default)]
     pub avg_effective_speed: Option<f64>,
+    /// Operations (v0.9 System A): rolling on-time fraction 0..1 (the keystone
+    /// reliability metric). `default` keeps pre-v0.9 sidecars parseable.
+    #[serde(default)]
+    pub on_time_pct: Option<f64>,
+    /// Operations (v0.9): rolling average delay per departure, seconds.
+    #[serde(default)]
+    pub avg_delay_sec: Option<f64>,
+    /// Operations (v0.9): units running service right now (period + breakdown
+    /// aware).
+    #[serde(default)]
+    pub in_service_vehicles: Option<u32>,
+    /// Operations (v0.9): vehicles needed to fully run the peak-period schedule.
+    #[serde(default)]
+    pub peak_units_required: Option<u32>,
+    /// Operations (v0.9): per-period target headway in seconds, keyed by period
+    /// (`amPeak`/`midday`/`pmPeak`/`evening`/`night`).
+    #[serde(default)]
+    pub frequency: Option<std::collections::HashMap<String, f64>>,
+}
+
+/// Operations (v0.9 System A): fleet-wide summary carried on `UiState.fleet`.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiFleetSummary {
+    /// Total rolling-stock units owned.
+    pub total: u32,
+    /// Units actively running service.
+    pub active: u32,
+    /// Units out of service in a maintenance window.
+    pub maintenance: u32,
+    /// Units disabled by a breakdown.
+    pub broken_down: u32,
+    /// Mean unit condition 0..1.
+    pub avg_condition: f64,
+    /// Mean unit age in sim-days.
+    pub avg_age_days: f64,
+}
+
+/// Operations (v0.9): one placed maintenance depot on `UiState.depots`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiDepot {
+    /// Depot entity id.
+    pub id: i64,
+    /// Mode the depot services (`bus`/`tram`/`metro`/`rail`).
+    pub mode: String,
+    /// World X.
+    pub x: f64,
+    /// World Y.
+    pub y: f64,
+}
+
+/// Operations (v0.9): one active breakdown incident on `UiState.incidents`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiIncident {
+    /// Incident entity id.
+    pub id: i64,
+    /// Route whose segment is blocked.
+    pub route_id: i64,
+    /// Ticks remaining until the blockage clears.
+    pub ticks_left: u32,
 }
 
 /// `DayLedger` — metroforge/src/core/types.ts:134-140
@@ -601,6 +663,23 @@ pub struct UiState {
     /// `serde(default)` so pre-v0.9 sidecars that never emit it still decode.
     #[serde(default)]
     pub cohort_demand: Option<UiCohortDemand>,
+    /// Operations (v0.9 System A): fleet-wide summary. `default` keeps pre-v0.9
+    /// sidecars parseable.
+    #[serde(default)]
+    pub fleet: Option<UiFleetSummary>,
+    /// Operations (v0.9): placed maintenance depots.
+    #[serde(default)]
+    pub depots: Vec<UiDepot>,
+    /// Operations (v0.9): active breakdown incidents.
+    #[serde(default)]
+    pub incidents: Vec<UiIncident>,
+    /// Operations (v0.9): current service period id
+    /// (`amPeak`/`midday`/`pmPeak`/`evening`/`night`).
+    #[serde(default)]
+    pub service_period: Option<String>,
+    /// Operations (v0.9): human label for the current service period.
+    #[serde(default)]
+    pub service_period_label: Option<String>,
 }
 
 impl UiState {
@@ -738,6 +817,22 @@ pub enum Command {
         station_id: i64,
         /// New display name.
         name: String,
+    },
+    /// Operations (v0.9 A1): set a route's target headway for one service period.
+    SetRouteFrequency {
+        /// Route entity id.
+        route_id: i64,
+        /// Service period (`amPeak`/`midday`/`pmPeak`/`evening`/`night`).
+        period: String,
+        /// Target headway in seconds.
+        headway_seconds: f64,
+    },
+    /// Operations (v0.9 A4): place a maintenance depot for a mode.
+    BuildDepot {
+        /// Mode the depot services.
+        mode: TransitMode,
+        /// World position.
+        pos: Vec2,
     },
 }
 

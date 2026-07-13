@@ -24,6 +24,8 @@ import {
   type CohortKind,
 } from '@core/transit/cohorts';
 import { segmentDensity01, segmentEffectiveSpeedMps } from '@core/transit/gradeEffects';
+import { fleetSummary, peakUnitsRequired, periodTargetHeadway } from '@core/ops';
+import { PERIODS, PERIOD_LABEL, type Period } from '@core/ops/periods';
 import type { AnalyticsInsights } from '@core/analytics';
 import type { GameState, LifetimeLedger, RouteDef } from '@core/types';
 
@@ -39,6 +41,18 @@ export interface UiRouteExtras {
    *  surface lines drop under traffic (grade congestion); elevated/tunnel stay
    *  at mode cruise. 0 when no state/segments are available. */
   avgEffectiveSpeed: number;
+  // ── v0.9 System A (Operations) — additive; older clients ignore ──
+  /** rolling on-time fraction 0..1 (the keystone reliability metric). */
+  onTimePct: number;
+  /** rolling average delay per departure, seconds. */
+  avgDelaySec: number;
+  /** units running service RIGHT NOW (assigned fleet minus units down, capped
+   *  by the current period's target). */
+  inServiceVehicles: number;
+  /** vehicles the route needs to fully run its peak-period schedule. */
+  peakUnitsRequired: number;
+  /** per-period target headway (seconds) for the frequency schedule. */
+  frequency: Record<Period, number>;
 }
 
 /** Length-weighted mean of per-segment grade-effective speeds at `todFactor`. */
@@ -61,11 +75,18 @@ export function routeAvgEffectiveSpeed(state: GameState, r: RouteDef, todFactor:
 export function routeExtras(r: RouteDef, todFactor: number, state?: GameState): UiRouteExtras {
   const operatingCost = routeOperatingCost(r.mode, r.vehicleCount);
   const crowding = r.crowding ?? 0;
+  const frequency = {} as Record<Period, number>;
+  for (const p of PERIODS) frequency[p] = periodTargetHeadway(r, p);
   return {
     operatingCost,
     farebox: operatingCost > 0 ? r.dailyRevenue / operatingCost : 0,
     liveCrowding: crowding * todFactor,
     avgEffectiveSpeed: state ? routeAvgEffectiveSpeed(state, r, todFactor) : 0,
+    onTimePct: r.onTimePct ?? 1,
+    avgDelaySec: r.avgDelaySec ?? 0,
+    inServiceVehicles: r.inServiceVehicles ?? 0,
+    peakUnitsRequired: state ? peakUnitsRequired(state, r) : 0,
+    frequency,
   };
 }
 
@@ -132,6 +153,23 @@ export interface UiStateExtras {
   scenarioProgression?: ScenarioProgressionManifest;
   /** spatial analytics insights; omitted until the first analytics day closes */
   analytics?: AnalyticsInsights;
+  // ── v0.9 System A (Operations) — additive; older clients ignore ──
+  /** fleet-wide summary (counts, average condition + age). */
+  fleet?: {
+    total: number;
+    active: number;
+    maintenance: number;
+    brokenDown: number;
+    avgCondition: number;
+    avgAgeDays: number;
+  };
+  /** placed maintenance depots (id + mode + world position). */
+  depots?: { id: number; mode: string; x: number; y: number }[];
+  /** active breakdown incidents (route + remaining ticks). */
+  incidents?: { id: number; routeId: number; ticksLeft: number }[];
+  /** the current service period id + label (AM peak / midday / ...). */
+  servicePeriod?: string;
+  servicePeriodLabel?: string;
 }
 
 /** The current time-of-day factor for `s`; hand to `routeExtras` per route so
@@ -176,5 +214,12 @@ export function uiExtras(s: GameState): UiStateExtras {
   if (s.budget.lifetime) extras.lifetime = s.budget.lifetime;
   if (s.scenario) extras.scenarioState = buildScenarioState(s.scenario, s);
   if (s.analytics) extras.analytics = s.analytics.insights;
+  // v0.9 System A: fleet summary, depots, active incidents, current period.
+  extras.fleet = fleetSummary(s);
+  extras.depots = (s.depots ?? []).map((d) => ({ id: d.id, mode: d.mode, x: d.pos.x, y: d.pos.y }));
+  extras.incidents = (s.incidents ?? []).map((i) => ({ id: i.id, routeId: i.routeId, ticksLeft: i.ticksLeft }));
+  const period = (s.opsPeriod ?? 'midday') as Period;
+  extras.servicePeriod = period;
+  extras.servicePeriodLabel = PERIOD_LABEL[period];
   return extras;
 }

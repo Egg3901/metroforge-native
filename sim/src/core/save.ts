@@ -7,10 +7,15 @@ import Ajv from 'ajv';
 import { fieldsFromJSON, fieldsToJSON } from './fields';
 import { makePolyline } from './geometry';
 import { nextInstanceId } from './instance';
+import { initOps } from './ops';
 import { climateTable, weatherAt } from './weather';
 import type { GameState, RoadEdge, TrackSegment } from './types';
 
-export const SAVE_VERSION = 2;
+/** v3 (v0.9 System A): adds the operations sub-state (fleet ledger, depots,
+ *  breakdown incidents, dedicated ops RNG stream, per-route frequency +
+ *  reliability). All additive; legacy v1/v2 saves load and have their ops
+ *  sub-state seeded by `initOps` on deserialize (SaveMeta-style migration). */
+export const SAVE_VERSION = 3;
 
 /**
  * Runtime schema for the untrusted save envelope. Deserialization used to cast
@@ -113,7 +118,7 @@ export function deserialize(json: string): GameState {
     throw new Error(`corrupt save: ${where} ${e?.message ?? 'failed schema validation'}`);
   }
   const raw = parsed as { version: number; bankruptDays?: number; state: Record<string, unknown> };
-  if (raw.version !== 1 && raw.version !== SAVE_VERSION) {
+  if (raw.version < 1 || raw.version > SAVE_VERSION) {
     throw new Error(`Unsupported save version ${raw.version} (expected 1..${SAVE_VERSION})`);
   }
   const s = raw.state as unknown as Omit<GameState, 'fields' | 'roads' | 'tracks'> & {
@@ -166,6 +171,10 @@ export function deserialize(json: string): GameState {
   if (s.globalDemandMultDaysLeft !== undefined) restored.globalDemandMultDaysLeft = s.globalDemandMultDaysLeft;
   // migrate older saves missing rolling cash-flow history
   if (!restored.budget.netHistory) restored.budget.netHistory = [];
+  // v0.9 System A migration: seed (or reconcile) the ops sub-state. Idempotent —
+  // a v3 save already carries fleet/depots/incidents; a v1/v2 save gets them
+  // built here and its fleet reconciled to each route's vehicleCount.
+  initOps(restored);
   // recompute the (transient) sky from seed+tick+city so a just-loaded save has
   // weather before its first tick. Pure fn ⇒ identical to a never-saved run.
   restored.weather = weatherAt(restored.seed, restored.tick, climateTable(restored.cityKey));
@@ -191,7 +200,17 @@ export function stateHash(state: GameState): number {
   for (const r of state.routes) {
     mix(r.dailyRidership);
     mix(r.vehicleCount);
+    // v0.9 ops: reliability is part of the deterministic state. Hashing it means
+    // ops legitimately changes hashes vs the pre-v0.9 base, while same-seed
+    // reproducibility (the real invariant) is preserved.
+    mix(r.onTimePct ?? 1);
   }
   for (const v of state.vehicles) mix(v.along);
+  // v0.9 ops: fleet condition + status and active incident count.
+  for (const u of state.fleet ?? []) {
+    mix(u.condition);
+    mix(u.status === 'active' ? 0 : u.status === 'maintenance' ? 1 : 2);
+  }
+  mix((state.incidents ?? []).length);
   return h;
 }
