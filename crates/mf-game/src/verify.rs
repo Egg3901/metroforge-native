@@ -174,13 +174,17 @@ fn frame_elevated(rig: &mut CameraRig, center: Vec2) {
 /// the rig untouched) when `MF_VERIFY_TARGET` is unset, so the default verify
 /// sequence is byte-identical to before.
 fn apply_target_override(rig: &mut CameraRig) {
-    let Some(t) = std::env::var_os("MF_VERIFY_TARGET") else {
-        return;
-    };
-    let s = t.to_string_lossy();
-    let mut it = s.split(',').filter_map(|v| v.trim().parse::<f32>().ok());
-    if let (Some(x), Some(z)) = (it.next(), it.next()) {
-        rig.target = Vec2::new(x, z);
+    // `MF_VERIFY_TARGET` recenters the framing; it is OPTIONAL — the
+    // dist/pitch/yaw knobs below apply on their own too, so the legibility
+    // capture matrix can re-zoom (street ~800m / overview ~4km) or tilt to an
+    // oblique bridge/interchange angle around the auto-picked dense center
+    // without having to hardcode each city's world coordinates.
+    if let Some(t) = std::env::var_os("MF_VERIFY_TARGET") {
+        let s = t.to_string_lossy();
+        let mut it = s.split(',').filter_map(|v| v.trim().parse::<f32>().ok());
+        if let (Some(x), Some(z)) = (it.next(), it.next()) {
+            rig.target = Vec2::new(x, z);
+        }
     }
     let envf = |k: &str| {
         std::env::var(k)
