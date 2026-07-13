@@ -332,6 +332,7 @@ pub struct Strings {
     pub route_paused_suffix: &'static str,
     pub crowding_prefix: &'static str,
     pub route_update_failed_prefix: &'static str,
+    pub route_diagram_stops_suffix: &'static str,
 
     // --- Shortcuts help overlay (? / Slash) -----------------------------
     pub shortcuts_title: &'static str,
@@ -648,6 +649,7 @@ pub static EN: Strings = Strings {
     route_paused_suffix: " · paused",
     crowding_prefix: "Crowding ",
     route_update_failed_prefix: "Route update failed: ",
+    route_diagram_stops_suffix: " stops",
 
     shortcuts_title: "Shortcuts",
     shortcuts_hint: "Press ? or Esc to close",
@@ -1013,6 +1015,10 @@ impl Strings {
     pub fn route_update_failed(&self, detail: &str) -> String {
         format!("{}{detail}", self.route_update_failed_prefix)
     }
+
+    pub fn route_diagram_stops(&self, count: usize) -> String {
+        format!("{count}{}", self.route_diagram_stops_suffix)
+    }
 }
 
 /// Walk every `&'static str` field on the active table (used by the dash
@@ -1274,6 +1280,7 @@ pub fn all_static_strings(s: &Strings) -> Vec<&'static str> {
         s.route_paused_suffix,
         s.crowding_prefix,
         s.route_update_failed_prefix,
+        s.route_diagram_stops_suffix,
         s.shortcuts_title,
         s.shortcuts_hint,
         s.sc_section_camera,
