@@ -430,6 +430,62 @@ pub fn emissive(color: Color, strength: f32) -> LinearRgba {
     LinearRgba::rgb(l.red * strength, l.green * strength, l.blue * strength)
 }
 
+// ---------------------------------------------------------------------------
+// Diorama strata (v0.8 Underground / Captain Toad art-direction amendment).
+// The floating-slab cut sides and the cutaway cut-face display clean banded
+// flat-color geology. Per the BINDING art direction these muted earth tones
+// are "the only non-transit color family besides water/parks", so — unlike
+// route colors — they are NOT theme-indexed or colorblind-remapped: a single
+// authored earth palette reads correctly on the white Light city and the dark
+// themes alike (the bands sit on the slab's own shaded sides, not the bright
+// tabletop). Warm tan fill → muted ochre clay → grey-brown rock → darkest
+// bedrock, plus a thin vivid blue water-table line.
+// ---------------------------------------------------------------------------
+
+/// Fill / soil band — warm tan (topmost).
+pub fn strata_fill() -> Color {
+    hex(0xc9, 0xa9, 0x76)
+}
+
+/// Clay / sand band — muted ochre.
+pub fn strata_clay() -> Color {
+    hex(0xb0, 0x8b, 0x55)
+}
+
+/// Competent-rock band — grey-brown.
+pub fn strata_rock() -> Color {
+    hex(0x7a, 0x70, 0x62)
+}
+
+/// Deep basement rock — darkest.
+pub fn strata_bedrock() -> Color {
+    hex(0x45, 0x40, 0x3a)
+}
+
+/// Thin water-table line drawn across the strata (vivid blue; animated on
+/// Medium+). Shares the water hue family so it reads as "groundwater".
+pub fn strata_water_table() -> Color {
+    hex(0x3f, 0xa9, 0xe0)
+}
+
+/// The band color for a reconstructed [`crate::geology::Stratum`].
+pub fn strata_color(kind: crate::geology::Stratum) -> Color {
+    use crate::geology::Stratum;
+    match kind {
+        Stratum::Fill => strata_fill(),
+        Stratum::Clay => strata_clay(),
+        Stratum::Rock => strata_rock(),
+        Stratum::Bedrock => strata_bedrock(),
+    }
+}
+
+/// Soft dark quad drawn on the backdrop under the floating slab so the diorama
+/// reads as a model hovering in the void (art-direction amendment: "gentle
+/// contact shadow under the slab so it floats"). Translucent near-black.
+pub fn contact_shadow() -> Color {
+    hexa(0x00, 0x00, 0x00, 0.28)
+}
+
 /// Mode accent tints for station marker rings (body stays white).
 pub fn mode_accent(mode: mf_protocol::TransitMode) -> Color {
     let (r, g, b) = if let Some(remap) = accent_remap(current_colorblind_mode()) {

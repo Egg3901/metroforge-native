@@ -13,6 +13,7 @@ use crate::day_night::DayNightEnabled;
 use crate::demand::LatestDemand;
 use crate::fields::LatestFields;
 use crate::frame::LatestFrame;
+use crate::geology::{ClipPlane, GeologyContext};
 use crate::height::HeightAt;
 use crate::overlay::OverlayState;
 use crate::quality::{
@@ -42,6 +43,8 @@ impl Plugin for MfStatePlugin {
             .init_resource::<Theme>()
             .init_resource::<ColorblindMode>()
             .init_resource::<SubwayView>()
+            .init_resource::<GeologyContext>()
+            .init_resource::<ClipPlane>()
             .init_resource::<HeightAt>()
             .init_resource::<RevealState>()
             .init_resource::<LatestDemand>()
