@@ -311,6 +311,11 @@ struct PlannedLine {
     /// Several routes over the same station pairs is what triggers
     /// `transit.rs`'s parallel-offset bundling (the rainbow corridor).
     reuse: Option<(usize, usize, usize)>,
+    /// Per-pair track grades (`positions.len()-1` entries when set). Empty =
+    /// every pair Surface (the original demo network). `MF_VERIFY_STRUCTURES`
+    /// injects metro lines with Elevated / Tunnel pairs here so the scripted
+    /// structure kit (viaducts, portals, rail bridge) has features to place.
+    grades: Vec<TrackGrade>,
 }
 
 /// Station spacing shared by every line below.
@@ -374,6 +379,7 @@ fn build_plan(center: Vec2, world_half: f32) -> Vec<PlannedLine> {
         .collect(),
         vehicle_count: NETWORK_BUS_VEHICLES,
         reuse: None,
+        grades: Vec::new(),
     };
 
     let line_north_south = PlannedLine {
@@ -388,6 +394,7 @@ fn build_plan(center: Vec2, world_half: f32) -> Vec<PlannedLine> {
         .collect(),
         vehicle_count: NETWORK_BUS_VEHICLES,
         reuse: None,
+        grades: Vec::new(),
     };
 
     let line_diagonal = PlannedLine {
@@ -410,6 +417,7 @@ fn build_plan(center: Vec2, world_half: f32) -> Vec<PlannedLine> {
         .collect(),
         vehicle_count: NETWORK_BUS_VEHICLES,
         reuse: None,
+        grades: Vec::new(),
     };
 
     // Two extra routes over the west-east line's existing stations: three
@@ -422,12 +430,14 @@ fn build_plan(center: Vec2, world_half: f32) -> Vec<PlannedLine> {
         positions: Vec::new(),
         vehicle_count: NETWORK_BUS_VEHICLES,
         reuse: Some((0, 0, 4)),
+        grades: Vec::new(),
     };
     let route_short_turn = PlannedLine {
         mode: TransitMode::Bus,
         positions: Vec::new(),
         vehicle_count: NETWORK_BUS_VEHICLES,
         reuse: Some((0, 1, 3)),
+        grades: Vec::new(),
     };
 
     vec![
@@ -437,6 +447,134 @@ fn build_plan(center: Vec2, world_half: f32) -> Vec<PlannedLine> {
         route_express,
         route_short_turn,
     ]
+}
+
+/// `MF_VERIFY_STRUCTURES`: extra metro lines appended to [`build_plan`] so the
+/// scripted structure kit (`mf-render/src/structures.rs`) has real features to
+/// place in a screenshot run: an all-ELEVATED line (rail viaduct segments), a
+/// TUNNEL->Surface line (concrete portal at the surfacing station), and a
+/// water-crossing Surface line (girder rail bridge over the over-water chord).
+/// Requires sandbox (autostart forces it under this flag) so metro is unlocked.
+///
+/// The water crossing is found by ray-sampling `HeightAt` from `center` in 16
+/// directions: the first direction whose ray hits a >=80m water run within
+/// `world_half` gets a 2-station line whose stations sit ~250m inland of each
+/// shore. `None` if the city has no reachable water (line skipped).
+fn build_structures_plan(
+    center: Vec2,
+    world_half: f32,
+    height_at: &mf_state::HeightAt,
+) -> Vec<PlannedLine> {
+    let clamp = |p: Vec2| clamp_to_world(p, world_half);
+    let mut out = Vec::new();
+
+    // (b) Elevated metro line: 4 stations, every pair Elevated.
+    out.push(PlannedLine {
+        mode: TransitMode::Metro,
+        positions: axis_positions(
+            -NETWORK_SHORT_HALF_SPAN,
+            NETWORK_SHORT_HALF_SPAN,
+            NETWORK_LINE_STEP,
+        )
+        .into_iter()
+        .map(|x| clamp(Vec2::new(center.x + x, center.y - 700.0)))
+        .collect(),
+        vehicle_count: NETWORK_BUS_VEHICLES,
+        reuse: None,
+        grades: vec![TrackGrade::Elevated; 3],
+    });
+
+    // (c-metro) Tunnel line surfacing at its last station: portal fires there.
+    out.push(PlannedLine {
+        mode: TransitMode::Metro,
+        positions: vec![
+            clamp(Vec2::new(center.x - 700.0, center.y - 1400.0)),
+            clamp(Vec2::new(center.x - 100.0, center.y - 1400.0)),
+            clamp(Vec2::new(center.x + 500.0, center.y - 1400.0)),
+        ],
+        vehicle_count: NETWORK_BUS_VEHICLES,
+        reuse: None,
+        grades: vec![TrackGrade::Tunnel, TrackGrade::Surface],
+    });
+
+    // (d) Water-crossing Surface metro line -> rail bridge model.
+    const WATER_EPS: f32 = 0.01;
+    // Must clear structures.rs RAIL_BRIDGE_MIN_M (40m) comfortably.
+    const MIN_WATER_RUN_M: f32 = 80.0;
+    const STEP_M: f32 = 40.0;
+    const SHORE_INSET_M: f32 = 250.0;
+    // Mirrors mf-render terrain::WATER_LEVEL_Y (-0.4): HeightAt returns exactly
+    // that value on water cells, so <= WATER + eps is the same water test the
+    // renderer and structures.rs use.
+    let water_level = -0.4_f32;
+    let mut water_line = None;
+    'dirs: for k in 0..16 {
+        let ang = k as f32 * std::f32::consts::TAU / 16.0;
+        let dir = Vec2::new(ang.cos(), ang.sin());
+        let mut d = STEP_M;
+        while d < world_half * 0.9 {
+            let p = center + dir * d;
+            if height_at.sample(p.x, p.y) <= water_level + WATER_EPS {
+                // Found a shore: measure the water run.
+                let start = d;
+                let mut e = d;
+                while e < world_half * 0.95 {
+                    let q = center + dir * e;
+                    if height_at.sample(q.x, q.y) > water_level + WATER_EPS {
+                        break;
+                    }
+                    e += STEP_M;
+                }
+                if e - start >= MIN_WATER_RUN_M {
+                    // Land-verify both stations: walk each end along the ray
+                    // until 3 consecutive samples are dry land (rivers can be
+                    // wider than one probe step; a station on water is
+                    // rejected by the sim). Give up on this direction if the
+                    // far side never dries out within bounds.
+                    let is_land = |d: f32| {
+                        let p = center + dir * d;
+                        height_at.sample(p.x, p.y) > water_level + WATER_EPS
+                    };
+                    let land_run = |mut d: f32, step: f32| -> Option<f32> {
+                        let mut run = 0;
+                        while d > STEP_M && d < world_half * 0.95 {
+                            if is_land(d) {
+                                run += 1;
+                                if run >= 3 {
+                                    return Some(d - step); // center of the run
+                                }
+                            } else {
+                                run = 0;
+                            }
+                            d += step;
+                        }
+                        None
+                    };
+                    let near = land_run(start - SHORE_INSET_M, -STEP_M);
+                    let far = land_run(e + SHORE_INSET_M, STEP_M);
+                    if let (Some(da), Some(db)) = (near, far) {
+                        water_line = Some((clamp(center + dir * da), clamp(center + dir * db)));
+                        break 'dirs;
+                    }
+                }
+                d = e; // skip past this (too-short) run
+            }
+            d += STEP_M;
+        }
+    }
+    match water_line {
+        Some((a, b)) => out.push(PlannedLine {
+            mode: TransitMode::Metro,
+            positions: vec![a, b],
+            vehicle_count: NETWORK_BUS_VEHICLES,
+            reuse: None,
+            grades: vec![TrackGrade::Surface],
+        }),
+        None => tracing::warn!(
+            "verify structures: no >={MIN_WATER_RUN_M}m water run reachable from the dense center; rail-bridge line skipped"
+        ),
+    }
+    out
 }
 
 /// Which wire command a [`NetworkBuildState`] is currently waiting on a
@@ -573,20 +711,26 @@ impl NetworkBuildState {
                         );
                         continue; // no command sent, no seq consumed
                     };
-                    return Some(self.send(
-                        current_frame,
-                        PendingKind::Track {
-                            line: line_idx,
-                            pair,
-                        },
-                        Command::BuildTrack {
-                            mode: line.mode,
-                            grade: TrackGrade::Surface,
-                            from_station_id: from_id,
-                            to_station_id: to_id,
-                            waypoints: Vec::new(),
-                        },
-                    ));
+                    return Some(
+                        self.send(
+                            current_frame,
+                            PendingKind::Track {
+                                line: line_idx,
+                                pair,
+                            },
+                            Command::BuildTrack {
+                                mode: line.mode,
+                                grade: line
+                                    .grades
+                                    .get(pair)
+                                    .copied()
+                                    .unwrap_or(TrackGrade::Surface),
+                                from_station_id: from_id,
+                                to_station_id: to_id,
+                                waypoints: Vec::new(),
+                            },
+                        ),
+                    );
                 }
                 LinePhase::Route => {
                     let ids: Vec<i64> = match line.reuse {
@@ -717,6 +861,7 @@ fn verify_sequence_system(
     dense_center: Res<BuildingsDenseCenter>,
     mut pause: ResMut<crate::state::PauseState>,
     city: Res<CurrentCity>,
+    height_at: Res<mf_state::HeightAt>,
     mut sim_events: EventReader<SimEvent>,
 ) {
     // Promo mode (MF_PROMO_DIR without MF_VERIFY_DIR): this machine only
@@ -729,7 +874,8 @@ fn verify_sequence_system(
     else {
         return;
     };
-    let network_enabled = std::env::var_os("MF_VERIFY_NETWORK").is_some();
+    let structures_enabled = std::env::var_os("MF_VERIFY_STRUCTURES").is_some();
+    let network_enabled = std::env::var_os("MF_VERIFY_NETWORK").is_some() || structures_enabled;
     state.frame += 1;
 
     if !state.speed_sent {
@@ -782,10 +928,15 @@ fn verify_sequence_system(
                         .send(ToSim::SetSpeed(SetSpeedPayload { speed: 0.0 }));
                 }
                 if network_enabled {
-                    state.network = Some(NetworkBuildState::new(build_plan(
-                        dense_center.0,
-                        world_half(&city),
-                    )));
+                    let mut plan = build_plan(dense_center.0, world_half(&city));
+                    if structures_enabled {
+                        plan.extend(build_structures_plan(
+                            dense_center.0,
+                            world_half(&city),
+                            &height_at,
+                        ));
+                    }
+                    state.network = Some(NetworkBuildState::new(plan));
                     advance_to = Some(Stage::NetworkBuild);
                 } else {
                     advance_to = Some(Stage::Elevated);
@@ -1107,6 +1258,7 @@ mod network_build_state_tests {
             ],
             vehicle_count: 5,
             reuse: None,
+            grades: Vec::new(),
         }]
     }
 

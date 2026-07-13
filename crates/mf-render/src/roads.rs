@@ -306,25 +306,12 @@ fn append_tunnel_portals(
         );
         buf.push_flat_quad(m0, m1, m2, m3, Vec3::Y, mouth_color);
 
-        // 3. Portal frame: two abutment posts flanking the mouth + a lintel bar
-        //    spanning them, all in the darker frame tone, so the entrance reads
-        //    as a built structure at oblique zoom.
-        let post_half = (width * 0.16).clamp(1.5, 3.5);
-        let post_h = (SLAB_THICKNESS + GRADE_STEP_Y * 0.45).max(4.0);
-        for s in [1.0_f32, -1.0] {
-            let c = mouth + perp_u * (half + post_half * 0.6) * s;
-            append_cuboid(
-                buf,
-                c,
-                ground,
-                post_half,
-                post_half,
-                post_h,
-                frame_color,
-                frame_color,
-                frame_color,
-            );
-        }
+        // The 3D portal FRAME (abutment posts + lintel + coping + wing walls)
+        // is now the scripted concrete portal model placed by `structures.rs`;
+        // this module keeps only the flat ground apron + recessed-mouth decal
+        // above so the road reads as diving underground even on Potato (which
+        // still gets the model, all-tier). No extruded box posts here anymore
+        // (they duplicated the model's frame).
     }
 }
 
@@ -548,6 +535,13 @@ fn build_roads_system(
     let bridged_roads: std::collections::HashSet<usize> =
         crate::bridges::plan_bridge_placements(city_json, &height_at).covered_roads;
 
+    // Medium+ replaces the extruded elevated deck+piers of a graded road with a
+    // scripted viaduct model (structures.rs). Suppress the slab edge / support
+    // piers / deck hairlines for those roads on the model tiers; Potato/Low
+    // (`unlit_material`) keep the cheap extrusion as the fallback. The road
+    // ribbon is kept in both cases — it rides on the model deck.
+    let model_viaduct_tier = !effective.0.unlit_material;
+
     for (road_idx, road) in city_json.roads.iter().enumerate() {
         let raw: Vec<Vec2> = road
             .points
@@ -630,7 +624,8 @@ fn build_roads_system(
             .zip(pts.iter())
             .map(|(h, p)| h - sample(p.x, p.y))
             .fold(0.0_f32, f32::max);
-        if peak_lift > ELEVATED_EPS && !bridged_roads.contains(&road_idx) {
+        let model_viaduct = model_viaduct_tier && crate::structures::is_road_viaduct(road);
+        if peak_lift > ELEVATED_EPS && !bridged_roads.contains(&road_idx) && !model_viaduct {
             // Visible slab thickness on both edges...
             append_deck_slab(
                 &mut state.scratch_detail,

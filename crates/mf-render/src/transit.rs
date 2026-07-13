@@ -708,12 +708,19 @@ fn rebuild_tracks(
         }
 
         // Water-crossing side rails (surface + elevated decks over water).
-        if !is_tunnel_grade(&t.grade) {
+        // Suppressed where structures.rs drops a girder rail-bridge model over
+        // the crossing (its own parapets carry the edge); the ribbon still
+        // rides on the model deck. Bus / short crossings keep the cheap rails.
+        if !is_tunnel_grade(&t.grade)
+            && !crate::structures::track_gets_rail_bridge(&raw_pts, height_at, t.mode)
+        {
             append_bridge_rails(&mut rail_buf, &pts, &heights, &water, width, rail_color);
         }
 
-        // Tunnel portals where grade transitions at either endpoint.
-        if is_tunnel_grade(&t.grade) {
+        // Tunnel portals where grade transitions at either endpoint. Potato/
+        // Low only: on Medium+ structures.rs places the scripted concrete
+        // portal model instead (no double-render).
+        if unlit && is_tunnel_grade(&t.grade) {
             let total = *cum.last().unwrap_or(&0.0);
             if start_grade != t.grade && total > 1.0 {
                 let (pos, dir) = point_along(&pts, &cum, 0.0);
@@ -742,7 +749,9 @@ fn rebuild_tracks(
         }
 
         // Elevated viaduct piers — chunk-batched cuboids down to terrain.
-        if is_elevated_grade(&t.grade) {
+        // Potato/Low only: Medium+ gets the scripted trestle viaduct model
+        // (structures.rs), so the cheap piers are suppressed there.
+        if unlit && is_elevated_grade(&t.grade) {
             let total = *cum.last().unwrap_or(&0.0);
             if total >= PIER_SPACING_M * 0.5 {
                 let mut d = PIER_SPACING_M * 0.5;

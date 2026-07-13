@@ -592,6 +592,12 @@ fn autostart_system(
         return;
     }
     pending.preset_key = preset.to_string();
+    // MF_VERIFY_STRUCTURES needs metro (and cash) for its injected lines:
+    // sandbox unlocks all modes / unlimited funds, exactly the manual
+    // sandbox toggle a player could click. Verify-harness-only surface.
+    if std::env::var_os("MF_VERIFY_STRUCTURES").is_some() {
+        pending.sandbox = true;
+    }
     // Optional deterministic seed for the strata / diorama screenshot harness
     // (the autostart default otherwise randomizes via `rand_seed`, which makes
     // the geology noise draw non-reproducible). `MF_SEED=<u64>`; a malformed
