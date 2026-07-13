@@ -965,6 +965,10 @@ pub enum IconKind {
     Undo,
     Bus,
     Tram,
+    /// A shed silhouette (pitched roof over a square body) - the maintenance
+    /// depot placement tool. Stroke-only per this module's single-stroke
+    /// brief; reads as "building where vehicles are serviced" at toolbar size.
+    Depot,
     /// A ring with a single stroke through it - cash/fare glyph, used for
     /// the route panel's fare control.
     Coin,
@@ -1094,6 +1098,24 @@ pub fn icon(
             let wr = rect.width() * 0.06;
             painter.circle_filled(pt(rect, 0.30, 0.76), wr, color);
             painter.circle_filled(pt(rect, 0.70, 0.76), wr, color);
+        }
+        IconKind::Depot => {
+            // Pitched roof over a square body, plus a doorway line, so it
+            // reads as a shed/garage rather than a plain house.
+            let roof = [
+                pt(rect, 0.18, 0.46),
+                pt(rect, 0.5, 0.22),
+                pt(rect, 0.82, 0.46),
+            ];
+            painter.line(roof.to_vec(), stroke);
+            let body = egui::Rect::from_min_max(pt(rect, 0.24, 0.46), pt(rect, 0.76, 0.82));
+            painter.rect_stroke(
+                body,
+                egui::CornerRadius::same(1),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.line_segment([pt(rect, 0.5, 0.56), pt(rect, 0.5, 0.82)], stroke);
         }
         IconKind::Coin => {
             let center = pt(rect, 0.5, 0.5);
@@ -1545,6 +1567,7 @@ mod tests {
                 IconKind::Undo,
                 IconKind::Bus,
                 IconKind::Tram,
+                IconKind::Depot,
                 IconKind::Coin,
                 IconKind::Star,
             ] {
@@ -1708,6 +1731,7 @@ mod sparkline_tests {
                 IconKind::Undo,
                 IconKind::Bus,
                 IconKind::Tram,
+                IconKind::Depot,
                 IconKind::Coin,
                 IconKind::Star,
             ] {

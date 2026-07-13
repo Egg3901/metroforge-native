@@ -68,6 +68,14 @@ pub enum CmdMeta {
     EditRoute {
         route_id: i64,
     },
+    /// Operations (v0.9 A1): set one service period's target headway.
+    SetRouteFrequency {
+        route_id: i64,
+    },
+    /// Operations (v0.9 A4): place a maintenance depot for a mode.
+    BuildDepot {
+        mode: TransitMode,
+    },
     Demolish,
     Undo,
     Query,
@@ -268,7 +276,15 @@ fn inverse_for(meta: &CmdMeta, created_id: Option<i64>) -> Option<Command> {
         }
         CmdMeta::BuildTrack { .. } => created_id.map(|id| Command::DemolishTrack { track_id: id }),
         CmdMeta::CreateRoute { .. } => created_id.map(|id| Command::DeleteRoute { route_id: id }),
-        CmdMeta::EditRoute { .. } | CmdMeta::Demolish | CmdMeta::Undo | CmdMeta::Query => None,
+        // Depot placement has no demolish command in the sim contract, and a
+        // frequency change is a value edit, not an entity creation. Neither is
+        // undoable, so both are simply never pushed onto the stack.
+        CmdMeta::EditRoute { .. }
+        | CmdMeta::SetRouteFrequency { .. }
+        | CmdMeta::BuildDepot { .. }
+        | CmdMeta::Demolish
+        | CmdMeta::Undo
+        | CmdMeta::Query => None,
     }
 }
 

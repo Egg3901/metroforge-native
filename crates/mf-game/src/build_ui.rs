@@ -299,6 +299,20 @@ fn build_toolbar_system(
                     sfx.write(PlaySfx(Sfx::Confirm));
                 }
 
+                if icon_button(
+                    ui,
+                    ds::IconKind::Depot,
+                    matches!(current_tool, ActiveTool::PlaceDepot(_)),
+                    true,
+                    false,
+                    s.tool_depot,
+                    &mut hovered,
+                    &mut sfx,
+                ) {
+                    tools.active = ActiveTool::PlaceDepot(TransitMode::Bus);
+                    sfx.write(PlaySfx(Sfx::Confirm));
+                }
+
                 ui.add_space(ds::SPACE_SM);
                 ui.add(egui::Separator::default().vertical().shrink(6.0));
                 ui.add_space(ds::SPACE_SM);
@@ -397,6 +411,7 @@ fn contextual_strip_text(
             ))
         }
         ActiveTool::Bulldoze => Some((s.bulldoze_context.to_string(), ds::WARN)),
+        ActiveTool::PlaceDepot(_) => Some((s.tool_depot_context.to_string(), ds::text())),
     }
 }
 

@@ -110,6 +110,10 @@ pub enum ActiveTool {
     PlaceStation(TransitMode),
     Route,
     Bulldoze,
+    /// Operations (v0.9 A4): place a maintenance depot for one mode. The sim
+    /// allows one depot per mode; a second placement for the same mode bounces
+    /// with an error chime, tool left active to retry.
+    PlaceDepot(TransitMode),
 }
 
 /// What a clean world click picked while the Select tool (`ActiveTool::None`)
@@ -417,6 +421,31 @@ fn tool_click_system(
             ActiveTool::Bulldoze => {
                 handle_bulldoze_click(&mut tool, ground, ui, link, &mut bus);
             }
+            ActiveTool::PlaceDepot(mode) => {
+                // Depots snap to the plain grid cell (no road frontage): they
+                // are yards, not street-fronting stops. Reject water up front
+                // with an error chime; the sim's one-per-mode rule surfaces as
+                // an error reply, handled in `command_feedback_system`.
+                let valid = depot_placement_valid(
+                    ground,
+                    city.static_city.as_ref(),
+                    fields.0.as_ref().map(|f| f.water.as_slice()),
+                );
+                if !valid {
+                    sfx.write(PlaySfx(Sfx::Error));
+                } else {
+                    let pos = WireVec2 {
+                        x: ground.x as f64,
+                        y: ground.y as f64,
+                    };
+                    let seq = bus.submit(
+                        link,
+                        Command::BuildDepot { mode, pos },
+                        CmdMeta::BuildDepot { mode },
+                    );
+                    tool.pending_seqs.insert(seq);
+                }
+            }
         }
     }
 
@@ -612,7 +641,7 @@ fn command_feedback_system(
         }
         let kind = if fb.ok {
             match fb.meta {
-                CmdMeta::BuildStation { .. } => Sfx::Placement,
+                CmdMeta::BuildStation { .. } | CmdMeta::BuildDepot { .. } => Sfx::Placement,
                 _ => Sfx::Confirm,
             }
         } else {
@@ -819,6 +848,27 @@ fn tool_gizmo_system(
                 cursor_world,
                 BULLDOZE_GHOST_RADIUS_M,
                 bulldoze_red(),
+            );
+        }
+        ActiveTool::PlaceDepot(_) => {
+            let ground = Vec2::new(cursor_world.x, cursor_world.z);
+            let valid = depot_placement_valid(
+                ground,
+                city.static_city.as_ref(),
+                fields.0.as_ref().map(|f| f.water.as_slice()),
+            );
+            let tint = if valid { valid_green() } else { bulldoze_red() };
+            // A slightly larger footprint than a station reads as "yard".
+            draw_ground_circle(
+                &mut gizmos,
+                cursor_world,
+                STATION_GHOST_RADIUS_M * 1.4,
+                tint,
+            );
+            gizmos.line(
+                cursor_world,
+                cursor_world + Vec3::Y * STATION_GHOST_HEIGHT_M,
+                tint,
             );
         }
     }
@@ -1136,6 +1186,27 @@ fn placement_valid(
         }
     }
     nearest_station_id(stations, pos, STATION_MIN_SEPARATION_M).is_none()
+}
+
+/// Whether a depot may be placed at `pos`: on the map and not over water.
+/// Mirrors the sim's `buildDepot` guard (it only rejects water), so unlike a
+/// station a depot has no minimum-separation or occupancy check here. The
+/// one-per-mode rule lives in the sim and surfaces as an error chime.
+fn depot_placement_valid(pos: Vec2, city: Option<&StaticCityJson>, water: Option<&[u8]>) -> bool {
+    if let Some(city) = city {
+        let grid = CityGrid::from_city(city);
+        let (cx, cy) = grid.cell_of(pos);
+        if !grid.in_bounds(cx, cy) {
+            return false;
+        }
+        if let Some(water) = water {
+            let idx = (cy * grid.field_w + cx) as usize;
+            if water.get(idx).copied().unwrap_or(0) >= 1 {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Closest point ON segment `a..b` to `p` (clamped to the endpoints).
