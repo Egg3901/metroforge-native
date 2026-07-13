@@ -455,7 +455,40 @@ function buildBuildingsExport(
   const keptOutlines = outlines.filter((_, i) => !suppressed[i]);
   const outlinesSuppressed = outlines.length - keptOutlines.length;
 
-  const buildings: BuildingRecord[] = [...keptOutlines.map((o) => o.rec), ...parts];
+  const merged: BuildingRecord[] = [...keptOutlines.map((o) => o.rec), ...parts];
+  // Dedupe byte-identical footprints with overlapping vertical extents
+  // (issue #141): a way that is both a standalone element and a member of a
+  // walked relation arrives twice (e.g. Central Park Tower: two identical
+  // rings at 466 m and 472 m). Extruding both makes coincident walls that
+  // z-fight and self-shadow into a solid black tower. Keep the tallest of
+  // each identical-ring group; drop the rest only when their [mh, h) extent
+  // overlaps a kept one, so legitimate same-footprint vertical stacking
+  // (spire above tower body) survives. h=0 (unknown) is treated as covering
+  // everything — unknown twins would resolve to the same fallback height.
+  const byRing = new Map<string, number[]>();
+  merged.forEach((b, i) => {
+    const k = b.v.join(',');
+    const g = byRing.get(k);
+    if (g) g.push(i);
+    else byRing.set(k, [i]);
+  });
+  const dropped = new Set<number>();
+  for (const group of byRing.values()) {
+    if (group.length < 2) continue;
+    const extent = (b: BuildingRecord): [number, number] =>
+      b.h === 0 ? [0, Number.MAX_SAFE_INTEGER] : [b.mh, b.h];
+    group.sort((a, b) => extent(merged[b]!)[1] - extent(merged[a]!)[1]);
+    const kept: [number, number][] = [];
+    for (const i of group) {
+      const [lo, hi] = extent(merged[i]!);
+      if (kept.some(([klo, khi]) => lo < khi && klo < hi)) dropped.add(i);
+      else kept.push([lo, hi]);
+    }
+  }
+  const buildings = merged.filter((_, i) => !dropped.has(i));
+  if (dropped.size > 0) {
+    console.log(`${key}: buildings dedupe dropped ${dropped.size} coincident duplicate footprints`);
+  }
   const bundle = { version: 2, buildings };
   const path = `src/data/cities/${key}.buildings.json`;
   const json = JSON.stringify(bundle);

@@ -66,14 +66,17 @@ fn reveal_input_system(
     };
     let dt = time.delta_secs();
 
-    // Harness determinism: under MF_VERIFY_DIR the X server still reports a
-    // default pointer position, which would put a reveal hole wherever that
-    // stray pointer's ray lands and make screenshots non-comparable between
-    // runs. Verify runs therefore ignore the real cursor entirely; setting
-    // MF_FORCE_REVEAL pins the hole to the camera target instead so the
-    // shader path still gets screenshot coverage.
-    let in_verify =
-        std::env::var_os("MF_VERIFY_DIR").is_some() || std::env::var_os("MF_PROMO_DIR").is_some();
+    // Harness determinism: under a capture harness the X server still
+    // reports a default pointer position, which would put a reveal hole
+    // wherever that stray pointer's ray lands and make screenshots
+    // non-comparable between runs (issue #141: exactly that stray hole over
+    // the dense center rendered a 472 m supertall as a solid black mass in
+    // every seam capture). Harness runs therefore ignore the real cursor
+    // entirely; setting MF_FORCE_REVEAL pins the hole to the camera target
+    // instead so the shader path still gets screenshot coverage.
+    let in_verify = std::env::var_os("MF_VERIFY_DIR").is_some()
+        || std::env::var_os("MF_PROMO_DIR").is_some()
+        || std::env::var_os("MF_SEAM_DIR").is_some();
     let forced = std::env::var_os("MF_FORCE_REVEAL").map(|_| rig.target);
     let cursor_ground = if in_verify {
         forced
