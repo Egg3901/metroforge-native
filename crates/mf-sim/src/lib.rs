@@ -20,6 +20,9 @@ pub mod hash;
 pub mod new_game;
 pub mod rng;
 pub mod save;
+// P3-TRANSIT ADDED: register the transit lane module (module declaration only;
+// no orchestrator wiring). REPORTED for integration reconcile.
+pub mod transit;
 pub mod types;
 
 pub use commands::{apply_command, CommandResult, SimCommand};
