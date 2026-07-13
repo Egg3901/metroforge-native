@@ -51,6 +51,14 @@ pub struct Strings {
     pub city: &'static str,
     pub continue_label: &'static str,
     pub difficulty: &'static str,
+    /// Scenario picker row label (#25).
+    pub scenario: &'static str,
+    /// Free-play option when no data-driven scenario is selected.
+    pub free_play: &'static str,
+    /// Sandbox mode toggle label (#25).
+    pub sandbox_mode: &'static str,
+    /// Hint under the sandbox toggle.
+    pub sandbox_hint: &'static str,
     /// Explicit shareable seed (#140): new-game seed row label.
     pub seed: &'static str,
     /// Prefix for the pause modal / load browser "Seed: 123" line — kept
@@ -375,6 +383,10 @@ pub static EN: Strings = Strings {
     city: "City",
     continue_label: "Continue",
     difficulty: "Difficulty",
+    scenario: "Scenario",
+    free_play: "Free play",
+    sandbox_mode: "Sandbox mode",
+    sandbox_hint: "Unlimited funds and all transit modes unlocked.",
     seed: "Seed",
     seed_prefix: "Seed: ",
     randomize: "Randomize",
@@ -1019,6 +1031,10 @@ pub fn all_static_strings(s: &Strings) -> Vec<&'static str> {
         s.city,
         s.continue_label,
         s.difficulty,
+        s.scenario,
+        s.free_play,
+        s.sandbox_mode,
+        s.sandbox_hint,
         s.seed,
         s.seed_prefix,
         s.randomize,

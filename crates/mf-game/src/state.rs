@@ -21,6 +21,7 @@ use crate::attract::AttractState;
 use crate::config::MfConfig;
 use crate::crash::SafeMode;
 use crate::saves::SaveManager;
+use crate::scenarios;
 
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AppState {
@@ -68,6 +69,27 @@ pub struct PendingInit {
     /// sidecar reconnect) reuse the same world rather than silently
     /// re-rolling `rand_seed()` underneath the player.
     pub seed: u64,
+    /// Selected data-driven scenario id (`None` = free play with default rules).
+    pub scenario_id: Option<String>,
+    /// Sandbox preset: unlimited funds, all modes unlocked, no scenario def.
+    pub sandbox: bool,
+}
+
+impl PendingInit {
+    /// Build the wire `init` payload from the player's city-select choices.
+    pub fn init_payload(&self) -> InitPayload {
+        InitPayload {
+            seed: self.seed,
+            difficulty: self.difficulty,
+            size: None,
+            preset_key: Some(self.preset_key.clone()),
+            rules: scenarios::effective_rules(self.sandbox, self.scenario_id.as_deref()),
+            scenario_id: scenarios::effective_scenario_id(
+                self.sandbox,
+                self.scenario_id.as_deref(),
+            ),
+        }
+    }
 }
 
 impl Default for PendingInit {
@@ -77,6 +99,8 @@ impl Default for PendingInit {
             preset_key: "nyc".to_string(),
             difficulty: mf_protocol::Difficulty::Normal,
             seed: rand_seed(),
+            scenario_id: scenarios::default_for_city("nyc").map(|s| s.id.clone()),
+            sandbox: false,
         }
     }
 }
@@ -456,13 +480,7 @@ fn stage_session_restore(saves: &mut SaveManager, pending: &PendingInit, link: O
         "mf-game: reconnect re-initing city '{}' (no autosave)",
         pending.preset_key
     );
-    let _ = link.transport.send(ToSim::Init(InitPayload {
-        seed: pending.seed,
-        difficulty: pending.difficulty,
-        size: None,
-        preset_key: Some(pending.preset_key.clone()),
-        rules: None,
-    }));
+    let _ = link.transport.send(ToSim::Init(pending.init_payload()));
 }
 
 /// OnEnter(Loading): send `init` for whatever `MainMenu` chose.
@@ -512,13 +530,7 @@ fn send_init_system(
         // clear the stale marker.
         attract.inited_preset = None;
     }
-    let _ = link.transport.send(ToSim::Init(InitPayload {
-        seed: pending.seed,
-        difficulty: pending.difficulty,
-        size: None,
-        preset_key: Some(pending.preset_key.clone()),
-        rules: None,
-    }));
+    let _ = link.transport.send(ToSim::Init(pending.init_payload()));
 }
 
 /// Pure decision for `send_init_system`'s attract-reuse fast path: the
@@ -651,5 +663,43 @@ mod tests {
             "nyc",
             Difficulty::Easy
         ));
+    }
+
+    #[test]
+    fn init_payload_threads_scenario_rules_and_id() {
+        let pending = PendingInit {
+            preset_key: "cleveland".to_string(),
+            difficulty: Difficulty::Normal,
+            seed: 42,
+            scenario_id: Some("cleveland-first-riders".to_string()),
+            sandbox: false,
+        };
+        let payload = pending.init_payload();
+        assert_eq!(
+            payload.scenario_id.as_deref(),
+            Some("cleveland-first-riders")
+        );
+        let rules = payload.rules.expect("rules");
+        assert_eq!(rules.starting_cash, Some(12_000_000.0));
+        assert_eq!(rules.max_day, Some(45));
+    }
+
+    #[test]
+    fn init_payload_sandbox_omits_scenario_id() {
+        let pending = PendingInit {
+            preset_key: "nyc".to_string(),
+            difficulty: Difficulty::Normal,
+            seed: 1,
+            scenario_id: Some("nyc-first-thousand".to_string()),
+            sandbox: true,
+        };
+        let payload = pending.init_payload();
+        assert!(payload.scenario_id.is_none());
+        let rules = payload.rules.expect("sandbox rules");
+        assert_eq!(
+            rules.starting_cash,
+            Some(crate::scenarios::SANDBOX_STARTING_CASH)
+        );
+        assert_eq!(rules.lock_modes, Some(false));
     }
 }
