@@ -102,7 +102,7 @@ these sum to more than wall-clock):
 | `bevy_ui` / `bevy_sprite` | 46.4 / 39.8 s | 28.0 / 23.8 s | Kept (subway vignette uses `Node`/`ImageNode`) |
 | `bevy_picking` | 23.9 s | **removed** | Unused; also dropped from `bevy_egui` |
 | `bevy_animation` | 23.6 s | **removed** | No skeletal / clip animation |
-| `bevy_gltf` / `gltf-json` | 21.6 / 18.6 s | **removed** | No glTF assets |
+| `bevy_gltf` / `gltf-json` | 21.6 / 18.6 s | **re-enabled** | Scripted Blender asset pipeline (tools/blender/) loads .glb bridge/train/cloud models |
 | `mf-game` (final bin) | (smaller) | 95.0 s | Higher under thin LTO + `codegen-units=1` |
 
 ## Bevy feature audit
@@ -112,7 +112,8 @@ allowlist. Disabled vs Bevy 0.16 defaults (and why):
 
 | Feature | Status | Reason |
 |---------|--------|--------|
-| `animation` / `bevy_gltf` / `bevy_scene` | off | No glTF or skeletal animation in-tree |
+| `animation` | off | No skeletal animation in-tree |
+| `bevy_gltf` / `bevy_scene` | **on** | Scripted Blender `.glb` asset pipeline (tools/blender/); `bevy_scene` is pulled in transitively by `bevy_gltf` |
 | `bevy_gilrs` | off | No gamepad input |
 | `bevy_picking` (+ mesh/sprite/ui backends) | off | Input is egui + custom raycasts; `bevy_egui` picking feature also off |
 | `vorbis` | off | SFX are custom `Decodable` chip samples, not Ogg files |
