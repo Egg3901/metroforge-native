@@ -5,18 +5,17 @@
 //! shared helpers (`nextStationName`, `trackCost`, `stationCost`,
 //! `syncVehicles`, `routePathLength`, `routeCycleSeconds`, `deriveHeadway`).
 //!
-//! These are NOT wired into [`crate::commands::apply_command`] (that dispatch is
-//! frozen for lane isolation) — the integration owner calls them from the match.
+//! These are now wired into [`crate::commands::apply_command`] at integration
+//! (the P3 orchestrator dispatches the match arms here).
 //!
-//! LANE NOTE (P3-TRANSIT): three cross-lane dependencies are not yet ported and
-//! are provided here as clearly-marked neutral local stubs:
-//! * `weatherEffects::weatherBuildCostMult` -> 1.0 (weather is always `None`).
-//! * geology tunnel pricing (`geologyCost` strata model + station depth
-//!   surcharge): tunnels are priced with the same per-metre x grade-mult x
-//!   water-crossing formula as surface/elevated using the tunnel cost
-//!   multiplier, WITHOUT the strata/depth surcharge. Documented simplification;
-//!   the geology lane re-points `track_cost` at `trackCostDetailed`.
-//! * `ops::syncFleetForRoute` -> no-op (lane B owns the fleet ledger).
+//! INTEGRATION NOTE: the three former lane stubs are now wired to the real
+//! sibling systems:
+//! * `weatherEffects::weatherBuildCostMult` -> reads the live `state.weather`.
+//! * geology tunnel pricing -> `track_cost` prices tunnels through
+//!   `geology_cost::underground_segment_cost` (strata + depth), and `build_track`
+//!   applies the station-deepening surcharge, matching `trackCostDetailed`.
+//! * `ops::syncFleetForRoute` -> called by the command dispatch after
+//!   create/edit-route (the ops lane owns the fleet ledger).
 
 use crate::commands::CommandResult;
 use crate::constants::{modes, MAX_HEADWAY, REFUND_FRACTION, ROUTE_COLORS, WATER_CROSSING_MULT};
@@ -109,17 +108,30 @@ fn next_station_name(state: &GameState) -> String {
     format!("Station {}", state.stations.len() + 1)
 }
 
-/// `weatherEffects::weatherBuildCostMult` for `weather = None` -> 1.0.
-fn weather_build_cost_mult(_state: &GameState) -> f64 {
-    1.0
+/// `weatherEffects::weatherBuildCostMult` over the current sky (1.0 when clear /
+/// absent). Wired to the real weather system at integration.
+fn weather_build_cost_mult(state: &GameState) -> f64 {
+    crate::weather_effects::weather_build_cost_mult(state.weather.as_ref())
 }
 
-/// Cost of a track polyline given mode/grade. Mirrors `trackCost` for
-/// surface/elevated exactly (per-metre x grade-mult x water-crossing premium x
-/// weather). Tunnels use the same shape with the tunnel grade multiplier but
-/// WITHOUT the geology strata / depth model (documented lane stub).
+/// Tunnel construction depth (m) at a point: deeper under water (river tunnels)
+/// than on land. Mirrors `tunnelDepthAt` (commands.ts).
+fn tunnel_depth_at(state: &GameState, p: Vec2) -> f64 {
+    if is_water_at(&state.fields, p) {
+        crate::geology_cost::RIVER_TUNNEL_DEPTH
+    } else {
+        crate::geology_cost::DEFAULT_TUNNEL_DEPTH
+    }
+}
+
+/// Cost of a track polyline given mode/grade. Mirrors `trackCostDetailed().cost`.
+/// Surface/elevated use the historic per-metre x grade-mult x water-crossing
+/// premium x weather formula. Tunnels are priced through the geology strata /
+/// depth model (`geology_cost::underground_segment_cost`), averaged per sub
+/// sample over each segment's own strata column.
 pub fn track_cost(state: &GameState, mode: TransitMode, grade: TrackGrade, points: &[Vec2]) -> f64 {
     let cfg = modes(mode);
+    let surface_per_m = cfg.track_cost_per_meter * cfg.grade_cost_mult.get(TrackGrade::Surface);
     let per_meter = cfg.track_cost_per_meter * cfg.grade_cost_mult.get(grade);
     let mut cost = 0.0;
     for i in 1..points.len() {
@@ -127,20 +139,49 @@ pub fn track_cost(state: &GameState, mode: TransitMode, grade: TrackGrade, point
         let b = points[i];
         let len = dist(a, b);
         let samples = ((len / 120.0).ceil() as i64).max(2);
-        let mut water_frac = 0.0;
-        for s in 0..=samples {
-            let t = s as f64 / samples as f64;
-            let p = Vec2 {
-                x: a.x + (b.x - a.x) * t,
-                y: a.y + (b.y - a.y) * t,
-            };
-            if is_water_at(&state.fields, p) {
-                water_frac += 1.0 / (samples as f64 + 1.0);
+        if grade == TrackGrade::Tunnel {
+            // price each sub-sample through its own strata column, average per-metre
+            let mut per_m_sum = 0.0;
+            for s in 0..samples {
+                let t = (s as f64 + 0.5) / samples as f64;
+                let p = Vec2 {
+                    x: a.x + (b.x - a.x) * t,
+                    y: a.y + (b.y - a.y) * t,
+                };
+                let col = crate::geology::column_at(
+                    state.city_key.as_deref(),
+                    state.seed,
+                    crate::constants::WORLD_SIZE,
+                    state.osm_elevation.as_deref(),
+                    state.osm_elev_res,
+                    p,
+                );
+                let seg = crate::geology_cost::underground_segment_cost(
+                    surface_per_m,
+                    1.0,
+                    &col,
+                    tunnel_depth_at(state, p),
+                );
+                per_m_sum += seg.cost_per_m;
             }
+            cost += (per_m_sum / samples as f64) * len;
+        } else {
+            let mut water_frac = 0.0;
+            for s in 0..=samples {
+                let t = s as f64 / samples as f64;
+                let p = Vec2 {
+                    x: a.x + (b.x - a.x) * t,
+                    y: a.y + (b.y - a.y) * t,
+                };
+                if is_water_at(&state.fields, p) {
+                    water_frac += 1.0 / (samples as f64 + 1.0);
+                }
+            }
+            let water_mult = 1.0 + water_frac * (WATER_CROSSING_MULT - 1.0);
+            cost += len * per_meter * water_mult;
         }
-        let water_mult = 1.0 + water_frac * (WATER_CROSSING_MULT - 1.0);
-        cost += len * per_meter * water_mult;
     }
+    // pouring track in rain or snow costs more (tunnels are sheltered -> no surcharge)
     let weather_mult = if grade == TrackGrade::Tunnel {
         1.0
     } else {
@@ -271,7 +312,31 @@ pub fn build_track(
             points = routed;
         }
     }
-    let cost = track_cost(state, mode, grade, &points);
+    let mut cost = track_cost(state, mode, grade, &points);
+    // Underground track sinks its end stations to the line's depth and charges
+    // the incremental station-deepening surcharge. Mirrors case `buildTrack`.
+    if grade == TrackGrade::Tunnel {
+        let base = modes(mode).station_cost;
+        for sid in [from.id, to.id] {
+            let pos = state
+                .stations
+                .iter()
+                .find(|s| s.id == sid)
+                .map(|s| s.pos)
+                .unwrap_or(Vec2 { x: 0.0, y: 0.0 });
+            let new_depth = tunnel_depth_at(state, pos);
+            let Some(st) = state.stations.iter_mut().find(|s| s.id == sid) else {
+                continue;
+            };
+            let prev_depth = st.depth.unwrap_or(0.0);
+            if new_depth > prev_depth {
+                cost += (crate::geology_cost::station_depth_surcharge(base, new_depth)
+                    - crate::geology_cost::station_depth_surcharge(base, prev_depth))
+                .round();
+                st.depth = Some(new_depth);
+            }
+        }
+    }
     if state.budget.cash < cost {
         return r_err("Insufficient funds");
     }
@@ -510,17 +575,23 @@ pub fn route_path_length(state: &GameState, route_id: u32) -> f64 {
     one_way * 2.0
 }
 
-/// Seconds for one vehicle to complete a full out-and-back cycle. Mirrors
-/// `routeCycleSeconds`.
-pub fn route_cycle_seconds(state: &GameState, route_id: u32) -> f64 {
-    let Some(route) = state.routes.iter().find(|r| r.id == route_id) else {
-        return 0.0;
-    };
+/// Seconds for one vehicle to complete a full out-and-back cycle: travel time
+/// plus a dwell at every stop it passes (each intermediate stop twice). Travel
+/// uses day-average grade-aware segment speeds. Mirrors `routeCycleSeconds`.
+///
+/// CANONICAL home for route-cycle time (the ops lane's duplicate was removed at
+/// integration and now imports this). Takes `(tracks, fields, route)` so it can
+/// be called mid-refresh when the route is already borrowed.
+pub fn route_cycle_seconds(
+    tracks: &[TrackSegment],
+    fields: &crate::types::FieldGrid,
+    route: &RouteDef,
+) -> f64 {
     let cfg = modes(route.mode);
     let mut one_way = 0.0;
     for &seg_id in &route.segment_ids {
-        if let Some(seg) = state.tracks.iter().find(|t| t.id == seg_id) {
-            let dens = segment_density01(Some(&state.fields), seg);
+        if let Some(seg) = tracks.iter().find(|t| t.id == seg_id) {
+            let dens = segment_density01(Some(fields), seg);
             let spd = segment_day_average_speed_mps(route.mode, seg.grade, dens);
             if spd > 0.0 {
                 one_way += seg.polyline.length / spd;
@@ -544,7 +615,7 @@ pub fn derive_headway(state: &GameState, route_id: u32) -> f64 {
     if route.vehicle_count == 0 {
         return MAX_HEADWAY;
     }
-    let cycle = route_cycle_seconds(state, route_id);
+    let cycle = route_cycle_seconds(&state.tracks, &state.fields, route);
     if cycle <= 0.0 {
         return cfg.default_headway;
     }

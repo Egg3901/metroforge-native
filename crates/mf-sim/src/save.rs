@@ -133,7 +133,12 @@ mod tests {
         // seed is NOT hashed by save.ts::stateHash; nor is the RNG stream, nor
         // the whole transient region.
         s.instance_id = 999;
-        s.weather = Some(crate::types::WeatherSnapshot::default());
+        // weather is transient (real snapshot from the weather system).
+        s.weather = Some(crate::weather::weather_at(
+            s.seed,
+            s.tick,
+            &crate::weather::climate_table(None),
+        ));
         s.bankrupt_days = 42;
         s.rng_state = [1, 2, 3, 4];
         assert_eq!(before, state_hash(&s));

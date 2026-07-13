@@ -26,6 +26,7 @@ pub mod ops; // P3-OPS ADDED: register the v0.9 operations module (lane B).
 pub mod rng;
 pub mod save;
 pub mod scenario;
+pub mod sim;
 pub mod transit;
 pub mod types;
 pub mod weather;
@@ -36,27 +37,8 @@ pub use hash::{Hashable, StateHasher};
 pub use new_game::{new_game, NewGameOptions};
 pub use rng::{Rng, RngState};
 pub use save::state_hash;
+pub use sim::{sim_tick, TickEvents};
 pub use types::GameState;
-
-/// Advance the simulation by one tick. Mirrors the TS entry `simTick`
-/// (sim/src/core/sim.ts:164).
-///
-/// P0 PLACEHOLDER LOGIC: increments the tick, draws one value from the seeded
-/// RNG, and folds it deterministically into the scalar `cash` field. The real
-/// per-tick systems (weather, vehicle movement, ops, demand assignment, daily
-/// economy, approval, scenario evaluation) land in P3. The point of this stub
-/// is purely to exercise the deterministic tick + RNG + hash pipeline.
-pub fn sim_tick(state: &mut GameState) {
-    state.tick += 1;
-    // Draw from the seeded primary stream so RNG state advances every tick.
-    // Rebuild the Rng from the saved state, draw, and store the advanced state
-    // back (the real per-tick systems in P3 will hold a live Rng for the pass).
-    let mut rng = state.rng();
-    let roll = rng.next_f64();
-    state.rng_state = rng.state();
-    // Deterministic placeholder economy mutation (real economy is P3).
-    state.budget.cash += roll - 0.5;
-}
 
 #[cfg(test)]
 mod tests {

@@ -17,12 +17,13 @@ pub mod depot;
 pub mod periods;
 pub mod tunables;
 
-use crate::constants::{modes, surface_congestion_weight, MAX_HEADWAY};
+use crate::constants::{modes, MAX_HEADWAY};
 use crate::rng::Rng;
+use crate::transit::build::route_cycle_seconds;
 use crate::types::{
-    BreakdownIncident, FieldGrid, FleetStatus, FleetUnit, GameState, Period, RouteDef, TrackGrade,
-    TrackSegment, TransitMode, WeatherSnapshot,
+    BreakdownIncident, FleetStatus, FleetUnit, GameState, Period, RouteDef, TransitMode,
 };
+use crate::weather::WeatherSnapshot;
 use periods::{period_for_tick, PERIODS};
 use std::collections::BTreeMap;
 use tunables::{default_period_headway, ops_tunables, OpsTunables};
@@ -727,99 +728,32 @@ pub fn fleet_summary(state: &GameState) -> FleetSummary {
     }
 }
 
-// ── route cycle time (ported for ops sizing) ──────────────────────────────────
+// Route cycle time + the grade/density helpers now live in the canonical
+// transit lane: `route_cycle_seconds` is `crate::transit::build::route_cycle_seconds`
+// (imported at the top), which internally uses `transit::grade_effects`
+// (`segment_density01` / `segment_day_average_speed_mps`). The duplicate
+// ops-local copies were removed at integration (dedup).
+
+// ── weather hooks (lane C `WeatherSnapshot` is now wired) ─────────────────────
 //
-// Ports `routeCycleSeconds` (commands.ts) + the grade/density helpers it needs
-// from `transit/gradeEffects.ts` (segmentDensity01, segmentDayAverageSpeedMps,
-// day-average surface slowdown). Kept ops-local so this lane does not depend on
-// the parallel transit lane's port. If transit lands a shared
-// `route_cycle_seconds`, the coordinator can swap this for it.
+// `state.weather` is the real [`crate::weather::WeatherSnapshot`]. When absent
+// (weather not yet refreshed) these return the clear-sky neutrals, matching the
+// TS `state.weather?.intensity ?? 0` / `weatherBreakdownChance(undefined)`.
 
-/// Map land value (~0..3) onto a `[0,1]` density weight. Mirrors
-/// `density01FromLandValue`.
-fn density01_from_land_value(lv: f64) -> f64 {
-    (lv / 2.0).clamp(0.0, 1.0)
-}
-
-/// Density along a track segment (midpoint of its polyline). Mirrors
-/// `segmentDensity01`.
-fn segment_density01(fields: &FieldGrid, seg: &TrackSegment) -> f64 {
-    let pts = &seg.polyline.points;
-    if pts.is_empty() {
-        return 0.5;
-    }
-    let mid = pts[pts.len() / 2];
-    if fields.land_value.is_empty() {
-        return 0.5;
-    }
-    density01_from_land_value(crate::fields::sample_field(fields, &fields.land_value, mid))
-}
-
-/// Day-average surface slowdown for cycle/headway. Mirrors
-/// `dayAverageSurfaceSlowdown`.
-fn day_average_surface_slowdown(mode: TransitMode, density01: f64) -> f64 {
-    let dens = 0.35 + 0.65 * density01.clamp(0.0, 1.0);
-    1.0 + *periods::MEAN_RUSH_EXCESS * surface_congestion_weight(mode) * dens
-}
-
-/// Day-average effective speed (m/s). Elevated/tunnel keep full mode cruise;
-/// surface is divided by the congestion slowdown. Mirrors
-/// `segmentDayAverageSpeedMps`.
-fn segment_day_average_speed_mps(mode: TransitMode, grade: TrackGrade, density01: f64) -> f64 {
-    let base = modes(mode).speed;
-    if grade != TrackGrade::Surface {
-        return base;
-    }
-    base / day_average_surface_slowdown(mode, density01)
-}
-
-/// Seconds for one vehicle to complete a full out-and-back cycle: travel time
-/// plus a dwell at every stop it passes (each intermediate stop twice). Travel
-/// uses day-average grade-aware segment speeds. Mirrors `routeCycleSeconds`.
-pub fn route_cycle_seconds(tracks: &[TrackSegment], fields: &FieldGrid, route: &RouteDef) -> f64 {
-    let cfg = modes(route.mode);
-    let mut one_way = 0.0;
-    for seg_id in &route.segment_ids {
-        let Some(seg) = tracks.iter().find(|t| t.id == *seg_id) else {
-            continue;
-        };
-        let dens = segment_density01(fields, seg);
-        let spd = segment_day_average_speed_mps(route.mode, seg.grade, dens);
-        if spd > 0.0 {
-            one_way += seg.polyline.length / spd;
-        }
-    }
-    if one_way <= 0.0 {
-        return 0.0;
-    }
-    let travel = one_way * 2.0; // out-and-back
-    let dwell_stops = 2 * route.station_ids.len().saturating_sub(1).max(1);
-    travel + dwell_stops as f64 * cfg.dwell_seconds
-}
-
-// ── weather hooks (P3 lane C wires WeatherSnapshot fields) ─────────────────────
-//
-// The `WeatherSnapshot` type is an empty P3 placeholder in this build and
-// `state.weather` is `None` on every current path, so weather is neutral here:
-// intensity 0 and a breakdown ratio of 1.0 (matching `weatherBreakdownChance`
-// returning the clear base when weather is absent). When lane C lands the real
-// snapshot fields (`state`, `intensity`), these two helpers wire them.
-
-/// Weather intensity `[0,1]` (0 when absent). See module note. Mirrors the
+/// Weather intensity `[0,1]` (0 when absent). Mirrors the
 /// `state.weather?.intensity ?? 0` read in `decayCondition`.
 fn weather_intensity(weather: &Option<WeatherSnapshot>) -> f64 {
-    // TODO(P3 lane C): return weather.intensity once WeatherSnapshot carries it.
-    let _ = weather;
-    0.0
+    weather
+        .as_ref()
+        .map_or(0.0, |w| w.intensity.clamp(0.0, 1.0))
 }
 
 /// Ratio of this-tick breakdown chance to the clear-weather base (1.0 when
 /// absent). Mirrors `weatherBreakdownChance(weather,'bus') / WEATHER_BREAKDOWN_CHANCE.clear`.
 fn weather_breakdown_ratio(weather: &Option<WeatherSnapshot>) -> f64 {
-    // TODO(P3 lane C): compute base[state] * (0.5 + 0.5*intensity) / clear once
-    // WeatherSnapshot carries `state` + `intensity`.
-    let _ = weather;
-    1.0
+    let clear =
+        crate::weather_effects::weather_breakdown_chance_full(crate::weather::WeatherState::Clear);
+    crate::weather_effects::weather_breakdown_chance(weather.as_ref(), TransitMode::Bus) / clear
 }
 
 #[cfg(test)]

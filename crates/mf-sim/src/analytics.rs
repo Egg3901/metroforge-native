@@ -282,7 +282,8 @@ pub fn decode_heatmap_payload(buf: &[u8]) -> HeatmapPayload {
 /// Build a heatmap payload from the current rolling window.
 pub fn build_heatmap_payload(state: &GameState, day: i64) -> HeatmapPayload {
     let g = &state.fields;
-    let a = state.analytics_ext();
+    let empty = AnalyticsState::default();
+    let a = state.analytics.as_ref().unwrap_or(&empty);
     let smoothed = smoothed_heatmap(&a.day_heat);
     let n = (g.w * g.h) as usize;
     let values = if smoothed.len() == n {
@@ -509,18 +510,91 @@ pub fn analytics_insight_lines(insights: &AnalyticsInsights, limit: usize) -> Ve
     out
 }
 
-// -- Helper trait to reach a caller-owned AnalyticsState ----------------------
-// The transient `types::AnalyticsState` slot on `GameState` is a P1 placeholder
-// (empty struct). Until the orchestrator swaps it for this module's richer
-// `AnalyticsState`, `build_heatmap_payload` reads an empty accumulator so it
-// stays callable in isolation. See the P3-ENV report note.
-trait AnalyticsExt {
-    fn analytics_ext(&self) -> AnalyticsState;
+// -- Rolling accumulator threading (orchestrator entry points) ----------------
+// `state.analytics` now carries the real [`AnalyticsState`]. These mirror
+// `ensureAnalytics` / `captureAssignmentAnalytics` / `commitAnalyticsDay`.
+
+/// Ensure `state.analytics` exists and return a mutable handle. Mirrors
+/// `ensureAnalytics`.
+pub fn ensure_analytics(state: &mut GameState) -> &mut AnalyticsState {
+    state.analytics.get_or_insert_with(AnalyticsState::default)
 }
-impl AnalyticsExt for GameState {
-    fn analytics_ext(&self) -> AnalyticsState {
-        AnalyticsState::default()
+
+/// Capture the latest assignment outputs so the next day-close samples the same
+/// numbers the economy just used. Called from `refresh_assignment`. Mirrors
+/// `captureAssignmentAnalytics`.
+pub fn capture_assignment_analytics(
+    state: &mut GameState,
+    boardings: &BTreeMap<u32, f64>,
+    alightings: &BTreeMap<u32, f64>,
+    flows: &[FlowResult],
+    car_flows: &[crate::transit::assignment::CarFlow],
+) {
+    // assignment::CarFlow -> analytics::CarFlow (structurally identical).
+    let car_flows: Vec<CarFlow> = car_flows
+        .iter()
+        .map(|f| CarFlow {
+            origin_district: f.origin_district,
+            dest_district: f.dest_district,
+            car_trips: f.car_trips,
+        })
+        .collect();
+    let a = ensure_analytics(state);
+    a.pending_boardings = boardings.clone();
+    a.pending_alightings = alightings.clone();
+    a.pending_flows = flows.to_vec();
+    a.pending_car_flows = car_flows;
+}
+
+/// Day-close analytics: push the day's activity/OD into the rolling windows,
+/// recompute insights, and emit a heatmap payload every
+/// [`HEATMAP_EMIT_INTERVAL_DAYS`]. Mirrors `commitAnalyticsDay`.
+pub fn commit_analytics_day(state: &mut GameState, day: i64) -> Option<HeatmapPayload> {
+    ensure_analytics(state);
+    let g = state.fields.clone();
+    let n = (g.w * g.h) as usize;
+    let (pending_boardings, pending_alightings, pending_flows, pending_car_flows) = {
+        let a = state.analytics.as_ref().unwrap();
+        (
+            a.pending_boardings.clone(),
+            a.pending_alightings.clone(),
+            a.pending_flows.clone(),
+            a.pending_car_flows.clone(),
+        )
+    };
+    let mut heat = vec![0.0f32; n];
+    splat_station_activity(
+        &g,
+        &state.stations,
+        &pending_boardings,
+        &pending_alightings,
+        &mut heat,
+    );
+    let od = build_od_totals(&pending_flows, &pending_car_flows);
+    {
+        let a = state.analytics.as_mut().unwrap();
+        a.day_heat.push(heat);
+        if a.day_heat.len() > ANALYTICS_WINDOW_DAYS {
+            a.day_heat.remove(0);
+        }
+        a.day_od.push(od);
+        if a.day_od.len() > ANALYTICS_WINDOW_DAYS {
+            a.day_od.remove(0);
+        }
+        a.days_recorded += 1;
     }
+    let smoothed_od = smoothed_od(&state.analytics.as_ref().unwrap().day_od);
+    let insights = compute_insights(state, &smoothed_od);
+    state.analytics.as_mut().unwrap().insights = insights;
+
+    let should_emit = day > 0
+        && day % HEATMAP_EMIT_INTERVAL_DAYS == 0
+        && state.analytics.as_ref().unwrap().last_heatmap_day != day;
+    if !should_emit {
+        return None;
+    }
+    state.analytics.as_mut().unwrap().last_heatmap_day = day;
+    Some(build_heatmap_payload(state, day))
 }
 
 #[cfg(test)]

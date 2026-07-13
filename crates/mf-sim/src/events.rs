@@ -45,6 +45,8 @@ pub struct EventDef {
 }
 
 /// A currently active event (mirrors the TS `ActiveEvent` `{ id, daysLeft }`).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ActiveEvent {
     /// Event id.

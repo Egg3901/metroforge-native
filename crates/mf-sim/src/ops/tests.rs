@@ -5,7 +5,7 @@
 use super::*;
 use crate::geometry::{make_polyline, vec};
 use crate::save::state_hash;
-use crate::types::{Difficulty, GameState, RouteDef, TrackSegment};
+use crate::types::{Difficulty, GameState, RouteDef, TrackGrade, TrackSegment};
 
 /// Build a straight track segment `len` meters long on the given grade.
 fn track(
@@ -99,7 +99,7 @@ fn ops_step_is_deterministic_run_twice() {
         let ra = step(&mut a);
         let rb = step(&mut b);
         assert_eq!(ra, rb, "step results diverged at tick {}", a.tick);
-        if a.tick % (OPS_INTERVAL as u64 * 60) == 0 {
+        if a.tick.is_multiple_of(OPS_INTERVAL as u64 * 60) {
             ops_daily_close(&mut a);
             ops_daily_close(&mut b);
         }

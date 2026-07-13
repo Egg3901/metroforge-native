@@ -39,36 +39,30 @@ pub const MIN_UNSERVED_TRIPS: f64 = 40.0;
 /// Keep the overlay legible. Mirrors `MAX_UNSERVED_LINES`.
 pub const MAX_UNSERVED_LINES: usize = 60;
 
-/// Neutral local ports of not-yet-landed sibling P3 systems. See module note.
+/// Cross-lane couplings, wired to the real sibling systems at integration.
+/// These mirror the exact reads `runAssignment` makes in `assignment.ts`.
 mod deps {
     use crate::types::GameState;
 
-    /// `events::eventDemandMult`. No active-event demand model exists in the
-    /// ported state yet (the `ActiveEvent` placeholder carries no `demandMult`),
-    /// so this returns the neutral 1.0. TODO(P3-events): read per-event mults.
-    pub fn event_demand_mult(_state: &GameState) -> f64 {
-        1.0
+    /// `events::eventDemandMult` over the live active events.
+    pub fn event_demand_mult(state: &GameState) -> f64 {
+        crate::events::event_demand_mult(&state.active_events)
     }
-    /// `weatherEffects::weatherDemandMult` for `weather = None` -> 1.0.
-    pub fn weather_demand_mult(_state: &GameState) -> f64 {
-        1.0
+    /// `weatherEffects::weatherDemandMult` for the current sky.
+    pub fn weather_demand_mult(state: &GameState) -> f64 {
+        crate::weather_effects::weather_demand_mult(state.weather.as_ref())
     }
-    /// `weatherEffects::weatherWalkMult` for `weather = None` -> 1.0.
-    pub fn weather_walk_mult(_state: &GameState) -> f64 {
-        1.0
+    /// `weatherEffects::weatherWalkMult` for the current sky.
+    pub fn weather_walk_mult(state: &GameState) -> f64 {
+        crate::weather_effects::weather_walk_mult(state.weather.as_ref())
     }
-    /// `weatherEffects::weatherCarPenaltyMin` for `weather = None` -> 0.0.
-    pub fn weather_car_penalty_min(_state: &GameState) -> f64 {
-        0.0
+    /// `weatherEffects::weatherCarPenaltyMin` for the current sky.
+    pub fn weather_car_penalty_min(state: &GameState) -> f64 {
+        crate::weather_effects::weather_car_penalty_min(state.weather.as_ref())
     }
     /// `geologyCost::stationDepthAccessPenaltySec`: +30 s per 10 m below 10 m.
     pub fn station_depth_access_penalty_sec(depth: Option<f64>) -> f64 {
-        const FREE_M: f64 = 10.0;
-        const SEC_PER_10M: f64 = 30.0;
-        match depth {
-            Some(d) if d > FREE_M => ((d - FREE_M) / 10.0) * SEC_PER_10M,
-            _ => 0.0,
-        }
+        crate::geology_cost::station_depth_access_penalty_sec(depth)
     }
 }
 

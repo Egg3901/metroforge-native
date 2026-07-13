@@ -61,7 +61,7 @@ These are asserted exactly in `rng.rs` unit tests.
 | rng.ts | `rng.rs` | P0 | DONE (bit-for-bit parity) |
 | (baseline hash, no TS origin) | `hash.rs` | P0 | DONE |
 | types.ts (GameState subset) | `state.rs` | P0/P1 | SUPERSEDED (folded into `types.rs`; `state.rs` removed) |
-| sim.ts (`simTick`) | `lib.rs::sim_tick` | P0/P3 | STUB (P3 real systems) |
+| sim.ts (`simTick`) | `sim.rs::sim_tick` | P0/P3 | DONE (full orchestrator; `lib.rs` re-exports) |
 | geometry.ts | `geometry.rs` | P1 | DONE (full port incl. SpatialHash + Noise2D) |
 | constants.ts | `constants.rs` | P1 | DONE (values verbatim; `MODES` -> `modes(mode)`) |
 | commands.ts | `commands.rs` | P1 | DONE for the data model + pure edits; build/create/depot STUBBED (P2/P3) |
@@ -76,15 +76,15 @@ These are asserted exactly in `rng.rs` unit tests.
 | city/presets.ts | `city/presets.rs` | P2 | DONE (all 11 presets verbatim) |
 | city/names.ts | `city/names.rs` | P2 | DONE (all name banks + generators) |
 | city/osmCity.ts, osmRegistry.ts | `city/` (OSM) | P2 | STUB (P4/P5 wires real city data) |
-| scenario/*, scenarioRules.ts | `scenario/` | P2/P3 | TODO |
-| transit/* | `transit/` | P3 | TODO |
-| economy.ts | `economy.rs` | P3 | TODO |
-| ops/* | `ops/` | P3 | TODO |
-| geology.ts, geologyCost.ts | `geology.rs` | P3 | TODO |
-| weather.ts, weatherEffects.ts | `weather.rs` | P3 | TODO |
-| timeOfDay.ts | `time_of_day.rs` | P3 | TODO |
-| events.ts | `events.rs` | P3 | TODO |
-| analytics.ts | `analytics.rs` | P3 | TODO |
+| scenario/*, scenarioRules.ts | `scenario/` | P2/P3 | DONE (evaluate + rules); data-driven catalog -> content lane (P4/P5) |
+| transit/* | `transit/` | P3 | DONE (assignment, build, road graph, traffic, grade effects, route path) |
+| economy.ts | (folded into `sim.rs`) | P3 | DONE (`route_operating_cost` + daily economy in the orchestrator) |
+| ops/* | `ops/` | P3 | DONE (v0.9 operations, wired) |
+| geology.ts, geologyCost.ts | `geology.rs` | P3 | DONE (tunnel pricing wired into `build::track_cost`) |
+| weather.ts, weatherEffects.ts | `weather.rs` | P3 | DONE (wired into assignment/ops/movement/build) |
+| timeOfDay.ts | `transit/time_of_day.rs` | P3 | DONE (CANONICAL; `ops/periods` re-exports) |
+| events.ts | `events.rs` | P3 | DONE (`ActiveEvent` reconciled onto `GameState`) |
+| analytics.ts | `analytics.rs` | P3 | DONE (accumulator threaded via `state.analytics`) |
 | instance.ts | (folded into state) | P1 | DONE (`GameState::instance_id`, transient) |
 
 ## P1 result: GameState shape + the hashed field set
@@ -230,3 +230,112 @@ generator omits the `if (osm)` branch. Those transient fields
   `timeOfDay.ts` / `ops/periods.ts` port lands in P3.
 - `initOps`'s route-reconcile loop is a no-op at new-game (no routes yet); the
   live fleet sync + per-tick ops logic is P3.
+
+## P3 + orchestrator result: DONE
+
+The full per-tick orchestrator (`sim.rs::sim_tick`) is wired and matches
+`sim/src/core/sim.ts::simTick`. All P3 lanes (transit, ops, environment) plus
+the deferred economy/scenario-rules helpers are integrated in-process.
+
+### Tick order implemented (verified against sim.ts:164)
+1. guard (failed / scenario-won) -> `tick += 1`
+2. `update_weather` once per game-hour (or first tick): `climate_table` +
+   `weather_at`, emit begin/end weather toasts.
+3. `move_vehicles`: per-tick positions; `diurnal_factor` occupancy; grade x
+   weather speed compose multiplicatively (`weather_speed_mult`).
+4. ops `step` on the `OPS_INTERVAL` grid (frequency -> in-service units,
+   condition decay, breakdown/recover rolls on `ops_rng_state`).
+5. demand assignment on `demand_dirty` or every `ASSIGNMENT_INTERVAL_TICKS`:
+   `run_assignment` -> reliability->ridership keystone (`apply_reliability_demand`)
+   -> route capacity/crowding/segment-loads/surface-exposure/grade-speed ->
+   station rolling ridership -> `capture_assignment_analytics` -> coverage ->
+   `compute_traffic`.
+6. daily boundary (`% TICKS_PER_DAY`): `update_events` -> `run_daily_economy`
+   (fares x `event_fare_mult`, opex incl. `ops_daily_opex`, maintenance,
+   subsidy, interest) -> `ops_daily_close` (BEFORE approval, so on-time% is
+   fresh) -> `update_approval` (coverage + share + events + reliability -
+   crowd-drag) -> `check_unlocks` -> weekly `run_growth` -> `commit_analytics_day`
+   -> `check_failure` (bankruptcy grace, approval floor, time limit).
+
+### Type reconciliation (types.rs unfrozen for integration)
+The P1 empty transient placeholders were replaced with the real lane types
+(all TRANSIENT / unhashed, so the frozen hashed set is untouched):
+`state.weather: Option<weather::WeatherSnapshot>`,
+`last_weather_event: Option<weather::WeatherEvent>`,
+`traffic: Option<transit::traffic::TrafficFieldOut>`,
+`unserved: Option<Vec<transit::assignment::UnservedDesire>>`,
+`analytics: Option<analytics::AnalyticsState>` (accumulator threaded across
+ticks via `ensure/capture/commit`). `active_events: Vec<events::ActiveEvent>`
+(`{ id, days_left }`) is persisted (serde added) but NOT hashed. `save.rs`
+was NOT touched (no hashed field type changed); the P1 transient-vs-hash test
+still passes (it now stores a real `WeatherSnapshot`).
+
+### Dedup
+- Time-of-day: canonical in `transit/time_of_day.rs`; `ops/periods.rs` now
+  re-exports `hour_of_day` / `diurnal_demand` / `diurnal_factor` (so
+  `MEAN_RUSH_EXCESS` and `grade_effects::mean_rush_excess` share one curve).
+- `route_cycle_seconds`: canonical `(tracks, fields, route)` in
+  `transit/build.rs`; the ops-lane duplicate + its private grade/speed helpers
+  (`day_average_surface_slowdown`, `segment_day_average_speed_mps`) were deleted
+  and re-pointed at `transit::build` / `transit::grade_effects`.
+
+### apply_command wiring
+`commands.rs` dispatch now calls the real handlers:
+`transit::build::{build_station, build_track, create_route, edit_route,
+demolish_station, demolish_track}` and `ops::depot::build_depot` (the P1
+`ok:false` stubs are gone). `create_route`/`edit_route` are followed by
+`ops::sync_fleet_for_route`. `build::track_cost` prices tunnels through
+`geology_cost::underground_segment_cost` (strata + depth), and `build_track`
+applies the station-deepening surcharge; `weather_build_cost_mult` reads live
+weather. Assignment's `deps` shim now reads real `weather_effects` + `events`.
+
+### Determinism proof (gate 1 - internal)
+`tests/full_tick.rs`:
+- `full_turn_is_deterministic_run_twice`: `new_game(12345)` x 1300 ticks and
+  `new_game(777)` x 2500 ticks each produce an identical `state_hash` run twice.
+  (Ad-hoc: seed 777 @2500t hash `16956529555318314583` == itself.)
+- `different_seeds_diverge`: 12345 vs 54321 differ.
+- `scripted_network_is_deterministic`: a built bus network (stations+track+route
+  via `apply_command`) run a game-day hashes identically run twice.
+- `scripted_network_moves_riders_and_cash`: nonzero ridership (~337/day) and a
+  finite, in-band cash trajectory.
+Two RNG streams stay separate and seeded (`rng_state` events/growth,
+`ops_rng_state` breakdowns); no wall-clock; hashed/ordered maps are `BTreeMap`.
+
+### Behavioral acceptance (gate 2 - structural, vs TS via `bun`)
+`behavioral_acceptance_vs_ts_reference`, seed 12345 normal, 3 sim-days:
+
+| metric | TS ref | Rust | tolerance | result |
+|---|---|---|---|---|
+| population | 131812 | 131812 | +/- 1% | exact |
+| cash | 15117664 | 15117664 | +/- 1% | exact |
+
+The plain full-run lands ON the TS numbers to displayed precision. A built
+network A/B (seed 2024, one game-day) gives ridership TS 315.6 vs Rust 336.6
+(+6.7%, inside a +/- 10% band), approval 56.3 == 56.3, day-net ~+43.3k both.
+The small ridership gap is idiomatic-Rust float divergence in the transit
+assignment path (the accepted NEW RUST BASELINE), not a wiring defect.
+
+### sim.ts behaviors NOT fully reproduced (flagged)
+- **Data-driven scenarios.** `evaluateScenarioDay` (mid-run scenario events +
+  lose-condition trees) is NOT wired: `scenario/evaluate.rs` ports the win/lose
+  evaluation building blocks + `build_scenario_state`, but the catalog /
+  progression content and the `ScenarioDef` win/lose trees are owned by the
+  content lane. `new_game` leaves `state.scenario = None`, so the tick's
+  scenario branch is inert (scenario RULES - approval floor / max-day / lock
+  modes / subsidy override - ARE honored in `check_failure` / economy).
+  `TickEvents.won` / `TickFail::Condition` are defined but only a real
+  `ScenarioDef` would set them.
+- **OSM real-city path** stays stubbed (transient `osm_*` fields `None`,
+  `MapLabel` still a placeholder) - P5.
+
+## Remaining for P4 / P5
+- **P4 (transport swap):** bridge `SimCommand`/`CommandResult`/`TickEvents` to
+  the `mf-protocol` wire enums (variant-for-variant already; ids `u32` <-> `i64`)
+  and run `mf-sim` in-process, deleting the Bun sidecar. `replay.rs` (compose
+  `new_game` + `sim_tick` over `command_log`) is now unblocked and still TODO.
+- **P5 (OSM city data, sidecar deletion):** port the OSM real-city path
+  (`osmCity.ts` / `osmRegistry.ts`): baked water/park/building masks, real
+  elevation, real road network, `MapLabel`, POI anchors; fill the transient
+  `osm_*` slots and the `MapLabel` placeholder; wire the data-driven scenario
+  catalog/progression + `evaluateScenarioDay`.

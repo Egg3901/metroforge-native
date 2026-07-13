@@ -15,7 +15,7 @@
 //! derivation). Those return `ok: false` rather than panicking so callers and
 //! tests stay well-behaved until the systems land.
 
-use crate::constants::{modes, REFUND_FRACTION};
+use crate::constants::modes;
 use crate::geometry::Vec2;
 use crate::types::{GameState, Period, TrackGrade, TransitMode};
 
@@ -194,28 +194,34 @@ pub fn apply_command(state: &mut GameState, cmd: &SimCommand) -> CommandResult {
 
 fn apply_command_inner(state: &mut GameState, cmd: &SimCommand) -> CommandResult {
     match cmd {
-        // ── STUBBED: need P2 worldgen / P3 systems (fields, road graph,
-        //    geology cost, ops fleet sync). See commands.ts for the full body. ──
-        SimCommand::BuildStation { .. } => {
-            // TODO(P2/P3): port `buildStation` (needs isWaterAt, nearestRoadPoint,
-            // stationCost, station push). commands.ts case 'buildStation'.
-            CommandResult::err("buildStation not yet ported (P2/P3)")
+        // ── Wired to the real lane handlers at integration ──
+        SimCommand::BuildStation { mode, pos } => {
+            crate::transit::build::build_station(state, *mode, *pos)
         }
-        SimCommand::BuildTrack { .. } => {
-            // TODO(P2/P3): port `buildTrack` (road routing + trackCost + geology
-            // depth surcharge). commands.ts case 'buildTrack'.
-            CommandResult::err("buildTrack not yet ported (P2/P3)")
+        SimCommand::BuildTrack {
+            mode,
+            grade,
+            from_station_id,
+            to_station_id,
+            waypoints,
+        } => crate::transit::build::build_track(
+            state,
+            *mode,
+            *grade,
+            *from_station_id,
+            *to_station_id,
+            waypoints,
+        ),
+        SimCommand::CreateRoute { mode, station_ids } => {
+            let r = crate::transit::build::create_route(state, *mode, station_ids);
+            // syncFleetForRoute: reconcile the discrete fleet to the starter
+            // vehicle count (build:: cannot reach the ops lane).
+            if let Some(id) = r.created_id {
+                crate::ops::sync_fleet_for_route(state, id);
+            }
+            r
         }
-        SimCommand::CreateRoute { .. } => {
-            // TODO(P3): port `createRoute` (segment resolution + starter fleet +
-            // syncVehicles + deriveHeadway). commands.ts case 'createRoute'.
-            CommandResult::err("createRoute not yet ported (P3)")
-        }
-        SimCommand::BuildDepot { .. } => {
-            // TODO(P3): port `buildDepot` (isWaterAt + opsTunables depotBuildCost).
-            // commands.ts case 'buildDepot'.
-            CommandResult::err("buildDepot not yet ported (P3)")
-        }
+        SimCommand::BuildDepot { mode, pos } => crate::ops::depot::build_depot(state, *mode, *pos),
 
         // ── Fully ported: pure state edits ──
         SimCommand::RenameStation { station_id, name } => {
@@ -268,45 +274,11 @@ fn apply_command_inner(state: &mut GameState, cmd: &SimCommand) -> CommandResult
         }
 
         SimCommand::DemolishStation { station_id } => {
-            let Some(idx) = state.stations.iter().position(|s| s.id == *station_id) else {
-                return CommandResult::err("Station not found");
-            };
-            if state
-                .routes
-                .iter()
-                .any(|r| r.station_ids.contains(station_id))
-            {
-                return CommandResult::err("Remove routes serving this station first");
-            }
-            if state
-                .tracks
-                .iter()
-                .any(|t| t.from_station_id == *station_id || t.to_station_id == *station_id)
-            {
-                return CommandResult::err("Demolish connected tracks first");
-            }
-            let station_mode = state.stations[idx].mode;
-            state.budget.cash += modes(station_mode).station_cost * REFUND_FRACTION;
-            state.stations.remove(idx);
-            state.demand_dirty = true;
-            CommandResult::ok()
+            crate::transit::build::demolish_station(state, *station_id)
         }
 
         SimCommand::DemolishTrack { track_id } => {
-            let Some(idx) = state.tracks.iter().position(|t| t.id == *track_id) else {
-                return CommandResult::err("Track not found");
-            };
-            if state
-                .routes
-                .iter()
-                .any(|r| r.segment_ids.contains(track_id))
-            {
-                return CommandResult::err("Remove routes using this track first");
-            }
-            state.budget.cash += state.tracks[idx].build_cost * REFUND_FRACTION;
-            state.tracks.remove(idx);
-            state.demand_dirty = true;
-            CommandResult::ok()
+            crate::transit::build::demolish_track(state, *track_id)
         }
 
         SimCommand::UpgradeStation { station_id } => {
@@ -332,44 +304,22 @@ fn apply_command_inner(state: &mut GameState, cmd: &SimCommand) -> CommandResult
             vehicle_count,
             name,
             color,
-            headway_seconds: _,
+            headway_seconds: _, // headway is derived from the fleet (deriveHeadway)
         } => {
-            let Some(route_idx) = state.routes.iter().position(|r| r.id == *route_id) else {
-                return CommandResult::err("Route not found");
-            };
-            let mode = state.routes[route_idx].mode;
-            let cfg = modes(mode);
-            // fare / name / color: pure edits (fully ported)
-            if let Some(f) = fare {
-                state.routes[route_idx].fare = f.clamp(0.0, 10.0);
+            let r = crate::transit::build::edit_route(
+                state,
+                *route_id,
+                *fare,
+                name.as_deref(),
+                color.as_deref(),
+                *vehicle_count,
+            );
+            // syncFleetForRoute after a vehicle-count change (build:: cannot
+            // reach the ops lane).
+            if r.ok && vehicle_count.is_some() {
+                crate::ops::sync_fleet_for_route(state, *route_id);
             }
-            if let Some(n) = name {
-                state.routes[route_idx].name = clamp_name(n);
-            }
-            if let Some(c) = color {
-                state.routes[route_idx].color = c.clone();
-            }
-            // vehicle count: cash accounting is pure and fully ported here.
-            if let Some(vc) = vehicle_count {
-                let target = (*vc).min(40);
-                let current = state.routes[route_idx].vehicle_count;
-                if target > current {
-                    let cost = (target - current) as f64 * cfg.vehicle_cost;
-                    if state.budget.cash < cost {
-                        return CommandResult::err("Insufficient funds for vehicles");
-                    }
-                    state.budget.cash -= cost;
-                } else if target < current {
-                    state.budget.cash += (current - target) as f64 * cfg.vehicle_cost * 0.4;
-                }
-                state.routes[route_idx].vehicle_count = target;
-                // TODO(P3): syncVehicles + syncFleetForRoute (needs geometry +
-                // ops). commands.ts case 'editRoute'.
-            }
-            // TODO(P3): route.headwaySeconds = deriveHeadway(...) (needs
-            // routeCycleSeconds / gradeEffects). Left unchanged until P3.
-            state.demand_dirty = true;
-            CommandResult::ok()
+            r
         }
 
         SimCommand::SetRouteFrequency {
@@ -475,8 +425,10 @@ mod tests {
     }
 
     #[test]
-    fn stubbed_build_station_errors_not_panics() {
-        let mut s = base_state();
+    fn build_station_dispatches_to_real_handler() {
+        // BuildStation is now wired to transit::build::build_station. On a real
+        // worldgen state a valid placement succeeds and creates an entity.
+        let mut s = crate::new_game(12345, Difficulty::Normal, crate::NewGameOptions::default());
         let r = apply_command(
             &mut s,
             &SimCommand::BuildStation {
@@ -484,7 +436,10 @@ mod tests {
                 pos: Vec2 { x: 0.0, y: 0.0 },
             },
         );
-        assert!(!r.ok);
+        assert!(r.ok, "expected build to succeed: {:?}", r.error);
+        assert!(r.created_id.is_some());
+        assert_eq!(s.stations.len(), 1);
+        assert_eq!(s.command_log.len(), 1);
     }
 
     #[test]

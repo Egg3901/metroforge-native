@@ -11,6 +11,12 @@ use crate::constants::TICKS_PER_DAY;
 use crate::types::Period;
 use std::sync::LazyLock;
 
+// Time-of-day curve is CANONICAL in `crate::transit::time_of_day` (dedup at
+// integration). Re-export the shared functions so `period_for_tick` and
+// `MEAN_RUSH_EXCESS` below use the single implementation the rest of the sim
+// (grade effects, vehicle movement, traffic) also uses.
+pub use crate::transit::time_of_day::{diurnal_demand, diurnal_factor, hour_of_day};
+
 /// All periods in day order (stable iteration for schedules / peak sizing).
 /// Mirrors `PERIODS` (periods.ts).
 pub const PERIODS: [Period; 5] = [
@@ -20,14 +26,6 @@ pub const PERIODS: [Period; 5] = [
     Period::Evening,
     Period::Night,
 ];
-
-/// Hour of the game day in `[0, 24)` for an absolute tick. Mirrors `hourOfDay`
-/// (timeOfDay.ts).
-pub fn hour_of_day(tick: u64) -> f64 {
-    let per = TICKS_PER_DAY as u64;
-    let t = (tick % per) as f64;
-    (t / per as f64) * 24.0
-}
 
 /// Which service period an absolute tick falls in, by hour of the game day.
 /// Boundaries are fixed (not tunable) so they never enter economy balance:
@@ -60,37 +58,6 @@ pub fn period_label(period: Period) -> &'static str {
         Period::Evening => "Evening",
         Period::Night => "Night",
     }
-}
-
-/// Raw diurnal travel-demand multiplier: two rush peaks, a quiet night
-/// (~0.19 overnight .. ~1.9 at peak). Mirrors `diurnalDemand` (timeOfDay.ts).
-pub fn diurnal_demand(tick: u64) -> f64 {
-    let hour = hour_of_day(tick);
-    let am = (-((hour - 8.0).powi(2)) / 6.0).exp();
-    let pm = (-((hour - 17.5).powi(2)) / 8.0).exp();
-    let mut f = 0.55 + 1.35 * (am + pm);
-    if hour < 5.5 {
-        f *= 0.35;
-    } else if hour > 22.0 {
-        f *= 0.45;
-    }
-    f
-}
-
-/// Daily mean of `diurnal_demand`, integrated once over a whole game day.
-/// Deterministic (fixed loop, no RNG / clock). Mirrors `DIURNAL_MEAN`.
-pub static DIURNAL_MEAN: LazyLock<f64> = LazyLock::new(|| {
-    let mut sum = 0.0;
-    for t in 0..TICKS_PER_DAY as u64 {
-        sum += diurnal_demand(t);
-    }
-    sum / TICKS_PER_DAY as f64
-});
-
-/// Live time-of-day multiplier, normalized so its daily mean is exactly 1.0.
-/// Mirrors `diurnalFactor` (timeOfDay.ts).
-pub fn diurnal_factor(tick: u64) -> f64 {
-    diurnal_demand(tick) / *DIURNAL_MEAN
 }
 
 /// Mean of `max(0, diurnalFactor - 1)` over a game day. Precomputed once so the

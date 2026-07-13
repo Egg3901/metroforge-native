@@ -645,28 +645,15 @@ sim_type! {
     }
 }
 
-sim_type! {
-    /// Active city event. Placeholder for `events.ts::ActiveEvent`; the P3
-    /// events system defines the full shape. Kept opaque so the state slot and
-    /// its serde round-trip exist without pulling P3 logic forward.
-    ///
-    /// TODO(P3): port `sim/src/core/events.ts` ActiveEvent fully.
-    #[derive(Clone, Debug, Default, PartialEq)]
-    pub struct ActiveEvent {
-        /// Event id.
-        pub id: String,
-        /// Sim-day the event started.
-        pub start_day: u32,
-        /// Sim-day the event ends.
-        pub end_day: u32,
-    }
-}
+// `ActiveEvent` is now [`crate::events::ActiveEvent`] (`{ id, days_left }`),
+// reconciled at integration. The P1 placeholder was removed.
 
 sim_type! {
-    /// Data-driven scenario definition. Placeholder for
-    /// `scenario/types.ts::ScenarioDef`.
-    ///
-    /// TODO(P3): port `sim/src/core/scenario/types.ts`.
+    /// Data-driven scenario definition slot. Minimal placeholder for
+    /// `scenario/types.ts::ScenarioDef`; the full win/lose-tree + catalog
+    /// (`scenario/evaluate.rs::ScenarioDef`, `catalog.ts`, `progression.ts`) is
+    /// owned by the content lane and wired in P4/P5. New games leave this
+    /// `None`, so the tick's scenario branch is inert until then.
     #[derive(Clone, Debug, Default, PartialEq)]
     pub struct ScenarioDef {
         /// Scenario id.
@@ -728,8 +715,8 @@ pub struct GameState {
     pub demand_dirty: bool,
     /// Unlocked transit modes.
     pub unlocked_modes: Vec<TransitMode>,
-    /// Active city events.
-    pub active_events: Vec<ActiveEvent>,
+    /// Active city events (each `{ id, days_left }`; see [`crate::events`]).
+    pub active_events: Vec<crate::events::ActiveEvent>,
     /// Earliest day a new event may start.
     pub next_event_day: u32,
     /// Optional scenario constraints.
@@ -832,29 +819,25 @@ pub struct GameState {
     /// Transient per-process instance id (geometry-cache scoping).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub instance_id: u32,
-    /// Transient current sky (pure fn of seed+tick+cityKey).
-    ///
-    /// TODO(P3): port `weather.ts::WeatherSnapshot`.
+    /// Transient current sky (pure fn of seed+tick+cityKey). See
+    /// [`crate::weather::WeatherSnapshot`].
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub weather: Option<WeatherSnapshot>,
+    pub weather: Option<crate::weather::WeatherSnapshot>,
     /// Transient last headline weather event.
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub last_weather_event: Option<WeatherEvent>,
-    /// Transient road congestion field.
-    ///
-    /// TODO(P3): port `transit/traffic.ts::TrafficField`.
+    pub last_weather_event: Option<crate::weather::WeatherEvent>,
+    /// Transient road congestion field. See
+    /// [`crate::transit::traffic::TrafficFieldOut`].
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub traffic: Option<TrafficField>,
-    /// Transient unserved-demand overlay data.
-    ///
-    /// TODO(P3): port `transit/assignment.ts::UnservedDesire`.
+    pub traffic: Option<crate::transit::traffic::TrafficFieldOut>,
+    /// Transient unserved-demand overlay data. See
+    /// [`crate::transit::assignment::UnservedDesire`].
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub unserved: Option<Vec<UnservedDesire>>,
-    /// Transient analytics (heatmaps / OD / insights).
-    ///
-    /// TODO(P3): port `analytics.ts::AnalyticsState`.
+    pub unserved: Option<Vec<crate::transit::assignment::UnservedDesire>>,
+    /// Transient analytics accumulator (heatmaps / OD / insights). See
+    /// [`crate::analytics::AnalyticsState`].
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub analytics: Option<AnalyticsState>,
+    pub analytics: Option<crate::analytics::AnalyticsState>,
     /// Transient OSM water mask (real cities).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub osm_water_mask: Option<Vec<u8>>,
@@ -888,32 +871,8 @@ pub struct GameState {
 // None are serialized or hashed. The real shapes land with their systems.
 
 sim_type! {
-    /// Placeholder. TODO(P3): port `weather.ts::WeatherSnapshot`.
-    #[derive(Clone, Debug, Default, PartialEq)]
-    pub struct WeatherSnapshot {}
-}
-sim_type! {
-    /// Placeholder. TODO(P3): port `weather.ts::WeatherEvent`.
-    #[derive(Clone, Debug, Default, PartialEq)]
-    pub struct WeatherEvent {}
-}
-sim_type! {
-    /// Placeholder. TODO(P3): port `transit/traffic.ts::TrafficField`.
-    #[derive(Clone, Debug, Default, PartialEq)]
-    pub struct TrafficField {}
-}
-sim_type! {
-    /// Placeholder. TODO(P3): port `transit/assignment.ts::UnservedDesire`.
-    #[derive(Clone, Debug, Default, PartialEq)]
-    pub struct UnservedDesire {}
-}
-sim_type! {
-    /// Placeholder. TODO(P3): port `analytics.ts::AnalyticsState`.
-    #[derive(Clone, Debug, Default, PartialEq)]
-    pub struct AnalyticsState {}
-}
-sim_type! {
-    /// Placeholder. TODO(P2): port `city/osmCity.ts::MapLabel`.
+    /// Placeholder. TODO(P2/P5): port `city/osmCity.ts::MapLabel` (OSM real-city
+    /// render labels). Still deferred: the OSM path is not ported until P5.
     #[derive(Clone, Debug, Default, PartialEq)]
     pub struct MapLabel {}
 }
