@@ -51,6 +51,17 @@ export interface UiRoute {
   /** length-weighted avg grade-effective speed (m/s) at the current tick;
    *  surface drops under traffic ("23 km/h"), elevated/tunnel stay at cruise */
   avgEffectiveSpeed?: number;
+  // ── optional, additive (v0.9 System A operations); older clients ignore ──
+  /** rolling on-time fraction 0..1 (keystone reliability metric) */
+  onTimePct?: number;
+  /** rolling average delay per departure, seconds */
+  avgDelaySec?: number;
+  /** units running service right now (period + breakdown aware) */
+  inServiceVehicles?: number;
+  /** vehicles needed to fully run the peak-period schedule */
+  peakUnitsRequired?: number;
+  /** per-period target headway (seconds): amPeak/midday/pmPeak/evening/night */
+  frequency?: Record<string, number>;
 }
 
 export interface UiState {
@@ -122,6 +133,23 @@ export interface UiState {
    * network efficiency, 400m catchment). Additive — older clients ignore.
    */
   analytics?: import('@core/analytics').AnalyticsInsights;
+  // ── optional, additive (v0.9 System A operations); older clients ignore ──
+  /** fleet-wide summary (counts + average condition/age) */
+  fleet?: {
+    total: number;
+    active: number;
+    maintenance: number;
+    brokenDown: number;
+    avgCondition: number;
+    avgAgeDays: number;
+  };
+  /** placed maintenance depots (id + mode + world position) */
+  depots?: { id: number; mode: string; x: number; y: number }[];
+  /** active breakdown incidents (route + remaining ticks) */
+  incidents?: { id: number; routeId: number; ticksLeft: number }[];
+  /** current service period id (amPeak/midday/pmPeak/evening/night) + label */
+  servicePeriod?: string;
+  servicePeriodLabel?: string;
 }
 
 export interface StaticCity {

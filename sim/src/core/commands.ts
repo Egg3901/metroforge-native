@@ -11,6 +11,8 @@ import { segmentDayAverageSpeedMps, segmentDensity01 } from './transit/gradeEffe
 import { weatherBuildCostMult } from './weatherEffects';
 import { columnAt } from './geology';
 import { DEFAULT_TUNNEL_DEPTH, RIVER_TUNNEL_DEPTH, stationDepthSurcharge, undergroundSegmentCost } from './geologyCost';
+import { syncFleetForRoute } from './ops';
+import { opsTunables } from './ops/tunables';
 import type { Vec2 } from './geometry';
 import type { Command, CommandResult, GameState, TrackCostBreakdown, TrackSegment, TransitMode } from './types';
 
@@ -262,9 +264,14 @@ function applyCommandInner(state: GameState, cmd: Command): CommandResult {
         const route = state.routes[state.routes.length - 1]!;
         route.vehicleCount = 2;
         syncVehicles(state, id);
+        syncFleetForRoute(state, id);
       }
       // headway follows the fleet (2 vehicles → a real frequency; 0 → MAX)
-      state.routes[state.routes.length - 1]!.headwaySeconds = deriveHeadway(state, id);
+      {
+        const created = state.routes[state.routes.length - 1]!;
+        created.headwaySeconds = deriveHeadway(state, id);
+        created.scheduledHeadway = created.headwaySeconds; // ops neutral base
+      }
       state.demandDirty = true;
       return { ok: true, createdId: id };
     }
@@ -288,11 +295,13 @@ function applyCommandInner(state: GameState, cmd: Command): CommandResult {
         }
         route.vehicleCount = target;
         syncVehicles(state, route.id);
+        syncFleetForRoute(state, route.id);
       }
       // Frequency is derived from the fleet, never set directly — buying
       // vehicles is the only way to run more often. (cmd.headwaySeconds is
       // ignored; kept in the command type for back-compat.)
       route.headwaySeconds = deriveHeadway(state, route.id);
+      route.scheduledHeadway = route.headwaySeconds; // ops neutral base
       state.demandDirty = true;
       return { ok: true };
     }
@@ -304,6 +313,9 @@ function applyCommandInner(state: GameState, cmd: Command): CommandResult {
       state.budget.cash += route.vehicleCount * MODES[route.mode].vehicleCost * 0.4;
       state.routes.splice(idx, 1);
       state.vehicles = state.vehicles.filter((v) => v.routeId !== cmd.routeId);
+      // drop this route's rolling stock from the fleet ledger.
+      if (state.fleet) state.fleet = state.fleet.filter((u) => u.routeId !== cmd.routeId);
+      if (state.incidents) state.incidents = state.incidents.filter((i) => i.routeId !== cmd.routeId);
       state.demandDirty = true;
       return { ok: true };
     }
@@ -368,6 +380,33 @@ function applyCommandInner(state: GameState, cmd: Command): CommandResult {
       if (!station) return { ok: false, error: 'Station not found' };
       station.name = cmd.name.slice(0, 40);
       return { ok: true };
+    }
+
+    case 'setRouteFrequency': {
+      // v0.9 A1: set a route's target headway for one service period. More
+      // service (a shorter target) draws more riders but needs more vehicles.
+      const route = state.routes.find((r) => r.id === cmd.routeId);
+      if (!route) return { ok: false, error: 'Route not found' };
+      const cfg = MODES[route.mode];
+      const clamped = Math.max(cfg.minHeadway, Math.min(MAX_HEADWAY, Math.round(cmd.headwaySeconds)));
+      (route.frequency ??= {})[cmd.period] = clamped;
+      state.demandDirty = true;
+      return { ok: true };
+    }
+
+    case 'buildDepot': {
+      // v0.9 A4: one placeable depot per mode. Its presence enables maintenance
+      // windows for that mode. Renderer draws it later; this is the sim entity.
+      if (isWaterAt(state.fields, cmd.pos)) return { ok: false, error: 'Cannot build a depot on water' };
+      if ((state.depots ?? []).some((d) => d.mode === cmd.mode)) {
+        return { ok: false, error: `A ${MODES[cmd.mode].label} depot already exists` };
+      }
+      const cost = opsTunables(state.difficulty).depotBuildCost;
+      if (state.budget.cash < cost) return { ok: false, error: 'Insufficient funds for depot' };
+      const id = state.nextId++;
+      (state.depots ??= []).push({ id, mode: cmd.mode, pos: { ...cmd.pos }, buildTick: state.tick });
+      state.budget.cash -= cost;
+      return { ok: true, createdId: id };
     }
   }
   return { ok: false, error: 'Unknown command' };

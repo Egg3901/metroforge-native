@@ -33,8 +33,9 @@ pub use types::{
     ActiveEventDto, CityListEntry, CityMapPreview, CitySize, Command, CommandLogEntry,
     CommandResult, DayLedger, DemandLine, DemandPayload, Difficulty, FailReason, HelloInfo,
     MapLabel, MapLabelKind, PoiAnchorDto, PoiAnchorKind, ReplayPayload, RoadDto, ScenarioRules,
-    Season, StaticCityJson, ToastTone, TrackGrade, TransitMode, UiDistrict, UiRoute, UiState,
-    UiStation, UiTrack, Vec2, WeatherEvent, WeatherState,
+    Season, StaticCityJson, ToastTone, TrackGrade, TransitMode, UiDepot, UiDistrict,
+    UiFleetSummary, UiIncident, UiRoute, UiState, UiStation, UiTrack, Vec2, WeatherEvent,
+    WeatherState,
 };
 
 use std::sync::Arc;

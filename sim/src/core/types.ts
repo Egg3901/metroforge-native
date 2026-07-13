@@ -151,6 +151,77 @@ export interface RouteDef {
    * saves (falls back to mode cruise until the next assignment).
    */
   moveGradeSpeed?: number;
+
+  // ── v0.9 System A (Operations) — all optional/additive, absent on legacy
+  //    saves (treated as unset until the first ops tick refreshes them) ──
+  /**
+   * Per-period target headway (seconds) for the frequency schedule (A1). More
+   * service (a shorter target) draws more riders but needs more vehicles and
+   * costs more to run. Absent = the default profile from ops/tunables. Keyed by
+   * Period ('amPeak' | 'midday' | 'pmPeak' | 'evening' | 'night').
+   */
+  frequency?: Partial<Record<import('./ops/periods').Period, number>>;
+  /** The command-set base headway (frozen by deriveHeadway at create/edit), the
+   *  neutral value ops restores when the route runs at full availability with no
+   *  period throttle. Ops only degrades headwaySeconds BELOW this when breakdowns
+   *  or maintenance cut availability, or a period frequency cap applies — so a
+   *  healthy, unthrottled route behaves exactly like the pre-v0.9 model. */
+  scheduledHeadway?: number;
+  /** In-service unit count RIGHT NOW: assigned fleet minus units down for
+   *  breakdown/maintenance, capped by the current period's target. Derived each
+   *  ops tick; drives the effective headway written into headwaySeconds. */
+  inServiceVehicles?: number;
+  /** Rolling on-time fraction 0..1 for the route (A5 keystone). */
+  onTimePct?: number;
+  /** Rolling average delay per departure, seconds (A5 keystone). */
+  avgDelaySec?: number;
+  /** Lagged reliability→ridership multiplier (0..1); reliable service keeps its
+   *  riders, chronic delays shed them. Applied AFTER assignment so it never
+   *  edits the demand pipeline the parallel lane owns. */
+  reliabilityDemandMult?: number;
+}
+
+// ── v0.9 System A (Operations) ────────────────────────────────────────────────
+
+/** One discrete rolling-stock unit: an individual vehicle with age + condition
+ *  that can be bought, retired, assigned to a route, break down, and be sent for
+ *  maintenance. Distinct from `VehicleState` (the transient render/movement
+ *  marker); the fleet is the persistent ledger. */
+export interface FleetUnit {
+  id: number;
+  mode: TransitMode;
+  /** route this unit is assigned to; null = idle in the pool / depot. */
+  routeId: number | null;
+  /** age in sim-days (drives slow condition floor + resale value later). */
+  ageDays: number;
+  /** health 0..1; decays with distance run and weather exposure. */
+  condition: number;
+  /** operational state. 'active' runs service; the others are out of service. */
+  status: 'active' | 'maintenance' | 'brokenDown';
+  /** ticks remaining in the current non-active status (0 when active). */
+  statusTicksLeft: number;
+}
+
+/** A depot / maintenance facility for one mode. Placeable (buildDepot command);
+ *  the renderer draws it later — this is the sim entity + a wire flag. Its
+ *  presence enables maintenance windows for that mode. */
+export interface Depot {
+  id: number;
+  mode: TransitMode;
+  pos: Vec2;
+  buildTick: number;
+}
+
+/** An active breakdown incident: a disabled unit blocking a route segment for a
+ *  duration, cascading delay to following vehicles. */
+export interface BreakdownIncident {
+  id: number;
+  routeId: number;
+  unitId: number;
+  /** index into the route's segmentIds that is blocked. */
+  segmentIndex: number;
+  /** ticks remaining until the blockage clears. */
+  ticksLeft: number;
 }
 
 export interface VehicleState {
@@ -321,6 +392,23 @@ export interface GameState {
   bankruptDays: number;
   /** why the run ended, if it failed */
   failed: 'bankrupt' | 'approval' | 'time' | 'condition' | null;
+
+  // ── v0.9 System A (Operations) — optional/additive; absent on legacy saves,
+  //    lazily initialized on first ops tick / load migration ──
+  /** discrete rolling-stock ledger (aged/condition units). */
+  fleet?: FleetUnit[];
+  /** placed maintenance depots (one-per-mode enforced in the command). */
+  depots?: Depot[];
+  /** active breakdown incidents blocking segments. */
+  incidents?: BreakdownIncident[];
+  /** dedicated seeded RNG stream for ops (breakdown rolls), kept separate from
+   *  the events/growth stream so ops randomness can't reorder other systems. */
+  opsRngState?: RngState;
+  /** the service period the last ops tick resolved; a change triggers an
+   *  effective-headway recompute (and a demand refresh). */
+  opsPeriod?: import('./ops/periods').Period;
+  /** per-route daily reliability accumulators (reset each day close). */
+  opsDaily?: Record<number, { departures: number; delayedDepartures: number; delaySec: number }>;
 }
 
 // ── Commands (the only mutation API) ────────────────────────────────────────
@@ -336,7 +424,10 @@ export type Command =
   | { kind: 'upgradeStation'; stationId: number }
   | { kind: 'takeLoan'; amount: number }
   | { kind: 'repayLoan'; amount: number }
-  | { kind: 'renameStation'; stationId: number; name: string };
+  | { kind: 'renameStation'; stationId: number; name: string }
+  // ── v0.9 System A (Operations) ──
+  | { kind: 'setRouteFrequency'; routeId: number; period: import('./ops/periods').Period; headwaySeconds: number }
+  | { kind: 'buildDepot'; mode: TransitMode; pos: Vec2 };
 
 export interface CommandResult {
   ok: boolean;

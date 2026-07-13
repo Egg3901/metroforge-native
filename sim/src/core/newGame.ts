@@ -3,6 +3,7 @@ import { generateCity } from './city/generator';
 import { MAP_SIZE_METERS, presetByKey, type MapSize } from './city/presets';
 import type { OsmCityData } from './city/osmCity';
 import { nextInstanceId } from './instance';
+import { initOps } from './ops';
 import { Rng } from './rng';
 import { climateTable, weatherAt } from './weather';
 import type { ScenarioDef } from './scenario/types';
@@ -88,6 +89,9 @@ export function newGame(seed: number, difficulty: Difficulty, options: NewGameOp
   // seed the initial sky so tick-0 UI/hosts see weather before the first tick
   state.weather = weatherAt(seed, 0, climateTable(options.presetKey));
   state.lastWeatherEvent = state.weather.event ?? null;
+  // v0.9 System A: seed the ops sub-state (fleet ledger, depots, incidents,
+  // dedicated RNG stream) so operations run deterministically from tick 0.
+  initOps(state);
   if (rules) state.scenarioRules = rules;
   if (scenario) {
     state.scenario = scenario;
