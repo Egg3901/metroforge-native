@@ -10,13 +10,13 @@
 //! `EditRoute` once the new id lands. Pause/resume is `vehicle_count = 0`
 //! with the prior count remembered client-side (no `pauseRoute` command).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 use mf_net::SimLink;
-use mf_protocol::{Command, ToastTone, TransitMode, UiRoute, UiStation};
-use mf_state::{LatestUi, RouteFocus};
+use mf_protocol::{Command, FrameSnapshot, ToastTone, TransitMode, UiRoute, UiStation};
+use mf_state::{LatestFrame, LatestUi, RouteFocus};
 
 use crate::audio::{PlaySfx, Sfx};
 use crate::command_bus::{CmdMeta, CommandBus, CommandFeedback};
@@ -232,6 +232,278 @@ fn hover_tick(resp: &egui::Response, last: &mut Option<egui::Id>, sfx: &mut Even
 }
 
 // ---------------------------------------------------------------------
+// Route line-diagram widget (reusable; service panel will share this)
+// ---------------------------------------------------------------------
+
+const DIAGRAM_HEIGHT: f32 = ds::SPACE_XXL;
+const DIAGRAM_H_MARGIN: f32 = ds::SPACE_SM;
+const DIAGRAM_TICK_HALF: f32 = 5.0;
+const DIAGRAM_MIN_THICKNESS: f32 = 2.0;
+const DIAGRAM_MAX_THICKNESS: f32 = 8.0;
+const DIAGRAM_VEHICLE_RADIUS: f32 = 3.5;
+const DIAGRAM_TRANSFER_RING_RADIUS: f32 = 7.0;
+const DIAGRAM_LABEL_CAP: usize = 12;
+const DIAGRAM_HIT_RADIUS: f32 = 10.0;
+
+/// Evenly spaced station x-offsets (from the strip's left edge) for
+/// `station_count` stops across a strip of `width` px inset by `margin`.
+pub fn diagram_station_offsets(width: f32, margin: f32, station_count: usize) -> Vec<f32> {
+    if station_count == 0 {
+        return Vec::new();
+    }
+    let usable = (width - margin * 2.0).max(0.0);
+    if station_count == 1 {
+        return vec![margin + usable * 0.5];
+    }
+    let step = usable / (station_count as f32 - 1.0);
+    (0..station_count)
+        .map(|i| margin + step * i as f32)
+        .collect()
+}
+
+/// Map normalized route progress `0.0..=1.0` onto the diagram's x-offset
+/// range implied by `offsets` (even station spacing).
+pub fn diagram_progress_to_x(progress: f32, offsets: &[f32]) -> Option<f32> {
+    if offsets.is_empty() {
+        return None;
+    }
+    if offsets.len() == 1 {
+        return Some(offsets[0]);
+    }
+    let t = progress.clamp(0.0, 1.0);
+    Some(offsets[0] + t * (offsets[offsets.len() - 1] - offsets[0]))
+}
+
+/// Stations that appear on more than one route (transfer hubs).
+pub fn transfer_station_ids(routes: &[UiRoute]) -> HashSet<i64> {
+    let mut counts: HashMap<i64, u32> = HashMap::new();
+    for route in routes {
+        for &sid in &route.station_ids {
+            *counts.entry(sid).or_insert(0) += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|&(_, c)| c > 1)
+        .map(|(id, _)| id)
+        .collect()
+}
+
+fn diagram_segment_thicknesses(segment_loads: &[f64]) -> Vec<f32> {
+    if segment_loads.is_empty() {
+        return Vec::new();
+    }
+    let max_load = segment_loads.iter().cloned().fold(0.0_f64, f64::max);
+    if max_load <= 0.0 {
+        return vec![DIAGRAM_MIN_THICKNESS; segment_loads.len()];
+    }
+    segment_loads
+        .iter()
+        .map(|&load| {
+            let t = (load / max_load).clamp(0.0, 1.0) as f32;
+            DIAGRAM_MIN_THICKNESS + t * (DIAGRAM_MAX_THICKNESS - DIAGRAM_MIN_THICKNESS)
+        })
+        .collect()
+}
+
+fn closest_on_segment(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> (f64, f64) {
+    let dx = bx - ax;
+    let dy = by - ay;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq < 1e-12 {
+        let d = (px - ax).hypot(py - ay);
+        return (0.0, d * d);
+    }
+    let t = ((px - ax) * dx + (py - ay) * dy) / len_sq;
+    let t = t.clamp(0.0, 1.0);
+    let cx = ax + t * dx;
+    let cy = ay + t * dy;
+    let d = (px - cx).hypot(py - cy);
+    (t, d * d)
+}
+
+/// Project a world point onto the route polyline; returns normalized progress
+/// `0.0` at the first stop and `1.0` at the last.
+pub fn route_progress_at(
+    station_ids: &[i64],
+    station_coords: &HashMap<i64, (f64, f64)>,
+    x: f64,
+    y: f64,
+) -> Option<f32> {
+    if station_ids.is_empty() {
+        return None;
+    }
+    if station_ids.len() == 1 {
+        return Some(0.5);
+    }
+    let mut seg_lengths = Vec::with_capacity(station_ids.len() - 1);
+    let mut total = 0.0_f64;
+    for pair in station_ids.windows(2) {
+        let (ax, ay) = *station_coords.get(&pair[0])?;
+        let (bx, by) = *station_coords.get(&pair[1])?;
+        let len = (bx - ax).hypot(by - ay).max(1e-9);
+        seg_lengths.push(len);
+        total += len;
+    }
+    if total <= 0.0 {
+        return Some(0.5);
+    }
+
+    let mut best_dist = f64::INFINITY;
+    let mut best_progress = 0.0_f64;
+    let mut cum = 0.0_f64;
+    for (i, pair) in station_ids.windows(2).enumerate() {
+        let (ax, ay) = station_coords[&pair[0]];
+        let (bx, by) = station_coords[&pair[1]];
+        let (t, dist_sq) = closest_on_segment(x, y, ax, ay, bx, by);
+        if dist_sq < best_dist {
+            best_dist = dist_sq;
+            best_progress = (cum + t * seg_lengths[i]) / total;
+        }
+        cum += seg_lengths[i];
+    }
+    Some(best_progress.clamp(0.0, 1.0) as f32)
+}
+
+/// Live vehicle progress values `0.0..=1.0` along `route_index` (wire
+/// `routeColorIdx` matches the index in `UiState.routes`).
+pub fn vehicle_progresses_on_route(
+    route_index: usize,
+    station_ids: &[i64],
+    station_coords: &HashMap<i64, (f64, f64)>,
+    frame: &FrameSnapshot,
+) -> Vec<f32> {
+    let mut out = Vec::new();
+    for chunk in frame.vehicles.chunks_exact(6) {
+        let color_idx = chunk[5] as usize;
+        if color_idx != route_index {
+            continue;
+        }
+        let vx = chunk[1] as f64;
+        let vy = chunk[2] as f64;
+        if let Some(p) = route_progress_at(station_ids, station_coords, vx, vy) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+fn station_coord_map(stations: &[UiStation]) -> HashMap<i64, (f64, f64)> {
+    stations.iter().map(|s| (s.id, (s.x, s.y))).collect()
+}
+
+/// Inputs for [`draw_route_line_diagram`]. Shared by the routes panel and
+/// future service panels.
+pub struct RouteLineDiagram<'a> {
+    pub color: egui::Color32,
+    pub route_id: i64,
+    pub route_index: usize,
+    pub station_ids: &'a [i64],
+    pub all_routes: &'a [UiRoute],
+    pub stations: &'a [UiStation],
+    pub segment_loads: &'a [f64],
+    pub frame: Option<&'a FrameSnapshot>,
+}
+
+/// Horizontal metro-map strip: route-colored line, per-station tick marks,
+/// transfer rings, live vehicle dots, and station names on hover.
+pub fn draw_route_line_diagram(ui: &mut egui::Ui, diagram: &RouteLineDiagram<'_>) {
+    let RouteLineDiagram {
+        color,
+        route_id,
+        route_index,
+        station_ids,
+        all_routes,
+        stations,
+        segment_loads,
+        frame,
+    } = *diagram;
+    let station_count = station_ids.len();
+    let desired_size = egui::vec2(ui.available_width(), DIAGRAM_HEIGHT);
+    let (rect, _strip) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
+    if station_count == 0 {
+        return;
+    }
+
+    let painter = ui.painter_at(rect);
+    let line_y = rect.center().y;
+    let offsets = diagram_station_offsets(rect.width(), DIAGRAM_H_MARGIN, station_count);
+    let transfers = transfer_station_ids(all_routes);
+    let labels = route_station_labels_for(station_ids, stations);
+    let coords = station_coord_map(stations);
+
+    if station_count > 1 {
+        let thicknesses = diagram_segment_thicknesses(segment_loads);
+        let aligned = thicknesses.len() == station_count - 1;
+        for i in 0..station_count - 1 {
+            let thickness = if aligned {
+                thicknesses[i]
+            } else {
+                DIAGRAM_MIN_THICKNESS
+            };
+            let a = egui::pos2(rect.left() + offsets[i], line_y);
+            let b = egui::pos2(rect.left() + offsets[i + 1], line_y);
+            painter.line_segment([a, b], egui::Stroke::new(thickness, color));
+        }
+    }
+
+    for (i, &off) in offsets.iter().enumerate() {
+        let center = egui::pos2(rect.left() + off, line_y);
+        let tick_top = egui::pos2(center.x, line_y - DIAGRAM_TICK_HALF);
+        let tick_bot = egui::pos2(center.x, line_y + DIAGRAM_TICK_HALF);
+        painter.line_segment([tick_top, tick_bot], egui::Stroke::new(2.0, color));
+
+        let sid = station_ids[i];
+        if transfers.contains(&sid) {
+            painter.circle_stroke(
+                center,
+                DIAGRAM_TRANSFER_RING_RADIUS,
+                egui::Stroke::new(1.5, ds::text()),
+            );
+        }
+
+        let hit = egui::Rect::from_center_size(
+            center,
+            egui::vec2(DIAGRAM_HIT_RADIUS * 2.0, DIAGRAM_HIT_RADIUS * 2.0),
+        );
+        let resp = ui.interact(
+            hit,
+            ui.id().with(("route_diagram_stop", route_id, i)),
+            egui::Sense::hover(),
+        );
+        if let Some(label) = labels.get(i) {
+            resp.on_hover_text(label);
+        }
+    }
+
+    if station_count > DIAGRAM_LABEL_CAP {
+        let caption = crate::strings::current().route_diagram_stops(station_count);
+        painter.text(
+            egui::pos2(rect.left(), rect.bottom() - ds::SPACE_XXS),
+            egui::Align2::LEFT_BOTTOM,
+            caption,
+            ds::body_font(ds::TEXT_XS),
+            ds::muted(),
+        );
+    }
+
+    if let Some(frame) = frame {
+        let progresses = vehicle_progresses_on_route(route_index, station_ids, &coords, frame);
+        for progress in progresses {
+            if let Some(off) = diagram_progress_to_x(progress, &offsets) {
+                let pos = egui::pos2(rect.left() + off, line_y);
+                painter.circle_filled(pos, DIAGRAM_VEHICLE_RADIUS, ds::text());
+                painter.circle_stroke(
+                    pos,
+                    DIAGRAM_VEHICLE_RADIUS,
+                    egui::Stroke::new(1.0, color),
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
 // Panel state
 // ---------------------------------------------------------------------
 
@@ -319,6 +591,7 @@ fn sync_route_focus_system(panel: Res<RoutePanelState>, mut focus: ResMut<RouteF
 fn route_panel_system(
     mut contexts: EguiContexts,
     ui_state: Res<LatestUi>,
+    frame: Res<LatestFrame>,
     link: Option<Res<SimLink>>,
     mut bus: ResMut<CommandBus>,
     mut panel: ResMut<RoutePanelState>,
@@ -396,6 +669,7 @@ fn route_panel_system(
             ui.add_space(ds::SPACE_XS);
 
             let order = sort_route_indices(&state.routes, panel.sort_key);
+            let frame_snap = frame.0.as_deref();
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for &idx in &order {
                     let route = &state.routes[idx];
@@ -411,6 +685,8 @@ fn route_panel_system(
                         &mut tools,
                         &state.stations,
                         &state.tracks,
+                        &state.routes,
+                        frame_snap,
                         &mut hovered,
                         &mut sfx,
                     );
@@ -433,6 +709,8 @@ fn draw_route_row(
     tools: &mut ToolState,
     stations: &[UiStation],
     tracks: &[mf_protocol::UiTrack],
+    all_routes: &[UiRoute],
+    frame: Option<&FrameSnapshot>,
     hovered: &mut Option<egui::Id>,
     sfx: &mut EventWriter<PlaySfx>,
 ) {
@@ -495,7 +773,8 @@ fn draw_route_row(
 
     if is_selected {
         route_editor(
-            ui, route, list_idx, stations, tracks, color, panel, bus, link, tools, hovered, sfx,
+            ui, route, list_idx, stations, tracks, all_routes, frame, color, panel, bus, link,
+            tools, hovered, sfx,
         );
     }
 
@@ -511,6 +790,8 @@ fn route_editor(
     list_idx: usize,
     stations: &[UiStation],
     tracks: &[mf_protocol::UiTrack],
+    all_routes: &[UiRoute],
+    frame: Option<&FrameSnapshot>,
     color: egui::Color32,
     panel: &mut RoutePanelState,
     bus: &mut CommandBus,
@@ -530,7 +811,6 @@ fn route_editor(
 
     ui.add_space(ds::SPACE_XXS);
 
-    let labels = route_station_labels_for(panel.stops_for(route), stations);
     let loads = if panel.stops_dirty(route) {
         // Draft order: diagram without load weights (segment_loads align to
         // the live order only).
@@ -538,7 +818,19 @@ fn route_editor(
     } else {
         route.segment_loads.clone()
     };
-    ds::route_line_diagram(ui, color, &labels, &loads);
+    draw_route_line_diagram(
+        ui,
+        &RouteLineDiagram {
+            color,
+            route_id: route.id,
+            route_index: list_idx,
+            station_ids: panel.stops_for(route),
+            all_routes,
+            stations,
+            segment_loads: &loads,
+            frame,
+        },
+    );
     ui.add_space(ds::SPACE_XXS);
 
     let s = crate::strings::current();
@@ -1251,5 +1543,93 @@ mod tests {
         ] {
             assert!(!mode_word(mode).contains(['-', '\u{2013}', '\u{2014}']));
         }
+    }
+
+    // --- route line-diagram layout ---------------------------------------
+
+    #[test]
+    fn diagram_station_offsets_zero_stations_is_empty() {
+        assert!(diagram_station_offsets(300.0, 12.0, 0).is_empty());
+    }
+
+    #[test]
+    fn diagram_station_offsets_one_station_is_centered() {
+        let offsets = diagram_station_offsets(300.0, 12.0, 1);
+        assert_eq!(offsets.len(), 1);
+        assert!((offsets[0] - 150.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn diagram_station_offsets_span_usable_width_evenly() {
+        let offsets = diagram_station_offsets(210.0, 10.0, 4);
+        assert_eq!(offsets.len(), 4);
+        assert!((offsets[0] - 10.0).abs() < 0.001);
+        assert!((offsets[3] - 200.0).abs() < 0.001);
+        let step = offsets[1] - offsets[0];
+        for pair in offsets.windows(2) {
+            assert!((pair[1] - pair[0] - step).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn diagram_progress_to_x_maps_endpoints() {
+        let offsets = diagram_station_offsets(200.0, 10.0, 3);
+        assert!((diagram_progress_to_x(0.0, &offsets).unwrap() - offsets[0]).abs() < 0.001);
+        assert!((diagram_progress_to_x(1.0, &offsets).unwrap() - offsets[2]).abs() < 0.001);
+        let mid = diagram_progress_to_x(0.5, &offsets).unwrap();
+        assert!((mid - offsets[1]).abs() < 0.001);
+    }
+
+    #[test]
+    fn transfer_station_ids_marks_shared_stops_only() {
+        let routes = vec![
+            UiRoute {
+                station_ids: vec![1, 2, 3],
+                ..test_route(1, 0.0, 0.0, None, None)
+            },
+            UiRoute {
+                station_ids: vec![3, 4],
+                ..test_route(2, 0.0, 0.0, None, None)
+            },
+            UiRoute {
+                station_ids: vec![5],
+                ..test_route(3, 0.0, 0.0, None, None)
+            },
+        ];
+        let transfers = transfer_station_ids(&routes);
+        assert_eq!(transfers, HashSet::from([3]));
+    }
+
+    #[test]
+    fn route_progress_at_endpoints_and_midpoint() {
+        let mut coords = HashMap::new();
+        coords.insert(1, (0.0, 0.0));
+        coords.insert(2, (100.0, 0.0));
+        coords.insert(3, (200.0, 0.0));
+        let stops = vec![1, 2, 3];
+        assert!((route_progress_at(&stops, &coords, 0.0, 0.0).unwrap() - 0.0).abs() < 0.001);
+        assert!((route_progress_at(&stops, &coords, 200.0, 0.0).unwrap() - 1.0).abs() < 0.001);
+        assert!((route_progress_at(&stops, &coords, 100.0, 5.0).unwrap() - 0.5).abs() < 0.05);
+    }
+
+    #[test]
+    fn vehicle_progresses_on_route_filters_by_color_index() {
+        let mut coords = HashMap::new();
+        coords.insert(1, (0.0, 0.0));
+        coords.insert(2, (100.0, 0.0));
+        let frame = FrameSnapshot {
+            tick: 1,
+            vehicle_count: 2,
+            agent_count: 0,
+            color_table: vec![],
+            vehicles: vec![
+                1.0, 50.0, 0.0, 0.0, 0.0, 0.0, // route 0, midpoint
+                2.0, 50.0, 0.0, 0.0, 0.0, 1.0, // route 1, ignored
+            ],
+            agents: vec![],
+        };
+        let progresses = vehicle_progresses_on_route(0, &[1, 2], &coords, &frame);
+        assert_eq!(progresses.len(), 1);
+        assert!((progresses[0] - 0.5).abs() < 0.05);
     }
 }
