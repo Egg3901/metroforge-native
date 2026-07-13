@@ -32,6 +32,7 @@ mod roads;
 mod sky;
 mod stats;
 mod street_lamps;
+mod structures;
 mod subway;
 mod terrain;
 mod terrain_material;
@@ -127,6 +128,7 @@ impl Plugin for MfRenderPlugin {
                 // the structure-placement lane's registry stays untouched.
                 vehicle_models::MfVehicleModelsPlugin,
                 traffic::MfTrafficPlugin,
+                structures::MfStructuresPlugin,
             ),
         ))
         .add_plugins(photomode::MfPhotoModeRenderPlugin)

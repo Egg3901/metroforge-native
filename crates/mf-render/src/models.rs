@@ -28,6 +28,11 @@ pub const BRIDGE_BROOKLYN_GLB: &str = "models/bridge_brooklyn.glb";
 pub const BRIDGE_TRUSS_GLB: &str = "models/bridge_truss.glb";
 pub const TRAIN_METRO_GLB: &str = "models/train_metro.glb";
 pub const CLOUD_PUFFS_GLB: &str = "models/cloud_puffs.glb";
+/// Generic reusable structure kit (portals + viaducts + rail bridge).
+pub const PORTAL_TUNNEL_GLB: &str = "models/portal_tunnel.glb";
+pub const VIADUCT_ROAD_GLB: &str = "models/viaduct_road.glb";
+pub const VIADUCT_RAIL_GLB: &str = "models/viaduct_rail.glb";
+pub const RAIL_BRIDGE_GLB: &str = "models/rail_bridge.glb";
 
 /// Cloud puffs: how many drifting instances to spawn on Medium+. Kept tiny
 /// per the art/perf budget (<40).
@@ -52,6 +57,10 @@ pub struct ModelHandles {
     pub bridge_truss: Handle<Scene>,
     pub train_metro: Handle<Scene>,
     pub cloud_puffs: Handle<Scene>,
+    pub portal_tunnel: Handle<Scene>,
+    pub viaduct_road: Handle<Scene>,
+    pub viaduct_rail: Handle<Scene>,
+    pub rail_bridge: Handle<Scene>,
 }
 
 /// Marker for a spawned drifting cloud puff instance.
@@ -85,6 +94,10 @@ fn load_models_system(mut commands: Commands, asset_server: Res<AssetServer>) {
         bridge_truss: scene(BRIDGE_TRUSS_GLB),
         train_metro: scene(TRAIN_METRO_GLB),
         cloud_puffs: scene(CLOUD_PUFFS_GLB),
+        portal_tunnel: scene(PORTAL_TUNNEL_GLB),
+        viaduct_road: scene(VIADUCT_ROAD_GLB),
+        viaduct_rail: scene(VIADUCT_RAIL_GLB),
+        rail_bridge: scene(RAIL_BRIDGE_GLB),
     });
 }
 
