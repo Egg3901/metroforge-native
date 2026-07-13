@@ -341,6 +341,7 @@ fn sync_atmosphere_system(
     mut shadows: ResMut<CloudShadowParams>,
     mut commands: Commands,
     cameras_haze: Query<(Entity, Option<&DistanceFog>), With<Camera3d>>,
+    camera_xforms: Query<&GlobalTransform, With<Camera3d>>,
     mut volumes: Query<(&CloudBlob, &MeshMaterial3d<CloudMaterial>, &mut Visibility)>,
     mut materials: ResMut<Assets<CloudMaterial>>,
 ) {
@@ -398,7 +399,22 @@ fn sync_atmosphere_system(
     // heavy fog raises the ceiling so the mist can actually thicken.
     let ceiling = (CLOUD_ALPHA_MAX + fog_w * 0.28 + ov * 0.12).min(0.9);
     let weather_alpha = ov * 0.14 + fog_w * 0.22 + storm * 0.12;
-    let alpha = ((0.38 + golden * 0.12 + n * 0.08 + weather_alpha) * (1.0 - subway.t)).min(ceiling);
+    // Diorama-overview fade (owner feedback 2026-07-13): the cloud cards live
+    // in a ~900-1150 m deck and are an in-city, looking-up/level effect. When
+    // the camera dollies far above the deck (map overview of the floating
+    // slab), the same cards read as fuzzy white smudges pasted over the model
+    // — so fade them out across a camera-height band well above the deck and
+    // let the diorama float in a clean void. Full strength below 2.6 km,
+    // gone by 4 km (overview framings sit at 5 km+).
+    let cam_y = camera_xforms
+        .iter()
+        .next()
+        .map(|t| t.translation().y)
+        .unwrap_or(0.0);
+    let overview_fade = 1.0 - ((cam_y - 2_600.0) / 1_400.0).clamp(0.0, 1.0);
+    let alpha =
+        ((0.38 + golden * 0.12 + n * 0.08 + weather_alpha) * (1.0 - subway.t) * overview_fade)
+            .min(ceiling);
 
     for (blob, handle, mut vis) in &mut volumes {
         *vis = Visibility::Visible;

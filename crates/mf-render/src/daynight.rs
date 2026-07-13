@@ -150,6 +150,26 @@ fn compute_day_night_system(
     day_night_pref: Res<mf_state::DayNightEnabled>,
     mut state: ResMut<DayNightState>,
 ) {
+    // Deterministic-capture override (screenshot/verify harness hygiene):
+    // `MF_FORCE_HOUR=<0..24>` pins the local render clock, exactly like the
+    // photo-mode scrubber but from the environment, so day captures are
+    // always true noon instead of "whenever the 120x fast-forward first hit
+    // daylight" (which lands in golden hour and tints the whole white city
+    // warm). Checked before everything, including the theme pins — a forced
+    // capture hour must win unconditionally. Malformed values are ignored.
+    static FORCED_HOUR: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    let forced = *FORCED_HOUR.get_or_init(|| {
+        std::env::var("MF_FORCE_HOUR")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .map(|h| h.rem_euclid(24.0))
+    });
+    if let Some(hour) = forced {
+        let elevation = (((hour - 6.0) / 12.0) * PI).sin();
+        state.target_hour = hour;
+        state.target_night_factor = (-elevation * 1.2).clamp(0.0, 1.0);
+        return;
+    }
     // Photo-mode scrubber: local hour override, does not touch the sim clock.
     // Checked first so a scrub still works under Dark/Purple/potato (the
     // player asked to frame a shot, not to fight the theme's fixed hour).

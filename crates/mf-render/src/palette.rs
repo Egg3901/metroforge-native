@@ -444,22 +444,22 @@ pub fn emissive(color: Color, strength: f32) -> LinearRgba {
 
 /// Fill / soil band — warm tan (topmost).
 pub fn strata_fill() -> Color {
-    hex(0xc9, 0xa9, 0x76)
+    hex(0xd6, 0xa7, 0x5e)
 }
 
 /// Clay / sand band — muted ochre.
 pub fn strata_clay() -> Color {
-    hex(0xb0, 0x8b, 0x55)
+    hex(0xbd, 0x84, 0x41)
 }
 
 /// Competent-rock band — grey-brown.
 pub fn strata_rock() -> Color {
-    hex(0x7a, 0x70, 0x62)
+    hex(0x7d, 0x6a, 0x55)
 }
 
 /// Deep basement rock — darkest.
 pub fn strata_bedrock() -> Color {
-    hex(0x45, 0x40, 0x3a)
+    hex(0x3b, 0x32, 0x2a)
 }
 
 /// Thin water-table line drawn across the strata (vivid blue; animated on
