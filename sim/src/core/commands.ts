@@ -7,6 +7,7 @@ import { MAX_HEADWAY, MODES, REFUND_FRACTION, ROUTE_COLORS, WATER_CROSSING_MULT,
 import { isWaterAt } from './fields';
 import { findRoadPath, nearestRoadPoint } from './transit/roadGraph';
 import { dist, makePolyline } from './geometry';
+import { segmentDayAverageSpeedMps, segmentDensity01 } from './transit/gradeEffects';
 import { weatherBuildCostMult } from './weatherEffects';
 import { columnAt } from './geology';
 import { DEFAULT_TUNNEL_DEPTH, RIVER_TUNNEL_DEPTH, stationDepthSurcharge, undergroundSegmentCost } from './geologyCost';
@@ -204,7 +205,7 @@ function applyCommandInner(state: GameState, cmd: Command): CommandResult {
       // surface/elevated track cannot terminate mid-water; sampled cost already
       // prices crossings, so no hard block on crossing.
       const id = state.nextId++;
-      state.tracks.push({
+      const seg: TrackSegment = {
         id,
         mode: cmd.mode,
         grade: cmd.grade,
@@ -212,7 +213,10 @@ function applyCommandInner(state: GameState, cmd: Command): CommandResult {
         toStationId: to.id,
         polyline: makePolyline(points.map((p) => ({ ...p }))),
         buildCost: cost,
-      });
+      };
+      // seed the grade-congestion density cache (refreshed each assignment)
+      seg.congestionDensity = segmentDensity01(state.fields, seg);
+      state.tracks.push(seg);
       state.budget.cash -= cost;
       state.demandDirty = true;
       return { ok: true, createdId: id };
@@ -401,15 +405,26 @@ export function routePathLength(state: GameState, routeId: number): number {
 }
 
 /** Seconds for one vehicle to complete a full out-and-back cycle: travel time
- *  plus a dwell at every stop it passes (each intermediate stop twice). */
+ *  plus a dwell at every stop it passes (each intermediate stop twice).
+ *  Travel time uses day-average grade-aware segment speeds (gradeEffects.ts), so
+ *  surface lines that share the street get longer cycles — and thus worse
+ *  headways — than their grade-separated twins. */
 export function routeCycleSeconds(state: GameState, routeId: number): number {
   const route = state.routes.find((r) => r.id === routeId);
   if (!route) return 0;
   const cfg = MODES[route.mode];
-  const len = routePathLength(state, routeId);
-  if (len <= 0) return 0;
+  let oneWay = 0;
+  for (const segId of route.segmentIds) {
+    const seg = state.tracks.find((t) => t.id === segId);
+    if (!seg) continue;
+    const dens = segmentDensity01(state.fields, seg);
+    const spd = segmentDayAverageSpeedMps(route.mode, seg.grade, dens);
+    if (spd > 0) oneWay += seg.polyline.length / spd;
+  }
+  if (oneWay <= 0) return 0;
+  const travel = oneWay * 2; // out-and-back
   const dwellStops = 2 * Math.max(1, route.stationIds.length - 1);
-  return len / cfg.speed + dwellStops * cfg.dwellSeconds;
+  return travel + dwellStops * cfg.dwellSeconds;
 }
 
 /** Headway is a CONSEQUENCE of fleet size: more vehicles on the same loop come

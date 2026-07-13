@@ -334,6 +334,12 @@ pub struct UiRoute {
     /// Sim-depth (PR #31): this route's daily farebox revenue.
     #[serde(default)]
     pub farebox: Option<f64>,
+    /// Grade-as-tradeoff (PR #38): length-weighted average grade-effective speed
+    /// (m/s) at the current tick — surface lines drop under traffic;
+    /// elevated/tunnel stay at mode cruise. `default` keeps old sidecars
+    /// (which omit it) parseable.
+    #[serde(default)]
+    pub avg_effective_speed: Option<f64>,
 }
 
 /// `DayLedger` — metroforge/src/core/types.ts:134-140

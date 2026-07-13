@@ -49,7 +49,10 @@ const winPlan: Record<
   'nyc-first-thousand': { stations: 6, vehicles: 6, maxDays: 25, spacing: 450 },
   'nyc-farebox-80': { stations: 8, vehicles: 8, maxDays: 30, spacing: 400 },
   'nyc-bus-spine': { stations: 10, vehicles: 10, maxDays: 40, spacing: 400 },
-  'nyc-dig-season': { stations: 8, vehicles: 18, maxDays: 35, spacing: 400 },
+  // Retuned for the grade-as-tradeoff feature (Egg3901/metroforge#38): surface
+  // buses now slow in the dense dig surge, so the winning strategy needs a wider,
+  // denser spine to still carry 3000 riders without overcrowding.
+  'nyc-dig-season': { stations: 11, vehicles: 26, maxDays: 35, spacing: 320 },
   'nyc-pressure': { stations: 10, vehicles: 10, maxDays: 45, spacing: 400 },
   'nyc-express': { stations: 11, vehicles: 12, maxDays: 40, spacing: 360 },
   'nyc-last-stand': { stations: 10, vehicles: 12, maxDays: 50, spacing: 380 },

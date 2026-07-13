@@ -141,6 +141,35 @@ export const WATER_CROSSING_MULT = 5;
 /** Demolition refund fraction. */
 export const REFUND_FRACTION = 0.25;
 
+/**
+ * Ongoing track maintenance multiplier by grade (grade as an operating
+ * tradeoff — Egg3901/metroforge#38). Elevated sits modestly above surface;
+ * tunnel is highest. Tuned so a busy corridor still clearly rewards grade
+ * separation (faster + more reliable) despite the upkeep premium. Consumed in
+ * runDailyEconomy; the full design rationale + composition with weather lives in
+ * transit/gradeEffects.ts.
+ */
+export const GRADE_MAINT_MULT: Record<TrackGrade, number> = {
+  surface: 1,
+  elevated: 1.35,
+  tunnel: 1.8,
+};
+
+/**
+ * How strongly each mode feels street congestion when running at SURFACE grade
+ * (Egg3901/metroforge#38). Bus/tram share the roadway (full weight); metro/rail
+ * on surface are partially protected but still slowed in dense rush corridors.
+ * Elevated/tunnel are immune (see gradeEffects.ts). This is the grade-congestion
+ * knob; the orthogonal weather-speed knobs live in weatherEffects.ts and the two
+ * compose multiplicatively in moveVehicles.
+ */
+export const SURFACE_CONGESTION_WEIGHT: Record<TransitMode, number> = {
+  bus: 1,
+  tram: 0.9,
+  metro: 0.35,
+  rail: 0.25,
+};
+
 export const STARTING_CASH: Record<'easy' | 'normal' | 'hard', number> = {
   easy: 30_000_000,
   normal: 15_000_000,
