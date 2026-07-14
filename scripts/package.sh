@@ -49,9 +49,6 @@ check_file() {
             "client binary")
                 echo "  To build: cd $PROJECT_ROOT && cargo build --release -p mf-game"
                 ;;
-            "sidecar binary"*)
-                echo "  To build: Run the sidecar build step (bun build --compile)"
-                ;;
         esac
         exit 1
     fi
@@ -79,8 +76,7 @@ write_readme() {
 3. Run the game:
    ./metroforge
 
-Note: Both metroforge and metroforge-sidecar binaries are executable. They work
-together automatically without additional setup.
+Note: The archive contains the single metroforge executable.
 
 ### macOS
 1. Extract the archive
@@ -95,7 +91,7 @@ together automatically without additional setup.
    - Confirm in the dialog that follows
 4. The game will now launch
 
-Note: Both metroforge and metroforge-sidecar binaries work together automatically.
+Note: The archive contains the single metroforge executable.
 
 ### Windows
 1. Extract the archive to your desired location
@@ -106,7 +102,7 @@ will usually warn on first run:
 - Click "More info" in the SmartScreen dialog
 - Click "Run anyway" to proceed
 - The game will launch normally
-- A second launch focuses the existing window (no second sidecar)
+- A second launch focuses the existing window
 
 ## System Requirements
 
@@ -121,8 +117,7 @@ config file (see game documentation for details).
 
 ## Additional Notes
 
-- Both the main executable (metroforge) and sidecar (metroforge-sidecar) are
-  included in this archive and work together automatically.
+- The main executable (metroforge) is included in this archive.
 - On Linux/macOS, the executables are marked executable. Windows executables run
   normally.
 - Permissions: Linux/macOS users should not need to manually chmod these files,
@@ -143,14 +138,11 @@ case "$OS" in
 
         # Check for required binaries
         CLIENT_BIN="$PROJECT_ROOT/target/release/metroforge"
-        SIDECAR_BIN="$PROJECT_ROOT/dist-sidecar/metroforge-sidecar"
 
         check_file "$CLIENT_BIN" "client binary"
-        check_file "$SIDECAR_BIN" "sidecar binary (Linux)"
 
         # Stage files
         cp "$CLIENT_BIN" "$STAGE_DIR/metroforge"
-        cp "$SIDECAR_BIN" "$STAGE_DIR/metroforge-sidecar"
         cp "$PROJECT_ROOT/crates/mf-game/assets/fonts/OFL.txt" "$STAGE_DIR/OFL.txt"
         # Scripted Blender .glb models (tools/blender/) — Bevy resolves its
         # asset root next to the running exe, so ship assets/ as a sibling.
@@ -161,7 +153,6 @@ case "$OS" in
 
         # Make binaries executable
         make_executable "$STAGE_DIR/metroforge"
-        make_executable "$STAGE_DIR/metroforge-sidecar"
 
         # Create README
         write_readme "$STAGE_DIR/README-dist.txt" "linux" "$VERSION"
@@ -173,7 +164,6 @@ case "$OS" in
         cd "$STAGE_DIR"
         tar -czf "$ARTIFACT_PATH" \
             metroforge \
-            metroforge-sidecar \
             OFL.txt \
             README-dist.txt \
             metroforge.png \
@@ -189,14 +179,11 @@ case "$OS" in
 
         # Check for required binaries
         CLIENT_BIN="${MF_WIN_CLIENT:-$PROJECT_ROOT/target/x86_64-pc-windows-msvc/release/metroforge.exe}"
-        SIDECAR_BIN="$PROJECT_ROOT/dist-sidecar/metroforge-sidecar.exe"
 
         check_file "$CLIENT_BIN" "client binary"
-        check_file "$SIDECAR_BIN" "sidecar binary (Windows)"
 
         # Stage files
         cp "$CLIENT_BIN" "$STAGE_DIR/metroforge.exe"
-        cp "$SIDECAR_BIN" "$STAGE_DIR/metroforge-sidecar.exe"
         cp "$PROJECT_ROOT/crates/mf-game/assets/fonts/OFL.txt" "$STAGE_DIR/OFL.txt"
         # Scripted Blender .glb models (Bevy asset root sits next to the exe).
         mkdir -p "$STAGE_DIR/assets/models"
@@ -215,12 +202,11 @@ case "$OS" in
         if command -v zip >/dev/null 2>&1; then
             zip -q -r "$ARTIFACT_PATH" \
                 metroforge.exe \
-                metroforge-sidecar.exe \
                 OFL.txt \
                 README-dist.txt
         else
             # Fallback to PowerShell on Windows if zip is not available
-            powershell -Command "Compress-Archive -Path metroforge.exe, metroforge-sidecar.exe, OFL.txt, README-dist.txt -DestinationPath '$ARTIFACT_PATH'"
+            powershell -Command "Compress-Archive -Path metroforge.exe, OFL.txt, README-dist.txt -DestinationPath '$ARTIFACT_PATH'"
         fi
 
         echo "Successfully created: $ARTIFACT_PATH"
@@ -245,14 +231,11 @@ case "$OS" in
 
         # Check for required binaries
         CLIENT_BIN="${MF_MAC_CLIENT:-$PROJECT_ROOT/target/release/metroforge}"
-        SIDECAR_BIN_SOURCE="$PROJECT_ROOT/dist-sidecar/metroforge-sidecar-darwin-arm64"
 
         check_file "$CLIENT_BIN" "client binary"
-        check_file "$SIDECAR_BIN_SOURCE" "sidecar binary (macOS ARM64)"
 
         # Stage files
         cp "$CLIENT_BIN" "$STAGE_DIR/metroforge"
-        cp "$SIDECAR_BIN_SOURCE" "$STAGE_DIR/metroforge-sidecar"
         cp "$PROJECT_ROOT/crates/mf-game/assets/fonts/OFL.txt" "$STAGE_DIR/OFL.txt"
         # Scripted Blender .glb models (Bevy asset root sits next to the exe).
         mkdir -p "$STAGE_DIR/assets/models"
@@ -260,7 +243,6 @@ case "$OS" in
 
         # Make binaries executable
         make_executable "$STAGE_DIR/metroforge"
-        make_executable "$STAGE_DIR/metroforge-sidecar"
 
         # Create README with macOS-specific notes
         write_readme "$STAGE_DIR/README-dist.txt" "macos" "$VERSION"
@@ -273,7 +255,6 @@ case "$OS" in
         if command -v zip >/dev/null 2>&1; then
             zip -q -r "$ARTIFACT_PATH" \
                 metroforge \
-                metroforge-sidecar \
                 OFL.txt \
                 assets \
                 README-dist.txt
@@ -284,14 +265,12 @@ case "$OS" in
 
         echo "Successfully created: $ARTIFACT_PATH"
 
-        # .app bundle + .dmg installer. Client and sidecar stay siblings in
-        # Contents/MacOS (sidecar.rs resolves next to the running exe).
+        # .app bundle + .dmg installer.
         # hdiutil exists only on macOS; skip gracefully elsewhere.
         if command -v hdiutil >/dev/null 2>&1; then
             APP_DIR="$STAGE_DIR/dmg-root/MetroForge.app"
             mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
             cp "$STAGE_DIR/metroforge" "$APP_DIR/Contents/MacOS/metroforge"
-            cp "$STAGE_DIR/metroforge-sidecar" "$APP_DIR/Contents/MacOS/metroforge-sidecar"
             cp "$STAGE_DIR/OFL.txt" "$APP_DIR/Contents/Resources/OFL.txt"
             # Models sit next to the exe (Contents/MacOS) — Bevy asset root.
             mkdir -p "$APP_DIR/Contents/MacOS/assets/models"
@@ -300,7 +279,6 @@ case "$OS" in
             sed "s/__VERSION__/$VERSION/g" "$PROJECT_ROOT/packaging/macos/Info.plist" \
                 > "$APP_DIR/Contents/Info.plist"
             make_executable "$APP_DIR/Contents/MacOS/metroforge"
-            make_executable "$APP_DIR/Contents/MacOS/metroforge-sidecar"
             # Ad-hoc sign so Gatekeeper shows the standard right-click-Open
             # flow instead of refusing outright on arm64 (unsigned binaries
             # are killed on Apple Silicon).

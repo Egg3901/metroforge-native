@@ -1,17 +1,12 @@
 {
   "name": "metroforge-sim",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "bun run sidecar/index.ts",
-    "smoke": "bun run sidecar/smoke-test.ts",
     "test": "vitest run",
     "build-cities": "bun run scripts/run-build-cities.ts",
-    "validate-scenarios": "bun run scripts/validate-scenarios.ts",
-    "compile:linux": "bun build --compile --target=bun-linux-x64 ./sidecar/index.ts --outfile ../dist-sidecar/metroforge-sidecar",
-    "compile:windows": "bun build --compile --target=bun-windows-x64 ./sidecar/index.ts --outfile ../dist-sidecar/metroforge-sidecar.exe",
-    "compile:darwin-arm64": "bun build --compile --target=bun-darwin-arm64 ./sidecar/index.ts --outfile ../dist-sidecar/metroforge-sidecar-darwin-arm64"
+    "validate-scenarios": "bun run scripts/validate-scenarios.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",

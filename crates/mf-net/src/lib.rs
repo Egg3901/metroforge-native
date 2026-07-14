@@ -1,8 +1,6 @@
-//! `mf-net` — sim transport and process management (spec §3.2). Bevy isn't
-//! tokio-native, so [`ws_transport::WsTransport`] runs a blocking
-//! `tungstenite` client on a background thread and bridges it into the ECS
-//! via two crossbeam channels; [`plugin::MfNetPlugin`] drains it into
-//! `Events<FromSimMsg>` every frame.
+//! `mf-net` — sim transport and lifecycle glue (spec §3.2). The shipped backend
+//! is the in-process Rust sim (`EmbeddedTransport`) drained into
+//! `Events<FromSimMsg>` each frame by [`plugin::MfNetPlugin`].
 //!
 //! [`transport::SimTransport`] is the one seam that knows the sim is a
 //! separate process — a future in-process (e.g. mobile) engine implements
@@ -24,4 +22,4 @@ pub use reconnect::{
 };
 pub use sidecar::{SidecarDeathReason, SidecarProcess};
 pub use transport::SimTransport;
-pub use ws_transport::{WsTransport, LIVENESS_WINDOW};
+pub use ws_transport::LIVENESS_WINDOW;

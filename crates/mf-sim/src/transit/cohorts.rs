@@ -240,6 +240,51 @@ pub fn cohort_demand_factor(tick: u64) -> f64 {
     }
 }
 
+/// Per-cohort relative demand weight at the current hour. Values are relative
+/// weights (not normalized to sum to 1).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CohortMix {
+    /// Work commuters.
+    pub commuter: f64,
+    /// Students.
+    pub student: f64,
+    /// Leisure trips.
+    pub leisure: f64,
+    /// Night-shift workers.
+    pub night_shift: f64,
+}
+
+/// Relative per-cohort demand weight at `tick` (share x hourly x weekend tilt).
+/// Mirrors `cohortMix`.
+pub fn cohort_mix(tick: u64) -> CohortMix {
+    let h = hour_bucket(tick);
+    let weekend = is_weekend(tick);
+    let models = cohort_models();
+    let mut out = CohortMix::default();
+    for (i, c) in models.iter().enumerate() {
+        let tilt = if weekend { c.weekend_tilt } else { 1.0 };
+        let w = c.base_share * tilt * c.hourly[h];
+        match i {
+            0 => out.commuter = w,
+            1 => out.student = w,
+            2 => out.leisure = w,
+            _ => out.night_shift = w,
+        }
+    }
+    out
+}
+
+/// Full 24-hour normalized demand curve for weekday/weekend parity. Mirrors
+/// `hourlyDemandCurve`.
+pub fn hourly_demand_curve(weekend: bool) -> Vec<f64> {
+    let tick_for_hour = |h: u64| -> u64 {
+        (if weekend { 5 } else { 0 }) * TICKS_PER_DAY as u64 + h * (TICKS_PER_DAY as u64 / 24)
+    };
+    (0..24)
+        .map(|h| cohort_demand_factor(tick_for_hour(h)))
+        .collect()
+}
+
 // ── POI surges (System B, B2) ────────────────────────────────────────────────
 
 /// Upper bound on any single POI surge multiplier. Mirrors `MAX_POI_SURGE`.

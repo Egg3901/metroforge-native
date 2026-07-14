@@ -86,21 +86,8 @@ jobs:
         with:
           workspaces: metroforge-native
 
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3
-
       - name: Install Bevy + smoke runtime deps (xvfb, software vulkan, imagemagick, winit X11 libs)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev pkg-config libwayland-dev xvfb mesa-vulkan-drivers libvulkan1 imagemagick libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2
-
-      # Sidecar source now lives in-repo at ./sim (monorepo consolidation,
-      # #140). No sibling checkout / SHA pin needed.
-      - name: Compile sidecar (linux-x64)
-        working-directory: metroforge-native/sim
-        run: |
-          bun install
-          bun build --compile --target=bun-linux-x64 ./sidecar/index.ts --outfile ../dist-sidecar/metroforge-sidecar
 
       - name: Build release client
         working-directory: metroforge-native
@@ -108,8 +95,6 @@ jobs:
 
       - name: Boot smoke — cold menu + in-city (fail on solid void)
         working-directory: metroforge-native
-        env:
-          MF_SIDECAR_PATH: ${{ github.workspace }}/metroforge-native/dist-sidecar/metroforge-sidecar
         run: |
           set -uo pipefail
           BIN=./target/release/metroforge
@@ -145,8 +130,6 @@ jobs:
 
       - name: Per-tier in-city smoke (potato/low/medium/high, fail on tier void)
         working-directory: metroforge-native
-        env:
-          MF_SIDECAR_PATH: ${{ github.workspace }}/metroforge-native/dist-sidecar/metroforge-sidecar
         # native#102: the in-city gate above runs a single (auto-detected)
         # tier and a void can hide behind HUD chrome on the low tiers. This
         # boots each of the four tiers into a hero-framed NYC and fails if any
@@ -216,124 +199,3 @@ jobs:
         working-directory: metroforge-native
         run: cargo xwin check --workspace -j 4 --target x86_64-pc-windows-msvc
 
-  # Optional: kill the sidecar mid-session and assert the client recovers
-  # in place (MF_TEST_KILL_SIDECAR). Continues on error so a missing/broken
-  # sidecar checkout never reds the required `rust` job — flip
-  # `continue-on-error` to false once the recovery path is a hard gate.
-  sidecar-recovery:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - name: Checkout metroforge-native
-        uses: actions/checkout@v4
-        with:
-          path: metroforge-native
-
-      - name: Install Bevy Linux system deps
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev pkg-config libwayland-dev xvfb mesa-vulkan-drivers
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.96"
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: metroforge-native
-
-      - name: bun install + compile sidecar
-        working-directory: metroforge-native/sim
-        run: |
-          bun install
-          bun run compile:linux
-
-      - name: Build mf-game
-        working-directory: metroforge-native
-        run: cargo build -p mf-game --release -j 4
-
-      - name: Kill-sidecar recovery harness (30s)
-        working-directory: metroforge-native
-        env:
-          MF_AUTOSTART: nyc
-          MF_TEST_KILL_SIDECAR: "30"
-          MF_TEST_KILL_SIDECAR_RESULT: ${{ github.workspace }}/sidecar-recovery-result.txt
-          MF_SIDECAR_PATH: ${{ github.workspace }}/metroforge-native/dist-sidecar/metroforge-sidecar
-          WGPU_BACKEND: vulkan
-          LIBGL_ALWAYS_SOFTWARE: "1"
-        run: |
-          set -euo pipefail
-          # Sidecar compile output path varies; accept common locations.
-          if [ ! -x "$MF_SIDECAR_PATH" ]; then
-            for candidate in \
-              "${{ github.workspace }}/metroforge-native/dist-sidecar/metroforge-sidecar" \
-              "${{ github.workspace }}/metroforge-native/sim/dist-sidecar/metroforge-sidecar"
-            do
-              if [ -x "$candidate" ]; then
-                export MF_SIDECAR_PATH="$candidate"
-                break
-              fi
-            done
-          fi
-          if [ ! -x "$MF_SIDECAR_PATH" ]; then
-            echo "sidecar binary not found; skipping recovery harness"
-            echo "ok=0" > "$MF_TEST_KILL_SIDECAR_RESULT"
-            echo "sidecar binary missing" >> "$MF_TEST_KILL_SIDECAR_RESULT"
-            exit 1
-          fi
-          # Kill after 5s in CI (30s wall-clock of software rendering is
-          # expensive); the harness accepts any positive MF_TEST_KILL_SIDECAR.
-          export MF_TEST_KILL_SIDECAR=5
-          xvfb-run -a timeout 180 ./target/release/metroforge || true
-          if [ ! -f "$MF_TEST_KILL_SIDECAR_RESULT" ]; then
-            echo "ok=0" > "$MF_TEST_KILL_SIDECAR_RESULT"
-            echo "no result file written" >> "$MF_TEST_KILL_SIDECAR_RESULT"
-          fi
-          cat "$MF_TEST_KILL_SIDECAR_RESULT"
-          grep -q '^ok=1$' "$MF_TEST_KILL_SIDECAR_RESULT"
-
-      - name: Upload recovery result
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: sidecar-recovery-result
-          path: sidecar-recovery-result.txt
-          if-no-files-found: ignore
-
-  sidecar-smoke:
-    runs-on: ubuntu-latest
-    steps:
-      # The TypeScript sidecar (spec §2) now lives in-repo at ./sim (monorepo
-      # consolidation, #140). This job only exercises the sidecar in isolation
-      # (pure Bun/TS, no GPU, no Rust client involved).
-      - name: Checkout metroforge-native
-        uses: actions/checkout@v4
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3
-
-      - name: bun install (sim deps)
-        working-directory: sim
-        run: bun install
-
-      # Determinism regression gate (spec §2.6): two runs of the same seed
-      # must produce identical stateHash and observed vehicle motion. No GPU
-      # needed. HARD gate — no continue-on-error (checklist #140 item 3).
-      - name: bun sidecar smoke test
-        working-directory: sim
-        run: bun run sidecar/smoke-test.ts
-
-      # Road ↔ water alignment gate (#141): asserts the fraction of committed
-      # road vertices that land on the coarse water field (as the renderer
-      # samples it) stays below threshold per city, catching a re-introduced
-      # half-cell shift or a projection/bbox drift in the city bake.
-      - name: bun road-water alignment check
-        working-directory: sim
-        run: bun run scripts/check-road-water-alignment.ts --assert

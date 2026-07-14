@@ -38,7 +38,6 @@ mod saves;
 mod scenarios;
 mod seam_shots;
 mod shortcuts;
-mod sidecar_kill_test;
 mod single_instance;
 mod soak;
 mod state;
@@ -67,8 +66,8 @@ const SKY_DAY: Color = Color::srgb(
 );
 
 fn main() {
-    // Before anything that might spawn the sidecar: a second Windows launch
-    // focuses the existing window and exits instead of starting another sim.
+    // Before booting subsystems: a second Windows launch focuses the existing
+    // window and exits instead of starting another app instance.
     if !single_instance::ensure_single_instance() {
         return;
     }
@@ -108,7 +107,6 @@ fn main() {
             MfCrashPlugin,
             saves::MfSavesPlugin,
             verify::MfVerifyPlugin,
-            sidecar_kill_test::MfSidecarKillTestPlugin,
             MfQualityBootPlugin,
             MfThemeBootPlugin,
             audio::MfAudioPlugin,

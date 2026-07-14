@@ -90,6 +90,8 @@ pub struct TickEvents {
     pub toasts: Vec<Toast>,
     /// Optional ridership heatmap (emitted on the analytics cadence).
     pub heatmap: Option<analytics::HeatmapPayload>,
+    /// True when assignment/overlay state refreshed this tick.
+    pub assignment_refreshed: bool,
 }
 
 /// Player copy for weather-event toasts. No em/en dashes, no filler. Mirrors
@@ -195,6 +197,7 @@ pub fn sim_tick(state: &mut GameState) -> TickEvents {
     if state.demand_dirty || state.tick.is_multiple_of(ASSIGNMENT_INTERVAL_TICKS as u64) {
         refresh_assignment(state);
         state.demand_dirty = false;
+        events.assignment_refreshed = true;
     }
 
     // 5. daily boundary

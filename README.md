@@ -10,18 +10,16 @@ the only thing in the world with color. See [`art-direction.md`](../art-directio
 for the full palette and rules (canonical constants live in
 `crates/mf-render/src/palette.rs`).
 
-The simulation itself is not reimplemented here. Desktop and the web prototype at
-[transit.ahousedividedgame.com](https://transit.ahousedividedgame.com) run the exact
-same deterministic TypeScript sim core, so a city plays out identically no matter
-which client you use. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for why, and
-for the determinism guarantee that keeps it true.
+The simulation is now fully in-process Rust in this desktop client (no external
+sidecar process). See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for crate
+boundaries and determinism guarantees.
 
 ## Install
 
 Prebuilt installers and archives for Windows, macOS (Apple Silicon), and Linux are
 published on the [GitHub Releases page](https://github.com/Egg3901/metroforge-native/releases).
-Each release includes the game executable, the sidecar executable, and the bundled
-font license. No separate runtime to install.
+Each release includes the game executable and the bundled font license. No
+separate runtime to install.
 
 ### Windows
 
@@ -30,8 +28,8 @@ font license. No separate runtime to install.
 2. Run the installer (Program Files, Start Menu shortcuts, Add/Remove Programs entry).
 3. Releases are not Authenticode-signed, so Windows Defender SmartScreen will usually
    warn on first run: click **More info**, then **Run anyway**.
-4. The game launches. A second launch focuses the existing window instead of starting
-   another copy (and another sidecar).
+4. The game launches. A second launch focuses the existing window instead of
+   starting another copy.
 
 Alternatively, download the `.zip` archive, extract it, and run `metroforge.exe`
 (same SmartScreen prompt on first run).
@@ -58,8 +56,6 @@ shows the embedded version and icon.
 2. Extract: `tar xzf metroforge-<version>-linux-x64.tar.gz`
 3. Run: `./metroforge` from the extracted directory.
 
-The `metroforge-sidecar` binary next to it is required and is used automatically.
-
 **Optional desktop integration:** to add a menu entry, copy the bundled files:
 ```sh
 mkdir -p ~/.local/share/applications ~/.local/share/icons
@@ -72,10 +68,10 @@ below). If it runs slowly, lower the quality tier from the in-game HUD.
 
 ## Building from source
 
-Prerequisites: Rust stable (see `rust-toolchain.toml`) and Bun 1.3. The sidecar's
-TypeScript sim source now lives in-repo under [`sim/`](sim/) (monorepo
-consolidation) — no sibling checkout needed. Full build docs — profiles, measured cold/warm
-times, Bevy feature audit, `cargo-xwin`, sidecar Bun compile — are in
+Prerequisites: Rust stable (see `rust-toolchain.toml`). The TypeScript reference
+sim/content tooling lives in-repo under [`sim/`](sim/) (no sibling checkout
+needed). Full build docs - profiles, measured cold/warm times, Bevy feature
+audit, and `cargo-xwin` - are in
 [`BUILDING.md`](BUILDING.md). Day-to-day setup: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 ```sh
@@ -83,21 +79,9 @@ times, Bevy feature audit, `cargo-xwin`, sidecar Bun compile — are in
 cargo build --release -p mf-game
 ```
 
-To run the client against a sidecar, the client needs a `metroforge-sidecar`
-executable, resolved in this order:
-
-1. `$MF_SIDECAR_PATH`: an explicit path to a prebuilt sidecar binary.
-2. A `metroforge-sidecar[.exe]` sitting next to the client executable (this is how a
-   packaged release finds it).
-3. Dev fallback: `bun run sidecar/index.ts` with the working directory set to the
-   in-repo `sim/` package. This requires `bun` on `PATH` (or at
-   `~/.bun/bin/bun`) and the `sim/` sidecar source present.
+Run locally:
 
 ```sh
-# option A: point at a prebuilt sidecar binary
-MF_SIDECAR_PATH=/path/to/metroforge-sidecar cargo run -p mf-game
-
-# option B: let mf-net fall back to `bun run sidecar/index.ts` in ./sim
 cargo run -p mf-game
 ```
 
@@ -147,26 +131,20 @@ and chamfered vehicle meshes on top.
 ## Architecture
 
 ```
- +-------------------+       WebSocket (mf-wire v1)        +-----------------------+
- |  metroforge-native |  <------------------------------>  |  metroforge-sidecar   |
- |  (Rust / Bevy)     |   JSON control frames (handshake,   |  (Bun, compiled from  |
- |                    |   2 Hz UI, commands, toasts)        |  ./sim/sidecar/)      |
- |  mf-protocol       |   binary hot frames (50 ms ticks,   |                       |
- |  mf-net            |   fields, traffic, static masks)    |                       |
- |  mf-state          |                                     |  wraps the exact      |
- |  mf-render         |                                     |  deterministic TS     |
- |  mf-game (bin)     |                                     |  sim core             |
- +-------------------+                                     +-----------------------+
-          ^                                                          ^
-          |  spawned as a local child process                        |
-          |  (or connects to one already running)                    |
-          +----------------------------------------------------------+
+ +-------------------+
+ |  metroforge-native|
+ |  (Rust / Bevy)    |
+ |                   |
+ |  mf-protocol      |
+ |  mf-net           |
+ |  mf-state         |
+ |  mf-render        |
+ |  mf-game (bin)    |
+ +-------------------+
 ```
 
-`mf-net` is the only crate that knows the sim lives in a separate process. On mobile,
-where subprocesses aren't allowed (notably iOS), a future in-process transport
-satisfies the same `SimTransport` trait with no changes anywhere else. See
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+`mf-net` is the transport/wire seam that owns the in-process sim host thread and
+message flow into ECS. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Repo map
 
@@ -176,7 +154,7 @@ metroforge-native/
   rust-toolchain.toml        pinned Rust channel
   crates/
     mf-protocol/             wire types + binary codec, no Bevy dependency
-    mf-net/                  SimTransport, WebSocket client, sidecar process mgmt
+    mf-net/                  SimTransport + embedded host thread + wire bridge
     mf-state/                shared Bevy resources (city/fields/ui/frame/quality)
     mf-render/               the 3D renderer (terrain/roads/buildings/transit/...)
     mf-game/                 the game shell (bin `metroforge`): states/camera/HUD
@@ -185,17 +163,13 @@ metroforge-native/
     PROTOCOL.md              mf-wire v1 full reference
     DEVELOPMENT.md           build/test/release workflow
   scripts/
-    package.sh               stages a client + sidecar + font into a release archive
-  sim/                       TypeScript sim (metroforge-sim): sim core, host loop,
-                             content, city data, and the Bun sidecar (compiled into
-                             the sidecar binary the client spawns)
+    package.sh               stages the client + assets + font into release archives
+  sim/                       TypeScript reference sim/content tooling
   .github/workflows/         CI and release automation
 ```
 
-The sidecar's TypeScript sim source lives in this repo under [`sim/`](sim/)
-(the `metroforge-sim` package: sim core, host loop, content, city data, and the
-Bun sidecar); see [`sim/README.md`](sim/README.md) and
-[`sim/sidecar/README.md`](sim/sidecar/README.md).
+The TypeScript reference sim/content package lives in this repo under
+[`sim/`](sim/); see [`sim/README.md`](sim/README.md).
 
 ## License
 

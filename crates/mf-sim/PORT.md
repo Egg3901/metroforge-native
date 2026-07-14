@@ -487,10 +487,31 @@ when present (same code path); NYC exercised fully in-client.
   name labels are emitted as `None` (the bundles carry little/no road `name`).
 - Default backend is still the sidecar; flip to embedded is a separate call.
 
-### Remaining P5 items
+### Historical remaining P5 items (resolved below)
 - DELETE the sidecar / dist-sidecar / `WsTransport` (still the default; untouched
   per guardrail).
 - `StaticBuildings` real-footprint emission (see above).
 - Scenario catalog / progression + `evaluateScenarioDay`; `replay.rs` + reverse
   command bridge; agents pool (`FrameSnapshot.agents`); saves (`serde` feature);
   `cohortDemand`; traffic/demand/heatmap overlays; perf pass.
+
+## Moonshot 1.0 cutover update
+
+The Moonshot consolidation checklist is now complete for the shipped Rust path:
+
+- Saves are wired end-to-end in embedded transport (`requestSave`/`loadSave`)
+  using `mf-sim` serde, with replay-hash preservation tests.
+- Host transient parity additions landed:
+  - `UiState.cohortDemand` is populated from Rust cohort helpers.
+  - Embedded transport now emits demand (`FromSimJson::Demand`) and traffic
+    (`msgType=3`) on assignment refresh.
+  - `FrameSnapshot.agents` is driven by a host-side particle pool resampled from
+    active transit flows.
+- CUTOVER is applied:
+  - Embedded sim is the runtime default.
+  - Sidecar runtime/compile paths are removed from packaging and CI workflows.
+  - `sim/sidecar/` source tree is removed.
+
+Decision note: the old sidecar-only heatmap transport frame has no live native
+consumer path in this tree; parity work focused on the overlays actively used by
+`mf-state`/`mf-game` (`demand` and `traffic`) plus frame/UI transients.

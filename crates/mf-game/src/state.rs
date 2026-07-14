@@ -1,8 +1,5 @@
 //! App state machine (spec §3.4): `Boot -> ConnectingSim -> MainMenu ->
-//! Loading -> InGame`, plus `SimError` for exhausted sidecar reconnects.
-//! Mid-game sidecar death stays in `InGame` with a reconnect overlay,
-//! re-handshakes, and restores from the latest autosave (or re-inits the
-//! current city) without bouncing to the main menu.
+//! Loading -> InGame`, plus `SimError` for unrecoverable transport failures.
 //!
 //! `mf-net`/`mf-state` don't know about these states — this module is the
 //! only place that maps `mf_net::NetStatus` / `mf_state` readiness onto them.
@@ -31,7 +28,7 @@ pub enum AppState {
     MainMenu,
     Loading,
     InGame,
-    /// Exhausted sidecar reconnect attempts — friendly diagnostics screen,
+    /// Exhausted reconnect attempts - friendly diagnostics screen,
     /// never a silent freeze.
     SimError,
 }
@@ -227,7 +224,7 @@ fn menu_screen_override() -> Option<MenuScreen> {
     }
 }
 
-/// Boot: load config, spawn the sidecar + connect, then move on to
+/// Boot: load config, connect to the embedded sim, then move on to
 /// `ConnectingSim`. On failure, seed `ReconnectState` so `mf-net`'s own
 /// reconnect system (backoff 500ms->4s, 3 attempts) picks up the retry
 /// instead of duplicating that policy here.
@@ -253,8 +250,7 @@ fn boot_system(
     // preference so palette remaps are correct before the first Settings open.
     commands.insert_resource(config.colorblind);
 
-    // `MF_SIM=embedded` opts into the in-process Rust sim (P4); the default is
-    // the Bun sidecar. See `mf_net::SimBackend` / `crates/mf-sim/PORT.md`.
+    // Post-cutover, `SimBackend::from_env` resolves to embedded by default.
     let backend = mf_net::SimBackend::from_env();
     match SimLink::connect_for_backend(backend, None) {
         Ok(link) => {
@@ -262,7 +258,7 @@ fn boot_system(
             reconnect.status = NetStatus::Connected;
         }
         Err(e) => {
-            tracing::warn!("mf-game: initial sidecar spawn failed, deferring to reconnect: {e}");
+            tracing::warn!("mf-game: initial sim connect failed, deferring to reconnect: {e}");
             reconnect.status = NetStatus::Reconnecting {
                 attempt: 0,
                 reason: SidecarDeathReason::ProcessExited { code: None },

@@ -1,9 +1,9 @@
 # Building MetroForge Native
 
-How to build the desktop client (`metroforge`) and the TypeScript sim sidecar,
+How to build the desktop client (`metroforge`) with the in-process Rust sim,
 plus the measured compile-time / binary-size numbers from the build audit.
 
-For day-to-day development (running against a live sidecar, headless verify,
+For day-to-day development (headless verify,
 release tagging) see [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 ## Prerequisites
@@ -12,8 +12,7 @@ release tagging) see [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 |------|--------|
 | **Rust** | Pinned in `rust-toolchain.toml` (currently `1.96`). `rustup` installs it automatically; needs `rustfmt` + `clippy`. |
 | **Linux system libs** | `libasound2-dev`, `libudev-dev`, `pkg-config` (Bevy audio + udev). |
-| **Bun 1.3** | Sidecar compile + the `bun run sidecar/index.ts` dev fallback. |
-| **In-repo `sim/`** | The TypeScript sim + sidecar source (`metroforge-sim`) lives at `sim/` in this repo. |
+| **In-repo `sim/`** | TypeScript reference sim/content tooling lives at `sim/` in this repo. |
 | **Windows cross-compile (optional)** | `clang`, `llvm`, `lld`, `cargo-xwin`, and `rustup target add x86_64-pc-windows-msvc`. |
 
 ```sh
@@ -181,44 +180,24 @@ cargo xwin build --release -p mf-game --target x86_64-pc-windows-msvc
 `cargo-xwin` downloads the MSVC CRT / Windows SDK on first use (~hundreds of MB)
 and caches under `~/.cache/cargo-xwin`. Do not change the release profile or
 Bevy feature set in a way that breaks this target — CI packages the PE next to
-the Windows sidecar.
+the Windows desktop build.
 
-## Sidecar (Bun)
+## Embedded sim runtime
 
-The sim is **not** rebuilt in Rust. Release builds compile the TypeScript
-sidecar from the in-repo `sim/` package:
+MetroForge ships with the Rust sim embedded in-process. No Bun sidecar build is
+required for runtime.
 
 ```sh
-# from the sim/ package
-cd sim
-bun install
-mkdir -p ../dist-sidecar
-
-# Linux
-bun build --compile --target=bun-linux-x64 ./sidecar/index.ts \
-  --outfile ../dist-sidecar/metroforge-sidecar
-
-# Windows (cross-compile from Linux/macOS)
-bun build --compile --target=bun-windows-x64 ./sidecar/index.ts \
-  --outfile ../dist-sidecar/metroforge-sidecar.exe
-
-# macOS Apple Silicon
-bun build --compile --target=bun-darwin-arm64 ./sidecar/index.ts \
-  --outfile ../dist-sidecar/metroforge-sidecar-darwin-arm64
+# from repo root
+cargo run -p mf-game
 ```
 
-Equivalently, `cd sim && bun run compile:linux` (also `compile:windows`,
-`compile:darwin-arm64`).
-
-Dev fallback (no prebuilt binary): with `sim/` present and `bun` on
-`PATH`, `cargo run -p mf-game` lets `mf-net` exec `bun run sidecar/index.ts`.
-
-Package client + sidecar together with `./scripts/package.sh <linux|windows|macos> <version>`.
+Package the desktop client with `./scripts/package.sh <linux|windows|macos> <version>`.
 
 ## CI / release invariants
 
 Do not break these when touching the build:
 
-- [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — `fmt`, `clippy -D warnings`, `test`, sidecar smoke, cargo-deny (warn-only)
+- [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — `fmt`, `clippy -D warnings`, `test`, boot smoke, cargo-deny (warn-only)
 - [`.github/workflows/release.yml`](.github/workflows/release.yml) — gate clippy, Linux+Windows (`cargo-xwin`) + macOS matrix, packaged Linux smoke gate
 - Cross-compile: `cargo xwin build --release -p mf-game --target x86_64-pc-windows-msvc` must keep working

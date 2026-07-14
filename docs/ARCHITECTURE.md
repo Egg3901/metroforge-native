@@ -50,7 +50,7 @@ ordering in `plugin.rs`).
 | Crate | Owns | Key paths |
 |---|---|---|
 | **mf-protocol** | Serde JSON mirrors + binary codec; `PROTOCOL_VERSION`; `FromSimMsg` | `types.rs`, `envelope.rs`, `binary.rs` |
-| **mf-net** | `SimTransport`, `WsTransport`, `SidecarProcess`, ping/liveness/reconnect | `transport.rs`, `ws_transport.rs`, `sidecar.rs`, `reconnect.rs`, `plugin.rs` |
+| **mf-net** | `SimTransport`, embedded host transport, ping/liveness/reconnect | `transport.rs`, `embedded.rs`, `ws_transport.rs`, `reconnect.rs`, `plugin.rs` |
 | **mf-state** | Shared `Resource`s filled from `SimEvent` | `city.rs`, `fields.rs`, `frame.rs`, `ui.rs`, `quality.rs`, … |
 | **mf-render** | 3D layers under `MfRenderPlugin` / `MfRenderSet` | `lib.rs` + per-layer modules |
 | **mf-game** | App state machine, camera, input→commands, egui HUD, config, campaign | `state.rs`, `hud.rs`, `config.rs`, `campaign.rs` |
@@ -73,7 +73,7 @@ Full contract: [`PROTOCOL.md`](PROTOCOL.md).
 
 ## mf-net
 
-Only crate allowed to know the sim is a separate OS process today.
+Only crate allowed to own simulation transport/liveness details.
 
 ```rust
 pub trait SimTransport: Send + Sync {
@@ -83,25 +83,10 @@ pub trait SimTransport: Send + Sync {
 }
 ```
 
-`WsTransport` runs blocking `tungstenite` on a background thread; two
-crossbeam channels bridge to ECS. `drain_inbound_system` pushes
-`Events<SimEvent>` each frame. Ping every 5 s; 10 s silence → dead; reconnect
-policy in `reconnect.rs` (500 ms → 4 s, 5 attempts).
-
-`SidecarProcess` locates and spawns the sidecar binary (lookup order: env var, then
-next to the running executable, then a dev fallback of `bun run sidecar/index.ts`
-against the in-repo `sim/` package), parses its one-line stdout handshake to
-learn the assigned port, captures a rolling stderr log tail, and kills the process
-group on `Drop`. On Unix the child sets `PR_SET_PDEATHSIG` so a client crash cannot
-leave a zombie sidecar; on Windows the child is assigned to a Job Object with
-`KILL_ON_JOB_CLOSE`. Stale `metroforge-sidecar` processes from a previous run are
-reaped on every spawn. `reconnect.rs` implements the liveness policy: process exit
-**or** no inbound traffic for 5 seconds means the sim is declared dead (the two
-causes are distinguished); respawn and reconnect with backoff from 500 ms up to 4 s,
-for up to 3 attempts. Mid-game recovery re-handshakes and restores from autosave
-without returning to MainMenu; exhausting attempts surfaces a diagnostics screen
-with the sidecar log tail. Sidecar spawn / `--port 0` / `$MF_SIDECAR_PATH` rules:
-[`PROTOCOL.md` §4](PROTOCOL.md).
+`EmbeddedTransport` runs the Rust sim on a background worker thread. Two
+crossbeam channels bridge to ECS, and `drain_inbound_system` pushes
+`Events<SimEvent>` each frame. Ping/liveness and reconnect status resources
+remain in `mf-net` so game/HUD code can share one health model.
 
 ---
 

@@ -3,28 +3,15 @@ name = "mf-net"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Sim transport: WebSocket client + sidecar process management. Bridges a blocking tungstenite client thread into Bevy via crossbeam channels."
+description = "Sim transport and host bridge for the embedded Rust sim."
 
 [dependencies]
 mf-protocol = { workspace = true }
-mf-sim = { workspace = true }
+mf-sim = { workspace = true, features = ["serde"] }
 bevy_app = { workspace = true }
 bevy_ecs = { workspace = true }
 crossbeam-channel = { workspace = true }
-tungstenite = { workspace = true }
-directories = { workspace = true }
 anyhow = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
-    "Win32_Foundation",
-    "Win32_System_JobObjects",
-    "Win32_System_Threading",
-] }

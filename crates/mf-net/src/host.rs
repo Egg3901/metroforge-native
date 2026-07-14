@@ -814,10 +814,22 @@ pub fn build_ui_state(
             .as_ref()
             .and_then(|w| w.event)
             .map(weather_event_to_wire),
-        // cohort demand-by-hour summary: the `cohorts` helper set (cohort_mix /
-        // hourly_demand_curve) is not ported to Rust yet, so this additive field
-        // stays `None`. TODO(P5): port `transit/cohorts.ts` HUD helpers.
-        cohort_demand: None,
+        cohort_demand: Some({
+            let mix = mf_sim::transit::cohorts::cohort_mix(s.tick);
+            let weekend = mf_sim::transit::cohorts::is_weekend(s.tick);
+            wire::UiCohortDemand {
+                hour: mf_sim::transit::cohorts::hour_bucket(s.tick) as u32,
+                factor: mf_sim::transit::cohorts::cohort_demand_factor(s.tick),
+                mix: wire::CohortMix {
+                    commuter: mix.commuter,
+                    student: mix.student,
+                    leisure: mix.leisure,
+                    night_shift: mix.night_shift,
+                },
+                curve: mf_sim::transit::cohorts::hourly_demand_curve(weekend),
+                weekend,
+            }
+        }),
         // ops (v0.9 System A)
         fleet,
         depots,
@@ -842,14 +854,13 @@ fn parse_hex_color(s: &str) -> u32 {
 }
 
 /// Build the binary `FrameSnapshot` (msgType=1): vehicles stride-6, a route
-/// color table indexed by `routeColorIdx`, and (for now) zero agents. Port of
-/// `sendFrame` (sim.worker.ts).
-///
-/// NOTE(P5): agents are the host-side pedestrian particle pool
-/// (`sim/src/host/agents.ts`, resampled from `state.flows`), NOT sim state.
-/// That cosmetic layer is not ported yet, so `agent_count = 0`. Vehicles (the
-/// gameplay-relevant markers) are fully built.
-pub fn build_frame(s: &GameState) -> wire::FrameSnapshot {
+/// color table indexed by `routeColorIdx`, plus an optional agents stride-3
+/// buffer `[x,y,phase]`. Port of `sendFrame` (sim.worker.ts).
+pub fn build_frame_with_agents(
+    s: &GameState,
+    agents: &[f32],
+    agent_count: u32,
+) -> wire::FrameSnapshot {
     // route id -> color index (position in `routes`), mirroring the TS map.
     let mut route_index: std::collections::HashMap<u32, usize> =
         std::collections::HashMap::with_capacity(s.routes.len());
@@ -882,11 +893,62 @@ pub fn build_frame(s: &GameState) -> wire::FrameSnapshot {
     wire::FrameSnapshot {
         tick: s.tick as u32,
         vehicle_count: n,
-        agent_count: 0,
+        agent_count,
         color_table,
         vehicles,
-        agents: Vec::new(),
+        agents: agents.to_vec(),
     }
+}
+
+/// Build a frame with no host-side agent particles.
+pub fn build_frame(s: &GameState) -> wire::FrameSnapshot {
+    build_frame_with_agents(s, &[], 0)
+}
+
+/// Build the demand-overlay payload from the latest assignment unserved lines.
+pub fn build_demand(s: &GameState) -> Option<wire::DemandPayload> {
+    let lines = s.unserved.as_ref()?.clone();
+    let mut max_weight: f64 = 0.0;
+    let mapped: Vec<wire::DemandLine> = lines
+        .iter()
+        .map(|l| {
+            max_weight = max_weight.max(l.weight);
+            wire::DemandLine {
+                x1: l.x1,
+                y1: l.y1,
+                x2: l.x2,
+                y2: l.y2,
+                weight: l.weight,
+                share: l.share,
+            }
+        })
+        .collect();
+    Some(wire::DemandPayload {
+        lines: mapped,
+        max_weight,
+    })
+}
+
+/// Build the traffic msgType=3 payload from the latest assignment cache.
+pub fn build_traffic(s: &GameState) -> Option<wire::Traffic> {
+    let t = s.traffic.as_ref()?;
+    Some(wire::Traffic {
+        w: t.w,
+        h: t.h,
+        cell_size: t.cell_size as f32,
+        origin_x: t.origin_x as f32,
+        origin_y: t.origin_y as f32,
+        values: t.values.clone(),
+        hotspots: t
+            .hotspots
+            .iter()
+            .map(|h| wire::TrafficHotspot {
+                x: h.x as f32,
+                y: h.y as f32,
+                severity: h.severity as f32,
+            })
+            .collect(),
+    })
 }
 
 #[cfg(test)]
@@ -979,6 +1041,15 @@ mod tests {
         assert!(ui.fleet.is_some());
         assert!(ui.service_period.is_some());
         assert!(ui.service_period_label.is_some());
+        let cohort = ui.cohort_demand.as_ref().expect("cohort demand present");
+        assert_eq!(cohort.curve.len(), 24);
+        assert!(cohort.factor.is_finite());
+        assert!(
+            cohort.mix.commuter > 0.0
+                || cohort.mix.student > 0.0
+                || cohort.mix.leisure > 0.0
+                || cohort.mix.night_shift > 0.0
+        );
     }
 
     #[test]
@@ -994,6 +1065,28 @@ mod tests {
         // stride-6 vehicle buffer, count consistent.
         assert_eq!(frame.vehicles.len(), frame.vehicle_count as usize * 6);
         assert_eq!(frame.agent_count, 0);
+    }
+
+    #[test]
+    fn frame_snapshot_embeds_agent_stride() {
+        let s = new_game(123, Difficulty::Normal, NewGameOptions::default());
+        let agents = vec![10.0f32, 20.0, 1.0, 30.0, 40.0, 0.0];
+        let frame = build_frame_with_agents(&s, &agents, 2);
+        assert_eq!(frame.agent_count, 2);
+        assert_eq!(frame.agents, agents);
+    }
+
+    #[test]
+    fn demand_and_traffic_payloads_are_built_from_state() {
+        let mut s = new_game(321, Difficulty::Normal, NewGameOptions::default());
+        let _ = scripted_bus_route(&mut s);
+        for _ in 0..400 {
+            sim_tick(&mut s);
+        }
+        let demand = build_demand(&s).expect("demand payload");
+        assert!(demand.max_weight >= 0.0);
+        let traffic = build_traffic(&s).expect("traffic payload");
+        assert_eq!(traffic.values.len(), (traffic.w * traffic.h) as usize);
     }
 
     #[test]

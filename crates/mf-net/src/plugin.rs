@@ -12,30 +12,26 @@ use crate::embedded::EmbeddedTransport;
 use crate::reconnect::{reconnect_system, ReconnectState};
 use crate::sidecar::SidecarProcess;
 use crate::transport::SimTransport;
-use crate::ws_transport::WsTransport;
 
 /// Which sim backend `SimLink` boxes behind the `dyn SimTransport` seam.
 ///
-/// Selected by the `MF_SIM` environment variable (`embedded` | `sidecar`).
-/// Default is [`SimBackend::Sidecar`] (the shipping Bun sidecar) — the
-/// in-process Rust sim ([`SimBackend::Embedded`], `MF_SIM=embedded`) is P4's
-/// opt-in path and does not yet own OSM real cities, scenarios, or saves. See
-/// `crates/mf-sim/PORT.md`.
+/// Selected by the legacy `MF_SIM` environment variable (`embedded` | `sidecar`).
+/// As of the all-Rust cutover, both values resolve to embedded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SimBackend {
-    /// The out-of-process Bun sidecar over a WebSocket ([`WsTransport`]).
+    /// Legacy alias kept for env compatibility; resolves to embedded.
     Sidecar,
     /// The in-process native Rust sim ([`EmbeddedTransport`]).
     Embedded,
 }
 
 impl SimBackend {
-    /// Resolve the backend from `MF_SIM` (case-insensitive). Anything other than
-    /// `embedded` — including unset — is [`SimBackend::Sidecar`] (safe default).
+    /// Resolve the backend from `MF_SIM` (case-insensitive). Cutover default is
+    /// embedded, and the legacy `sidecar` value is treated as embedded.
     pub fn from_env() -> Self {
         match std::env::var("MF_SIM").ok().as_deref().map(str::trim) {
-            Some(v) if v.eq_ignore_ascii_case("embedded") => SimBackend::Embedded,
-            _ => SimBackend::Sidecar,
+            Some(v) if v.eq_ignore_ascii_case("sidecar") => SimBackend::Sidecar,
+            _ => SimBackend::Embedded,
         }
     }
 }
@@ -68,15 +64,10 @@ pub struct SimLink {
 }
 
 impl SimLink {
-    /// Convenience used by Boot: spawn the sidecar (per the lookup order in
-    /// `sidecar.rs`) and connect a `WsTransport` to it.
+    /// Legacy name retained for callers; returns embedded transport.
     pub fn spawn_and_connect(headless_speed: Option<f64>) -> anyhow::Result<Self> {
-        let sidecar = SidecarProcess::spawn(headless_speed)?;
-        let transport = WsTransport::connect(&sidecar.ws_url())?;
-        Ok(SimLink {
-            transport: Box::new(transport),
-            sidecar: Some(sidecar),
-        })
+        let _ = headless_speed;
+        Ok(Self::connect_embedded())
     }
 
     /// Connect the in-process Rust sim ([`EmbeddedTransport`]). No child
@@ -89,25 +80,18 @@ impl SimLink {
         }
     }
 
-    /// Boot entry point that honors the `MF_SIM` flag: [`SimBackend::Embedded`]
-    /// connects the in-process Rust sim; [`SimBackend::Sidecar`] (default)
-    /// spawns and connects the Bun sidecar.
+    /// Boot entry point. Both enum values resolve to embedded after cutover.
     pub fn connect_for_backend(
         backend: SimBackend,
         headless_speed: Option<f64>,
     ) -> anyhow::Result<Self> {
-        match backend {
-            SimBackend::Embedded => Ok(Self::connect_embedded()),
-            SimBackend::Sidecar => Self::spawn_and_connect(headless_speed),
-        }
+        let _ = (backend, headless_speed);
+        Ok(Self::connect_embedded())
     }
 
-    /// Test/harness helper: force-kill the owned sidecar process (if any)
-    /// without dropping the transport first. Used by `MF_TEST_KILL_SIDECAR`.
+    /// Legacy no-op: there is no sidecar process to kill post-cutover.
     pub fn kill_sidecar_for_test(&mut self) {
-        if let Some(sidecar) = self.sidecar.as_mut() {
-            sidecar.kill_now();
-        }
+        let _ = self;
     }
 }
 
