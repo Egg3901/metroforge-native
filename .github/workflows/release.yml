@@ -135,14 +135,23 @@ jobs:
           Xvfb :99 -screen 0 1280x800x24 & echo $! > xvfb.pid
           sleep 3
           DISPLAY=:99 ./metroforge > run.log 2>&1 & echo $! > game.pid
-          sleep 75
-          DISPLAY=:99 import -window root shot.png
+          # Poll for the menu to render rather than a single fixed-delay grab:
+          # GitHub-hosted runners render the 3D scene on llvmpipe (software
+          # Vulkan) far slower than a real GPU, so a fixed 75s window flaked.
+          # Capture every 15s up to ~5min, pass as soon as it is not a void.
+          UNIQUE=1
+          for i in $(seq 1 20); do
+            sleep 15
+            DISPLAY=:99 import -window root shot.png 2>/dev/null || true
+            UNIQUE=$(identify -format %k shot.png 2>/dev/null || echo 1)
+            echo "cold-menu poll $i (~$((i*15))s): $UNIQUE unique colors"
+            if [ "$UNIQUE" -ge 50 ]; then break; fi
+          done
           kill "$(cat game.pid)" 2>/dev/null || true
           kill "$(cat xvfb.pid)" 2>/dev/null || true
-          UNIQUE=$(identify -format %k shot.png)
           echo "smoke screenshot unique colors: $UNIQUE"
-          echo "--- last 40 lines of game log ---"
-          tail -40 run.log || true
+          echo "--- last 60 lines of game log ---"
+          tail -60 run.log || true
           if [ "$UNIQUE" -lt 50 ]; then
             echo "::error::Artifact smoke test FAILED: screen is a near-solid void ($UNIQUE unique colors) - the packaged game did not reach a rendered menu"
             exit 1
@@ -159,13 +168,20 @@ jobs:
           Xvfb :98 -screen 0 1280x800x24 & echo $! > xvfb2.pid
           sleep 3
           DISPLAY=:98 MF_AUTOSTART=nyc ./metroforge > run-city.log 2>&1 & echo $! > game2.pid
-          sleep 100
-          DISPLAY=:98 import -window root shot-city.png
+          # Poll (see cold-menu rationale). An in-city frame is heavier than the
+          # menu, so allow a longer cap (~7min) before declaring a void.
+          UNIQUE=1
+          for i in $(seq 1 28); do
+            sleep 15
+            DISPLAY=:98 import -window root shot-city.png 2>/dev/null || true
+            UNIQUE=$(identify -format %k shot-city.png 2>/dev/null || echo 1)
+            echo "in-city poll $i (~$((i*15))s): $UNIQUE unique colors"
+            if [ "$UNIQUE" -ge 1000 ]; then break; fi
+          done
           kill "$(cat game2.pid)" 2>/dev/null || true
           kill "$(cat xvfb2.pid)" 2>/dev/null || true
-          UNIQUE=$(identify -format %k shot-city.png)
           echo "in-city unique colors: $UNIQUE"
-          tail -20 run-city.log || true
+          tail -30 run-city.log || true
           if [ "$UNIQUE" -lt 1000 ]; then
             echo "::error::In-city smoke FAILED: $UNIQUE unique colors - the game likely never left the loading screen"
             exit 1
@@ -181,7 +197,7 @@ jobs:
       - name: Smoke-test all four quality tiers (in-city, per-tier floor)
         working-directory: metroforge-native
         run: |
-          bash scripts/tier-smoke.sh /tmp/mf-smoke/metroforge /tmp/mf-smoke/tiers 90
+          bash scripts/tier-smoke.sh /tmp/mf-smoke/metroforge /tmp/mf-smoke/tiers 240
 
       - name: Upload smoke screenshot (always, for eyeballing)
         if: always()
