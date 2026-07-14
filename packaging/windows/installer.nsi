@@ -40,6 +40,8 @@ Section "MetroForge (required)" SecCore
   File "${STAGEDIR}\OFL.txt"
   File "${STAGEDIR}\README-dist.txt"
   File "${STAGEDIR}\icon.ico"
+  ; Bevy resolves its asset root next to the exe, so install assets\ alongside.
+  File /r "${STAGEDIR}\assets"
 
   WriteRegStr HKLM "Software\MetroForge" "InstallDir" "$INSTDIR"
   WriteUninstaller "$INSTDIR\uninstall.exe"
@@ -71,6 +73,7 @@ Section "Uninstall"
   Delete "$INSTDIR\README-dist.txt"
   Delete "$INSTDIR\icon.ico"
   Delete "$INSTDIR\uninstall.exe"
+  RMDir /r "$INSTDIR\assets"
   RMDir "$INSTDIR"
   Delete "$SMPROGRAMS\MetroForge\MetroForge.lnk"
   Delete "$SMPROGRAMS\MetroForge\Uninstall MetroForge.lnk"
