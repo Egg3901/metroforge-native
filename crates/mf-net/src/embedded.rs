@@ -1,10 +1,8 @@
 //! `EmbeddedTransport` — the in-process Rust sim behind the `SimTransport`
-//! seam (P4). It is a drop-in peer of [`crate::ws_transport::WsTransport`]: same
-//! trait, same crossbeam-channel + background-thread lifecycle, same liveness
-//! model. The difference is that instead of a blocking WebSocket to the Bun
-//! sidecar, the worker thread owns a [`mf_sim::GameState`] and drives
+//! seam (P4). The worker thread owns a [`mf_sim::GameState`] and drives
 //! `sim_tick` directly, translating wire messages to/from the sim through
-//! [`crate::host`].
+//! [`crate::host`]. It uses a crossbeam-channel + background-thread lifecycle
+//! and a silence-based liveness model.
 //!
 //! No tokio (matches the existing model). The sim itself stays deterministic:
 //! only the tick CADENCE uses a wall clock (a 20 Hz step timer, exactly like the
@@ -25,12 +23,15 @@ use mf_sim::{apply_command, new_game, sim_tick, GameState, NewGameOptions};
 
 use crate::host;
 use crate::transport::SimTransport;
-use crate::ws_transport::LIVENESS_WINDOW;
+
+/// Silence threshold used by transport liveness checks: if the sim emits
+/// nothing for this long, `is_alive()` reports it unreachable.
+const LIVENESS_WINDOW: Duration = Duration::from_millis(5000);
 
 /// Host step cadence: 20 steps/sec, mirroring the TS worker's 50ms interval.
 const STEP: Duration = Duration::from_millis(50);
 /// Worker wake granularity: small enough that inbound commands are picked up
-/// with low latency (like `WsTransport`'s 4ms poll) without busy-spinning.
+/// with low latency without busy-spinning.
 const WAKE: Duration = Duration::from_millis(4);
 /// UI (`ui`) is emitted every Nth step -> 2 Hz, matching the TS worker's
 /// `uiCountdown = 10`.
@@ -556,8 +557,8 @@ fn run_worker(
     }
 }
 
-/// Mark the "sidecar" as alive: the embedded worker sets this on every outbound
-/// batch so `is_alive()`/`silence_duration()` behave exactly like `WsTransport`.
+/// Mark the transport alive: the embedded worker sets this on every outbound
+/// batch so `is_alive()`/`silence_duration()` reflect recent sim activity.
 fn mark_alive(last_inbound_millis: &Arc<AtomicU64>, started_at: Instant) {
     let now_ms = started_at.elapsed().as_millis() as u64;
     last_inbound_millis.store(now_ms, Ordering::Relaxed);

@@ -331,26 +331,24 @@ assignment path (the accepted NEW RUST BASELINE), not a wiring defect.
 
 ## P4 status: in-process swap DONE (additive + flagged)
 
-The native Rust sim now runs IN-PROCESS behind the existing `SimTransport`
-seam, selected by a flag, with the Bun-sidecar `WsTransport` kept as the
-default fallback. The sidecar / dist-sidecar / `WsTransport` are UNTOUCHED
-(their deletion is P5).
+The native Rust sim now runs IN-PROCESS behind the `SimTransport` seam. The
+cutover is complete: the embedded transport is the sole sim transport. The Bun
+sidecar and its `WsTransport` have been removed, and there is no longer any
+backend selection.
 
-### Flag
-- **`MF_SIM`** env var, read by `mf_net::SimBackend::from_env()` in
-  `mf-game`'s `boot_system`:
-  - `MF_SIM=embedded` -> in-process Rust sim (`EmbeddedTransport`).
-  - unset / anything else -> Bun sidecar (`WsTransport`). **Default is
-    sidecar** (safe), because the embedded sim still lacks OSM real cities,
-    scenarios, and saves (below).
+### Transport
+- There is no `MF_SIM` env var and no `SimBackend`; both are gone. `mf-game`'s
+  `boot_system` builds the transport unconditionally via
+  `SimLink::connect_embedded()`, which starts the in-process Rust sim
+  (`EmbeddedTransport`).
 
 ### Where the code lives (mf-sim stays bevy-free AND serde-free)
 - **`crates/mf-net/src/host.rs`** — the `GameState -> wire` serializer + the
   command bridge. Placed in `mf-net` (the one crate that already depends on
   BOTH `mf_sim` and the `mf_protocol` DTOs) so `mf-sim` needs no new deps.
 - **`crates/mf-net/src/embedded.rs`** — `EmbeddedTransport impl SimTransport`.
-- Selection lives in `crates/mf-net/src/plugin.rs` (`SimBackend`,
-  `SimLink::connect_for_backend` / `connect_embedded`).
+- The transport is built in `crates/mf-net/src/plugin.rs` via
+  `SimLink::connect_embedded`.
 
 ### Serializer coverage (`host.rs`, port of `host/protocol.ts` + `uiExtras.ts`)
 - **`UiState`**: budget (cash/loan/lastDay/netHistory/lifetime), stats
@@ -374,10 +372,9 @@ default fallback. The sidecar / dist-sidecar / `WsTransport` are UNTOUCHED
   `geology::column_at`; `requestReplay` -> a `ReplayPayload` (see TODOs).
 
 ### EmbeddedTransport lifecycle + tick cadence
-- `connect()` spawns a `mf-net-embedded` thread (crossbeam channels, same
-  liveness model as `WsTransport`), and immediately queues `hello` so the
-  client handshake completes. No tokio, no child process (`SimLink.sidecar =
-  None`, so `reconnect.rs` never tries to respawn an in-process sim).
+- `connect()` spawns a `mf-net-embedded` thread (crossbeam channels), and
+  immediately queues `hello` so the client handshake completes. No tokio, no
+  child process, and nothing to respawn for an in-process sim.
 - The worker owns the `GameState` and mirrors `sim.worker.ts`: a 20 Hz step
   timer (`accumulator += speed/20`, up to 400 ticks/step), a `FrameSnapshot`
   every step, `UiState` at 2 Hz, `Fields` re-emitted every 7 sim-days, toasts
@@ -402,9 +399,9 @@ default fallback. The sidecar / dist-sidecar / `WsTransport` are UNTOUCHED
 ## Remaining for P4 / P5
 - **P4 residual:** reverse command bridge (`SimCommand -> wire::Command`) to
   populate replay `command_log`; `replay.rs` (compose `new_game` + `sim_tick`
-  over `command_log`); perf measurement of the embedded path vs the sidecar.
-- **P5 (OSM city data, sidecar deletion):** DELETE the sidecar / dist-sidecar /
-  `WsTransport`; port the OSM real-city path
+  over `command_log`); perf measurement of the embedded path.
+- **P5 (OSM city data):** the sidecar / dist-sidecar / `WsTransport` have been
+  deleted. Port the OSM real-city path
   (`osmCity.ts` / `osmRegistry.ts`): baked water/park/building masks, real
   elevation, real road network, `MapLabel`, POI anchors; fill the transient
   `osm_*` slots and the `MapLabel` placeholder; wire the data-driven scenario
@@ -412,7 +409,7 @@ default fallback. The sidecar / dist-sidecar / `WsTransport` are UNTOUCHED
 
 ## P5 status: OSM real-city path DONE (flagship cities render from real data)
 
-The `MF_SIM=embedded` sim now renders real cities (NYC, Boston, ...) from the
+The embedded sim now renders real cities (NYC, Boston, ...) from the
 baked OSM bundles instead of falling back to procedural generation.
 
 ### What was ported
@@ -462,7 +459,7 @@ baked OSM bundles instead of falling back to procedural generation.
 | labels | 513 | 513 | |
 | POI anchors | 40 | 40 | all 5 kinds valid |
 
-### In-client verify (`MF_SIM=embedded MF_AUTOSTART=nyc`, lavapipe/xvfb)
+### In-client verify (`MF_AUTOSTART=nyc`, lavapipe/xvfb)
 Looked at `verify/default.png`: minimap shows the unmistakable **Manhattan
 silhouette** — the island flanked by the Hudson + East River (blue water
 masks), the real street network, and the surrounding boroughs; the 3D view is a
@@ -485,11 +482,11 @@ when present (same code path); NYC exercised fully in-client.
   is a follow-up.
 - **Road name/wikidata meta** (`staticCityWire.ts::roadMetaFromOsm`): bridge
   name labels are emitted as `None` (the bundles carry little/no road `name`).
-- Default backend is still the sidecar; flip to embedded is a separate call.
+- Embedded is now the sole transport (see cutover below).
 
 ### Historical remaining P5 items (resolved below)
-- DELETE the sidecar / dist-sidecar / `WsTransport` (still the default; untouched
-  per guardrail).
+- The sidecar / dist-sidecar / `WsTransport` have been deleted; embedded is the
+  sole transport.
 - `StaticBuildings` real-footprint emission (see above).
 - Scenario catalog / progression + `evaluateScenarioDay`; `replay.rs` + reverse
   command bridge; agents pool (`FrameSnapshot.agents`); saves (`serde` feature);

@@ -50,7 +50,7 @@ ordering in `plugin.rs`).
 | Crate | Owns | Key paths |
 |---|---|---|
 | **mf-protocol** | Serde JSON mirrors + binary codec; `PROTOCOL_VERSION`; `FromSimMsg` | `types.rs`, `envelope.rs`, `binary.rs` |
-| **mf-net** | `SimTransport`, embedded host transport, ping/liveness/reconnect | `transport.rs`, `embedded.rs`, `ws_transport.rs`, `reconnect.rs`, `plugin.rs` |
+| **mf-net** | `SimTransport`, embedded host transport, ping/liveness | `transport.rs`, `embedded.rs`, `plugin.rs` |
 | **mf-state** | Shared `Resource`s filled from `SimEvent` | `city.rs`, `fields.rs`, `frame.rs`, `ui.rs`, `quality.rs`, … |
 | **mf-render** | 3D layers under `MfRenderPlugin` / `MfRenderSet` | `lib.rs` + per-layer modules |
 | **mf-game** | App state machine, camera, input→commands, egui HUD, config, campaign | `state.rs`, `hud.rs`, `config.rs`, `campaign.rs` |
@@ -85,7 +85,7 @@ pub trait SimTransport: Send + Sync {
 
 `EmbeddedTransport` runs the Rust sim on a background worker thread. Two
 crossbeam channels bridge to ECS, and `drain_inbound_system` pushes
-`Events<SimEvent>` each frame. Ping/liveness and reconnect status resources
+`Events<SimEvent>` each frame. Ping/liveness status resources
 remain in `mf-net` so game/HUD code can share one health model.
 
 ---
@@ -168,11 +168,9 @@ Vehicles: grow-only entity pool; materials shared by paint key
 
 ```
 Boot → ConnectingSim → MainMenu → Loading → InGame
-                                                 ↓
-                                             SimError  (exhausted sidecar reconnects)
 ```
 
-- **Boot**: load config, spawn sidecar + WS.
+- **Boot**: load config, start the embedded sim worker.
 - **ConnectingSim**: client `hello`; version check; store `SimHello`.
 - **MainMenu**: city pick / load / settings (`MenuScreen` resource).
 - **Loading**: send `init` (or save load); gate
@@ -189,7 +187,7 @@ Boot → ConnectingSim → MainMenu → Loading → InGame
 | Day length | `TICKS_PER_DAY = 1200` | `UiState::display_hour` |
 | Demand | ~assignment interval (300 ticks / dirty) | `demand.rs` comments |
 | Client render | Bevy frame rate (60+) | camera / vehicles comments |
-| WS poll | 4 ms | `ws_transport.rs` |
+| Embedded worker wake | 4 ms | `embedded.rs` |
 
 ### Determinism
 

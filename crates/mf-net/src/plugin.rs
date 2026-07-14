@@ -1,6 +1,6 @@
-//! `MfNetPlugin` — owns the `SimLink` resource (transport + optional sidecar
-//! handle), drains inbound messages into `Events<FromSimMsg>` each frame, and
-//! tracks `SimAlive`/`NetStatus` for `reconnect.rs` to act on.
+//! `MfNetPlugin` — owns the `SimLink` resource (the in-process sim transport),
+//! drains inbound messages into `Events<SimEvent>` each frame, and tracks
+//! `SimAlive` from transport liveness.
 
 use std::time::{Duration, Instant};
 
@@ -9,36 +9,11 @@ use bevy_ecs::prelude::*;
 use mf_protocol::{FromSimMsg, ToSim};
 
 use crate::embedded::EmbeddedTransport;
-use crate::reconnect::{reconnect_system, ReconnectState};
-use crate::sidecar::SidecarProcess;
 use crate::transport::SimTransport;
 
-/// Which sim backend `SimLink` boxes behind the `dyn SimTransport` seam.
-///
-/// Selected by the legacy `MF_SIM` environment variable (`embedded` | `sidecar`).
-/// As of the all-Rust cutover, both values resolve to embedded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SimBackend {
-    /// Legacy alias kept for env compatibility; resolves to embedded.
-    Sidecar,
-    /// The in-process native Rust sim ([`EmbeddedTransport`]).
-    Embedded,
-}
-
-impl SimBackend {
-    /// Resolve the backend from `MF_SIM` (case-insensitive). Cutover default is
-    /// embedded, and the legacy `sidecar` value is treated as embedded.
-    pub fn from_env() -> Self {
-        match std::env::var("MF_SIM").ok().as_deref().map(str::trim) {
-            Some(v) if v.eq_ignore_ascii_case("sidecar") => SimBackend::Sidecar,
-            _ => SimBackend::Embedded,
-        }
-    }
-}
-
-/// Client pings at half the websocket liveness window so an idle-but-healthy
-/// connection (e.g. sitting at `MainMenu` before `init`, where the sidecar
-/// has no game running yet and so sends nothing) stays under the 5 s silence
+/// Client pings at half the transport liveness window so an idle-but-healthy
+/// connection (e.g. sitting at `MainMenu` before `init`, where the sim has no
+/// game running yet and so sends nothing) stays under the 5 s silence
 /// threshold. Without this, an idle menu screen would spuriously look dead.
 const PING_INTERVAL: Duration = Duration::from_millis(2500);
 
@@ -51,47 +26,20 @@ const PING_INTERVAL: Duration = Duration::from_millis(2500);
 #[derive(Event, Debug, Clone)]
 pub struct SimEvent(pub FromSimMsg);
 
-/// Holds the live transport (and, on desktop, the child sidecar process it
-/// owns). Boxed as `dyn SimTransport` so a future in-process/mobile
-/// implementation is a drop-in replacement.
+/// Holds the live transport. Boxed as `dyn SimTransport` so a future
+/// in-process/mobile implementation is a drop-in replacement.
 #[derive(Resource)]
 pub struct SimLink {
     pub transport: Box<dyn SimTransport>,
-    /// `None` once the sidecar was launched externally (e.g. a future
-    /// in-process engine) or via a pre-existing `$MF_SIDECAR_PATH` process
-    /// this crate doesn't own the lifecycle of.
-    pub sidecar: Option<SidecarProcess>,
 }
 
 impl SimLink {
-    /// Legacy name retained for callers; returns embedded transport.
-    pub fn spawn_and_connect(headless_speed: Option<f64>) -> anyhow::Result<Self> {
-        let _ = headless_speed;
-        Ok(Self::connect_embedded())
-    }
-
-    /// Connect the in-process Rust sim ([`EmbeddedTransport`]). No child
-    /// process, so `sidecar` is `None` and there is nothing for `reconnect.rs`
-    /// to respawn (an in-process sim cannot die independently). Infallible.
+    /// Connect the in-process Rust sim ([`EmbeddedTransport`]). There is no
+    /// socket to open and no child process, so this never fails.
     pub fn connect_embedded() -> Self {
         SimLink {
             transport: Box::new(EmbeddedTransport::connect()),
-            sidecar: None,
         }
-    }
-
-    /// Boot entry point. Both enum values resolve to embedded after cutover.
-    pub fn connect_for_backend(
-        backend: SimBackend,
-        headless_speed: Option<f64>,
-    ) -> anyhow::Result<Self> {
-        let _ = (backend, headless_speed);
-        Ok(Self::connect_embedded())
-    }
-
-    /// Legacy no-op: there is no sidecar process to kill post-cutover.
-    pub fn kill_sidecar_for_test(&mut self) {
-        let _ = self;
     }
 }
 
@@ -114,13 +62,11 @@ impl Plugin for MfNetPlugin {
     fn build(&self, app: &mut App) {
         app.add_event::<SimEvent>()
             .init_resource::<SimAlive>()
-            .init_resource::<ReconnectState>()
             .add_systems(
                 Update,
                 (
                     drain_inbound_system.in_set(NetSet::Drain),
                     ping_system.after(NetSet::Drain),
-                    reconnect_system.after(NetSet::Drain),
                 ),
             );
     }

@@ -12,7 +12,7 @@ A single Cargo workspace, resolver 2, five member crates:
 
 ```
 mf-protocol   pure wire types + binary codec, no Bevy dependency
-mf-net        SimTransport trait, embedded transport, reconnect/liveness glue
+mf-net        SimTransport trait, embedded transport, liveness glue
 mf-state      shared Bevy Resources, fed from mf-net's event stream
 mf-render     the 3D renderer, one sub-plugin per visual layer
 mf-game       the game shell, binary `metroforge`

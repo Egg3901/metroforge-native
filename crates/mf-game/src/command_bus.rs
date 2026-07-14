@@ -152,10 +152,9 @@ impl CommandBus {
     #[allow(dead_code)]
     pub fn submit(&mut self, link: &SimLink, cmd: Command, meta: CmdMeta) -> u32 {
         let seq = self.alloc_seq(meta);
-        // Fire-and-forget: a send failure means the transport itself is
-        // down, which `mf-net`'s reconnect/fatal-banner path already
-        // surfaces independently. Nothing useful for this bus to do with
-        // the error beyond not panicking.
+        // Fire-and-forget: a send failure only happens if the in-process sim
+        // worker has gone away, and there is nothing useful for this bus to do
+        // with the error beyond not panicking.
         let _ = link.transport.send(ToSim::Command { seq, cmd });
         seq
     }
@@ -368,7 +367,6 @@ mod tests {
         let transport = TestTransport::default();
         let link = SimLink {
             transport: Box::new(transport.clone()),
-            sidecar: None,
         };
         (link, transport)
     }
