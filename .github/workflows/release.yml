@@ -132,28 +132,35 @@ jobs:
           mkdir -p /tmp/mf-smoke
           tar xzf "release-artifacts/metroforge-${{ steps.version.outputs.value }}-linux-x64.tar.gz" -C /tmp/mf-smoke
           cd /tmp/mf-smoke
+          mkdir -p verify-menu
           Xvfb :99 -screen 0 1280x800x24 & echo $! > xvfb.pid
           sleep 3
-          DISPLAY=:99 ./metroforge > run.log 2>&1 & echo $! > game.pid
-          # Poll for the menu to render rather than a single fixed-delay grab:
-          # GitHub-hosted runners render the 3D scene on llvmpipe (software
-          # Vulkan) far slower than a real GPU, so a fixed 75s window flaked.
-          # Capture every 15s up to ~5min, pass as soon as it is not a void.
+          # Capture via the in-process MF_VERIFY harness (Bevy screenshot API,
+          # writes menu.png from the MainMenu state) instead of `import -window
+          # root`. External X-root grabs return a solid-color void under headless
+          # Xvfb with no compositor on GitHub runners (llvmpipe), which flaked
+          # every recent release to macOS-only. MF_VERIFY_DIR with no autostart
+          # holds at the menu; the harness screenshots the real framebuffer.
+          DISPLAY=:99 MF_VERIFY_DIR=verify-menu ./metroforge > run.log 2>&1 & echo $! > game.pid
           UNIQUE=1
-          for i in $(seq 1 20); do
-            sleep 15
-            DISPLAY=:99 import -window root shot.png 2>/dev/null || true
-            UNIQUE=$(identify -format %k shot.png 2>/dev/null || echo 1)
-            echo "cold-menu poll $i (~$((i*15))s): $UNIQUE unique colors"
-            if [ "$UNIQUE" -ge 50 ]; then break; fi
+          for i in $(seq 1 24); do
+            sleep 10
+            if [ -f verify-menu/menu.png ]; then
+              sleep 2
+              UNIQUE=$(identify -format %k verify-menu/menu.png 2>/dev/null || echo 1)
+              echo "menu.png produced at ~$((i*10))s: $UNIQUE unique colors"
+              break
+            fi
+            kill -0 "$(cat game.pid)" 2>/dev/null || { echo "game exited before menu.png"; break; }
+            echo "cold-menu poll $i (~$((i*10))s): waiting for menu.png"
           done
           kill "$(cat game.pid)" 2>/dev/null || true
           kill "$(cat xvfb.pid)" 2>/dev/null || true
-          echo "smoke screenshot unique colors: $UNIQUE"
+          echo "smoke menu.png unique colors: $UNIQUE"
           echo "--- last 60 lines of game log ---"
           tail -60 run.log || true
-          if [ "$UNIQUE" -lt 50 ]; then
-            echo "::error::Artifact smoke test FAILED: screen is a near-solid void ($UNIQUE unique colors) - the packaged game did not reach a rendered menu"
+          if [ ! -f verify-menu/menu.png ] || [ "$UNIQUE" -lt 50 ]; then
+            echo "::error::Artifact smoke test FAILED: menu did not render ($UNIQUE unique colors) - the packaged game never produced a rendered main menu"
             exit 1
           fi
 
@@ -165,25 +172,32 @@ jobs:
         working-directory: metroforge-native
         run: |
           cd /tmp/mf-smoke
+          mkdir -p verify-city
           Xvfb :98 -screen 0 1280x800x24 & echo $! > xvfb2.pid
           sleep 3
-          DISPLAY=:98 MF_AUTOSTART=nyc ./metroforge > run-city.log 2>&1 & echo $! > game2.pid
-          # Poll (see cold-menu rationale). An in-city frame is heavier than the
-          # menu, so allow a longer cap (~7min) before declaring a void.
+          # Same harness-capture approach (see cold-menu rationale). MF_AUTOSTART
+          # drives into NYC; the harness writes default.png once it reaches a
+          # daytime, dense-centre in-city frame. Poll for that file (heavier than
+          # the menu, so a longer cap).
+          DISPLAY=:98 MF_AUTOSTART=nyc MF_VERIFY_DIR=verify-city MF_VERIFY_NETWORK=1 ./metroforge > run-city.log 2>&1 & echo $! > game2.pid
           UNIQUE=1
-          for i in $(seq 1 28); do
-            sleep 15
-            DISPLAY=:98 import -window root shot-city.png 2>/dev/null || true
-            UNIQUE=$(identify -format %k shot-city.png 2>/dev/null || echo 1)
-            echo "in-city poll $i (~$((i*15))s): $UNIQUE unique colors"
-            if [ "$UNIQUE" -ge 1000 ]; then break; fi
+          for i in $(seq 1 42); do
+            sleep 10
+            if [ -f verify-city/default.png ]; then
+              sleep 2
+              UNIQUE=$(identify -format %k verify-city/default.png 2>/dev/null || echo 1)
+              echo "default.png produced at ~$((i*10))s: $UNIQUE unique colors"
+              break
+            fi
+            kill -0 "$(cat game2.pid)" 2>/dev/null || { echo "game exited before default.png"; break; }
+            echo "in-city poll $i (~$((i*10))s): waiting for default.png"
           done
           kill "$(cat game2.pid)" 2>/dev/null || true
           kill "$(cat xvfb2.pid)" 2>/dev/null || true
-          echo "in-city unique colors: $UNIQUE"
+          echo "in-city default.png unique colors: $UNIQUE"
           tail -30 run-city.log || true
-          if [ "$UNIQUE" -lt 1000 ]; then
-            echo "::error::In-city smoke FAILED: $UNIQUE unique colors - the game likely never left the loading screen"
+          if [ ! -f verify-city/default.png ] || [ "$UNIQUE" -lt 1000 ]; then
+            echo "::error::In-city smoke FAILED: $UNIQUE unique colors - the game never rendered an in-city frame"
             exit 1
           fi
 
