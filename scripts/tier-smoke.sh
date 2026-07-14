@@ -22,7 +22,7 @@
 # Usage: tier-smoke.sh <binary> <workdir> [display_base]
 #   <binary>   path to the metroforge executable (packaged or target/*)
 #   <workdir>  scratch dir for screenshots + logs (created)
-#   Any MF_SIDECAR_PATH / other env the binary needs is inherited.
+#   Other runtime env vars are inherited.
 #
 # Exits non-zero (and prints a ::error::) if ANY tier renders below its floor.
 

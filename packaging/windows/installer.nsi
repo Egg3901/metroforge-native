@@ -1,8 +1,6 @@
 ; MetroForge Windows installer (NSIS). Built cross-platform by makensis on
 ; the Linux release runner -- see scripts/package.sh (windows) and
-; .github/workflows/release.yml. Layout constraint: metroforge.exe and
-; metroforge-sidecar.exe MUST stay siblings in the same directory
-; (mf-net/src/sidecar.rs resolves the sidecar next to the running exe).
+; .github/workflows/release.yml.
 ;
 ; Required defines (passed with -D on the makensis command line):
 ;   VERSION   release version string, e.g. 0.4.4-alpha
@@ -39,7 +37,6 @@ Section "MetroForge (required)" SecCore
   SectionIn RO
   SetOutPath "$INSTDIR"
   File "${STAGEDIR}\metroforge.exe"
-  File "${STAGEDIR}\metroforge-sidecar.exe"
   File "${STAGEDIR}\OFL.txt"
   File "${STAGEDIR}\README-dist.txt"
   File "${STAGEDIR}\icon.ico"
@@ -70,7 +67,6 @@ SectionEnd
 
 Section "Uninstall"
   Delete "$INSTDIR\metroforge.exe"
-  Delete "$INSTDIR\metroforge-sidecar.exe"
   Delete "$INSTDIR\OFL.txt"
   Delete "$INSTDIR\README-dist.txt"
   Delete "$INSTDIR\icon.ico"

@@ -4,13 +4,7 @@
 
 - **Rust stable**: pinned in `rust-toolchain.toml` (`rustup` will pick it up
   automatically), with the `rustfmt` and `clippy` components.
-- **Bun 1.3**: for building/running the TypeScript sidecar. Installed at
-  `~/.bun/bin/bun` on the shared dev box; anywhere else, `bun` just needs to be on
-  `PATH`.
-- The sidecar's TypeScript sim source now lives in-repo under [`sim/`](../sim/)
-  (the `metroforge-sim` package: sim core, host loop, content, city data, and the
-  Bun sidecar). See [`sim/README.md`](../sim/README.md) and
-  [`sim/sidecar/README.md`](../sim/sidecar/README.md) for sidecar-specific setup.
+- `xvfb` + Mesa Vulkan (lavapipe) if you run headless visual verification.
 
 ## Workspace layout
 
@@ -18,7 +12,7 @@ A single Cargo workspace, resolver 2, five member crates:
 
 ```
 mf-protocol   pure wire types + binary codec, no Bevy dependency
-mf-net        SimTransport trait, WebSocket client, sidecar process management
+mf-net        SimTransport trait, embedded transport, liveness glue
 mf-state      shared Bevy Resources, fed from mf-net's event stream
 mf-render     the 3D renderer, one sub-plugin per visual layer
 mf-game       the game shell, binary `metroforge`
@@ -47,17 +41,7 @@ and cross-compile notes live in [`BUILDING.md`](../BUILDING.md).
 
 `cargo test --workspace` includes `mf-protocol`'s fixture round-trip tests (binary
 decode -> encode -> byte equality; JSON literal decode -> encode -> value equality)
-and `mf-state`'s quality-tier detection unit tests. It does **not** include
-`mf-net`'s live-sidecar integration tests by default: those are `#[ignore]`d
-because the sidecar may not be built in every environment `cargo test` runs in. Run
-them explicitly once a sidecar binary is available:
-
-```sh
-cargo test -p mf-net --test live_sidecar -- --ignored
-```
-
-Set `MF_REQUIRE_SIDECAR=1` alongside that to turn "sidecar unavailable" from a
-silent skip into a hard failure, for a CI job that's supposed to have one built.
+and `mf-state`'s quality-tier detection unit tests.
 
 ### Parallel builds and target-dir isolation (#110)
 
@@ -82,17 +66,11 @@ Rules that keep this from happening:
   clobber or lock a target dir mid-build. (MetroForge-native is released by tag, not
   auto-deployed, so this is a guard for future automation rather than a live path.)
 
-## Running against a dev sidecar
+## Running embedded sim
 
-The client needs a `metroforge-sidecar` executable at runtime. In development,
-either point it at a prebuilt one or let it fall back to running the TypeScript
-source directly under `bun`:
+The desktop runtime now uses the embedded Rust sim by default:
 
 ```sh
-# against a prebuilt sidecar binary
-MF_SIDECAR_PATH=/path/to/metroforge-sidecar cargo run -p mf-game
-
-# against the interpreted TS source in ./sim/sidecar/index.ts
 cargo run -p mf-game
 ```
 
@@ -120,20 +98,6 @@ screenshots. Example:
 ```sh
 MF_AUTOSTART=nyc MF_FORCE_WEATHER=rain MF_THEME=dark MF_VERIFY_DIR=/tmp/wx \
   MF_VERIFY_NETWORK=1 cargo run -p mf-game
-```
-
-### Sidecar crash-recovery harness
-
-`MF_TEST_KILL_SIDECAR=<seconds>` (e.g. `30`) kills the owned sidecar that many
-wall-clock seconds after `InGame`, then asserts the client recovers in place
-(re-handshake + autosave/city restore, no MainMenu bounce). Writes
-`sidecar-recovery-result.txt` (or `$MF_TEST_KILL_SIDECAR_RESULT`) with `ok=1` on
-success. Optional CI job: `sidecar-recovery` in `.github/workflows/ci.yml`
-(`continue-on-error: true` until the sidecar binary path is a hard gate).
-
-```sh
-MF_AUTOSTART=nyc MF_TEST_KILL_SIDECAR=30 MF_SIDECAR_PATH=/path/to/metroforge-sidecar \
-  cargo run -p mf-game --release
 ```
 
 ## Performance harness (`MF_PERF`)
@@ -243,26 +207,22 @@ clean.
 
 ## Release process
 
-A release is: compile the sidecar for each target OS, build the client for each
-target OS, stage them together with the font license, package, and publish to
-GitHub Releases with auto-generated notes.
+A release is: build the client for each target OS, stage executable + assets +
+font license, package, and publish to GitHub Releases with auto-generated notes.
 
 ### 1. Package a build locally
 
 `scripts/package.sh <os> <version>` (owned by CI, but usable locally to test
-packaging) stages `target/release/metroforge[.exe]`, the matching
-`dist-sidecar/metroforge-sidecar[.exe|-darwin-arm64]`, and
+packaging) stages `target/release/metroforge[.exe]` and
 `crates/mf-game/assets/fonts/OFL.txt` into `release-artifacts/`:
 
 ```sh
 cargo build --release -p mf-game
-# build or place a matching sidecar binary under dist-sidecar/ first, see the
-# sim/sidecar README for compile:linux/compile:windows/compile:darwin-arm64
-./scripts/package.sh linux 0.1.0-alpha
+./scripts/package.sh linux 1.0.0
 ```
 
 `os` is one of `linux`, `windows`, `macos`. The script fails loudly with a
-build-command hint if either binary is missing.
+build-command hint if required release files are missing.
 
 ### 2. Tag and let CI build+publish
 
@@ -272,15 +232,15 @@ which is Apple Silicon), packages each with `package.sh`, and publishes via
 `softprops/action-gh-release` with `generate_release_notes: true`.
 
 ```sh
-git tag v0.1.0-alpha
-git push origin v0.1.0-alpha
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 Equivalently, to build+publish from a local checkout instead of relying purely on
 the tag push trigger:
 
 ```sh
-gh release create v0.1.0-alpha --generate-notes
+gh release create v1.0.0 --generate-notes
 ```
 
 Either path uses GitHub's automatic release-notes generation, which is configured
@@ -289,9 +249,3 @@ the previous tag are grouped into sections by label (Features, Rendering,
 Simulation & Protocol, Fixes, Performance, Other). Label a PR correctly before it
 merges: that's what determines which section its entry lands in, not anything
 about the release process itself.
-
-### 3. In-repo sidecar source
-
-The sidecar source lives in-repo at `sim/` (monorepo consolidation, #140), so
-`ci.yml` and `release.yml` build it from `./sim` in the same checkout — no sibling
-`metroforge` checkout and no SHA pin. Bump the sidecar by committing to `sim/`.

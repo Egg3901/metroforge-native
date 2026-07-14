@@ -68,6 +68,14 @@ pub enum CmdMeta {
     EditRoute {
         route_id: i64,
     },
+    /// Operations (v0.9 A1): set one service period's target headway.
+    SetRouteFrequency {
+        route_id: i64,
+    },
+    /// Operations (v0.9 A4): place a maintenance depot for a mode.
+    BuildDepot {
+        mode: TransitMode,
+    },
     Demolish,
     Undo,
     Query,
@@ -144,10 +152,9 @@ impl CommandBus {
     #[allow(dead_code)]
     pub fn submit(&mut self, link: &SimLink, cmd: Command, meta: CmdMeta) -> u32 {
         let seq = self.alloc_seq(meta);
-        // Fire-and-forget: a send failure means the transport itself is
-        // down, which `mf-net`'s reconnect/fatal-banner path already
-        // surfaces independently. Nothing useful for this bus to do with
-        // the error beyond not panicking.
+        // Fire-and-forget: a send failure only happens if the in-process sim
+        // worker has gone away, and there is nothing useful for this bus to do
+        // with the error beyond not panicking.
         let _ = link.transport.send(ToSim::Command { seq, cmd });
         seq
     }
@@ -268,7 +275,15 @@ fn inverse_for(meta: &CmdMeta, created_id: Option<i64>) -> Option<Command> {
         }
         CmdMeta::BuildTrack { .. } => created_id.map(|id| Command::DemolishTrack { track_id: id }),
         CmdMeta::CreateRoute { .. } => created_id.map(|id| Command::DeleteRoute { route_id: id }),
-        CmdMeta::EditRoute { .. } | CmdMeta::Demolish | CmdMeta::Undo | CmdMeta::Query => None,
+        // Depot placement has no demolish command in the sim contract, and a
+        // frequency change is a value edit, not an entity creation. Neither is
+        // undoable, so both are simply never pushed onto the stack.
+        CmdMeta::EditRoute { .. }
+        | CmdMeta::SetRouteFrequency { .. }
+        | CmdMeta::BuildDepot { .. }
+        | CmdMeta::Demolish
+        | CmdMeta::Undo
+        | CmdMeta::Query => None,
     }
 }
 
@@ -352,7 +367,6 @@ mod tests {
         let transport = TestTransport::default();
         let link = SimLink {
             transport: Box::new(transport.clone()),
-            sidecar: None,
         };
         (link, transport)
     }

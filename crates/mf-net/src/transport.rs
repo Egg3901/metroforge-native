@@ -1,7 +1,7 @@
 //! The `SimTransport` trait (spec §3.2): the one seam that knows the sim is
-//! reachable over some channel. Bevy isn't tokio-native, so a std thread runs
-//! a BLOCKING tungstenite client and two crossbeam channels bridge it to the
-//! ECS; a Bevy system drains `try_recv` each frame.
+//! reachable over some channel. The cutover path uses an in-process worker
+//! thread (`EmbeddedTransport`) and channels into ECS; a Bevy system drains
+//! `try_recv` each frame.
 //!
 //! The same trait can later be satisfied by an in-process JS engine or a
 //! native Rust sim on mobile (iOS forbids subprocesses) with zero call-site

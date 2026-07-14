@@ -1,6 +1,6 @@
-//! `MfNetPlugin` — owns the `SimLink` resource (transport + optional sidecar
-//! handle), drains inbound messages into `Events<FromSimMsg>` each frame, and
-//! tracks `SimAlive`/`NetStatus` for `reconnect.rs` to act on.
+//! `MfNetPlugin` — owns the `SimLink` resource (the in-process sim transport),
+//! drains inbound messages into `Events<SimEvent>` each frame, and tracks
+//! `SimAlive` from transport liveness.
 
 use std::time::{Duration, Instant};
 
@@ -8,14 +8,12 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use mf_protocol::{FromSimMsg, ToSim};
 
-use crate::reconnect::{reconnect_system, ReconnectState};
-use crate::sidecar::SidecarProcess;
+use crate::embedded::EmbeddedTransport;
 use crate::transport::SimTransport;
-use crate::ws_transport::WsTransport;
 
-/// Client pings at half the websocket liveness window so an idle-but-healthy
-/// connection (e.g. sitting at `MainMenu` before `init`, where the sidecar
-/// has no game running yet and so sends nothing) stays under the 5 s silence
+/// Client pings at half the transport liveness window so an idle-but-healthy
+/// connection (e.g. sitting at `MainMenu` before `init`, where the sim has no
+/// game running yet and so sends nothing) stays under the 5 s silence
 /// threshold. Without this, an idle menu screen would spuriously look dead.
 const PING_INTERVAL: Duration = Duration::from_millis(2500);
 
@@ -28,35 +26,19 @@ const PING_INTERVAL: Duration = Duration::from_millis(2500);
 #[derive(Event, Debug, Clone)]
 pub struct SimEvent(pub FromSimMsg);
 
-/// Holds the live transport (and, on desktop, the child sidecar process it
-/// owns). Boxed as `dyn SimTransport` so a future in-process/mobile
-/// implementation is a drop-in replacement.
+/// Holds the live transport. Boxed as `dyn SimTransport` so a future
+/// in-process/mobile implementation is a drop-in replacement.
 #[derive(Resource)]
 pub struct SimLink {
     pub transport: Box<dyn SimTransport>,
-    /// `None` once the sidecar was launched externally (e.g. a future
-    /// in-process engine) or via a pre-existing `$MF_SIDECAR_PATH` process
-    /// this crate doesn't own the lifecycle of.
-    pub sidecar: Option<SidecarProcess>,
 }
 
 impl SimLink {
-    /// Convenience used by Boot: spawn the sidecar (per the lookup order in
-    /// `sidecar.rs`) and connect a `WsTransport` to it.
-    pub fn spawn_and_connect(headless_speed: Option<f64>) -> anyhow::Result<Self> {
-        let sidecar = SidecarProcess::spawn(headless_speed)?;
-        let transport = WsTransport::connect(&sidecar.ws_url())?;
-        Ok(SimLink {
-            transport: Box::new(transport),
-            sidecar: Some(sidecar),
-        })
-    }
-
-    /// Test/harness helper: force-kill the owned sidecar process (if any)
-    /// without dropping the transport first. Used by `MF_TEST_KILL_SIDECAR`.
-    pub fn kill_sidecar_for_test(&mut self) {
-        if let Some(sidecar) = self.sidecar.as_mut() {
-            sidecar.kill_now();
+    /// Connect the in-process Rust sim ([`EmbeddedTransport`]). There is no
+    /// socket to open and no child process, so this never fails.
+    pub fn connect_embedded() -> Self {
+        SimLink {
+            transport: Box::new(EmbeddedTransport::connect()),
         }
     }
 }
@@ -80,13 +62,11 @@ impl Plugin for MfNetPlugin {
     fn build(&self, app: &mut App) {
         app.add_event::<SimEvent>()
             .init_resource::<SimAlive>()
-            .init_resource::<ReconnectState>()
             .add_systems(
                 Update,
                 (
                     drain_inbound_system.in_set(NetSet::Drain),
                     ping_system.after(NetSet::Drain),
-                    reconnect_system.after(NetSet::Drain),
                 ),
             );
     }

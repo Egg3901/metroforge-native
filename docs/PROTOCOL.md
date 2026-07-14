@@ -416,68 +416,39 @@ client                                   sidecar
 - The client validates `protocolVersion === 1` and aborts the connection attempt on
   mismatch rather than trying to negotiate.
 - **Liveness:** no inbound traffic (of any kind, including pongs) for **5 seconds**
-  and the client declares the sim dead. Process exit is detected immediately via
-  `Child::try_wait` and distinguished from websocket silence in
-  `SidecarDeathReason`. `mf-net`'s reconnect policy then respawns the sidecar and
-  reconnects with backoff starting at 500 ms, doubling up to a 4 s cap, for up to
-  **3 attempts**. Mid-game, recovery re-handshakes, restores from the latest
-  autosave (or re-inits the current city), and resumes `InGame` under a
-  "Reconnecting to simulation" overlay — it does not bounce to MainMenu. After 3
-  failures the client shows a diagnostics screen (log tail + copy button).
+  and the client declares the sim dead. The sim runs in-process on a worker thread;
+  there is no external process to detect exiting and no reconnect or respawn policy.
 - The client pings every **2.5 seconds** (half the silence window) so an idle menu
   screen does not spuriously look dead.
-- **Clean shutdown:** the client sends `shutdown`; the sidecar stops its tick loop,
-  replies `bye`, closes the socket, and exits with code 0. `SidecarProcess::drop` is
-  the backstop: if the child doesn't exit within a reasonable window, it is killed
-  directly.
+- **Clean shutdown:** the client sends `shutdown`; the worker stops its tick loop
+  and replies `bye`. Because the sim is in-process, stopping the worker fully tears
+  down the sim; there is no child process to kill.
 
 Client state machine (`mf-game/src/state.rs`):
 
-1. **Boot** — spawn sidecar, connect WS (`SimLink::spawn_and_connect`).
-2. **ConnectingSim** — send client `hello`; on matching sidecar `hello` → MainMenu.
+1. **Boot** — start the embedded sim worker (`SimLink::connect_embedded`).
+2. **ConnectingSim** — send client `hello`; on matching sim `hello` → MainMenu.
 3. **Loading** — send `init` (or load-save path); gate on
    `masks_complete() && LatestFields && LatestUi` → InGame.
    Does **not** wait for `Frame`, `StaticBuildings`, or `demand`.
 
-Liveness (`ws_transport.rs` + `plugin.rs` + `reconnect.rs`):
+Liveness (`embedded.rs` + `plugin.rs`):
 
-- Client pings every **5 s**.
-- No inbound traffic for **10 s** → `is_alive() == false`.
-- Reconnect: backoff **500 ms**, doubling up to **4 s** cap, **5** attempts,
-  then `NetStatus::Fatal`. Game shell maps Fatal → MainMenu.
+- Client pings every **2.5 s**.
+- No inbound traffic for **5 s** → `is_alive() == false`.
+- The sim is in-process, so there is no reconnect or respawn policy.
 
-Clean shutdown: client sends `shutdown`; `SidecarProcess::drop` kills the child
-as backstop.
+Clean shutdown: client sends `shutdown`; the worker stops its tick loop. Because
+the sim is in-process, no child process needs to be killed.
 
 ---
 
-## 4. Sidecar process resolution (`mf-net/src/sidecar.rs`)
+## 4. Sim transport
 
-`SidecarProcess::spawn(headless_speed)` always appends `--port 0` (OS-assigned
-port). Optional `--headless-speed <n>` if `headless_speed` is `Some`.
-
-Stdout is piped; stderr inherited; stdin null. Handshake: one JSON line within
-**15 s**:
-
-| Field | JSON key | Type | Check |
-|---|---|---|---|
-| magic | `mf` | string | must equal `"sidecar"` |
-| protocol | `protocolVersion` | `u32` | must equal `mf_protocol::PROTOCOL_VERSION` |
-| listen port | `port` | `u16` | used for `ws://127.0.0.1:{port}` |
-| process id | `pid` | `u32` | deserialized; unused |
-
-### Binary / launch lookup order
-
-1. **`$MF_SIDECAR_PATH`** — if set and the path `is_file()`, run that exact
-   binary. If set but not a file, warn and fall through.
-2. **Next to the running exe** — `{exe_dir}/metroforge-sidecar` (or
-   `metroforge-sidecar.exe` on Windows).
-3. **Dev fallback** — `bun run sidecar/index.ts` with
-   `cwd = <repo>/sim` (resolved from the crate's `CARGO_MANIFEST_DIR`), only if
-   `<repo>/sim/sidecar/index.ts` exists. Bun is resolved via `PATH`,
-   else `$HOME/.bun/bin/bun`, else the string `"bun"`.
-
-On Windows, spawn uses `CREATE_NO_WINDOW` so a second console does not appear.
+The sim runs in-process on a background worker thread. `SimLink::connect_embedded`
+builds the embedded transport; there is no external process to spawn, no
+port/stdout handshake, and no binary lookup. The `hello`/`init`/`frame` messages
+above are exchanged in-process over channels rather than a websocket.
 
 ---
 
@@ -485,7 +456,7 @@ On Windows, spawn uses `CREATE_NO_WINDOW` so a second console does not appear.
 
 | Knob | Current value | Where |
 |---|---|---|
-| JSON handshake `protocolVersion` | `1` | `PROTOCOL_VERSION` in `lib.rs`; checked in `sidecar.rs` spawn handshake and `ConnectingSim` |
+| JSON handshake `protocolVersion` | `1` | `PROTOCOL_VERSION` in `lib.rs`; checked in `ConnectingSim` |
 | Binary frame `version` byte | `1` for msgTypes 1–4; `1\|2` for msgType 5 | `binary.rs` |
 
 **Bump `PROTOCOL_VERSION` when** a change would break an older peer talking to a
