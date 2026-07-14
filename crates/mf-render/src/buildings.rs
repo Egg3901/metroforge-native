@@ -45,7 +45,9 @@ use bevy::prelude::*;
 use bevy::render::primitives::Aabb;
 
 use mf_protocol::BuildingFootprint;
-use mf_state::{CurrentCity, EffectiveKnobs, HeightAt, LatestFields, RevealState, Theme};
+use mf_state::{
+    CurrentCity, EffectiveKnobs, HeightAt, LatestFields, QualityTier, RevealState, Theme,
+};
 
 use crate::atmosphere::CloudShadowParams;
 use crate::mesh_utils::{
@@ -383,6 +385,7 @@ fn build_buildings_system(
     fields: Res<LatestFields>,
     height_at: Res<HeightAt>,
     effective: Res<EffectiveKnobs>,
+    quality: Res<QualityTier>,
     theme: Res<Theme>,
     day_night: Res<crate::daynight::DayNightState>,
     cloud_shadows: Res<CloudShadowParams>,
@@ -418,7 +421,15 @@ fn build_buildings_system(
 
     let world_size = city_json.world_size as f32;
     let chunk_size = world_size / CHUNKS_PER_SIDE as f32;
-    let real_footprints = city.buildings.as_ref().filter(|b| !b.buildings.is_empty());
+    // Real per-building OSM footprints are the heavy path (~4.28M verts for a
+    // full city). Only Medium/High can afford them; Potato/Low fall back to the
+    // cheap greedy-rectangle mask massing (module intent, line 12) so software
+    // rasterizers / CI still render a frame.
+    let real_footprints = if matches!(*quality, QualityTier::Medium | QualityTier::High) {
+        city.buildings.as_ref().filter(|b| !b.buildings.is_empty())
+    } else {
+        None
+    };
     // Real building data ships with a per-city vertex total; estimate each
     // building's final contribution as `4*vc` wall vertices (one quad per
     // ring edge) + `3*(vc-2)` cap-triangle vertices, spread evenly across
