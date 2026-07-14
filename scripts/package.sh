@@ -167,7 +167,8 @@ case "$OS" in
             OFL.txt \
             README-dist.txt \
             metroforge.png \
-            metroforge.desktop
+            metroforge.desktop \
+            assets
 
         echo "Successfully created: $ARTIFACT_PATH"
         echo "Archive contents:"
@@ -203,10 +204,11 @@ case "$OS" in
             zip -q -r "$ARTIFACT_PATH" \
                 metroforge.exe \
                 OFL.txt \
-                README-dist.txt
+                README-dist.txt \
+                assets
         else
             # Fallback to PowerShell on Windows if zip is not available
-            powershell -Command "Compress-Archive -Path metroforge.exe, OFL.txt, README-dist.txt -DestinationPath '$ARTIFACT_PATH'"
+            powershell -Command "Compress-Archive -Path metroforge.exe, OFL.txt, README-dist.txt, assets -DestinationPath '$ARTIFACT_PATH'"
         fi
 
         echo "Successfully created: $ARTIFACT_PATH"
