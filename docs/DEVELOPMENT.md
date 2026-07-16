@@ -36,6 +36,9 @@ expensive to run on every push; the 3-OS matrix lives in `release.yml` instead):
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+# dash lint (en/em dashes in player-facing copy) lives in mf-game unit tests;
+# CI also runs scripts/check-strings-dashes.sh on strings.rs
+cargo test -p mf-game
 ```
 
 CI also runs `cargo deny` (advisories / duplicate versions / licenses) as a
@@ -121,6 +124,49 @@ screenshots. Example:
 MF_AUTOSTART=nyc MF_FORCE_WEATHER=rain MF_THEME=dark MF_VERIFY_DIR=/tmp/wx \
   MF_VERIFY_NETWORK=1 cargo run -p mf-game
 ```
+
+### Lighting seam capture (`MF_SEAM_DIR`)
+
+`MF_SEAM_DIR=<dir>` arms a deterministic lighting-regression harness
+(`crates/mf-game/src/seam_shots.rs`): once `InGame`, it frames the promo
+Skyline camera rig, pins sun hours, and writes four PNGs (`seam_0800.png`,
+`seam_1200.png`, `seam_1330.png`, `seam_1830.png`) for pixel-before/after
+comparisons (issues #40 / #141). Pair with `MF_AUTOSTART=<city>` and
+`MF_QUALITY=high`; optional `MF_FORCE_REVEAL=1` exercises the reveal dissolve
+in the same frames.
+
+```sh
+MF_AUTOSTART=nyc MF_QUALITY=high MF_SEAM_DIR=/tmp/seams \
+  xvfb-run -a cargo run --release -p mf-game
+```
+
+### Verify camera target (`MF_VERIFY_TARGET`)
+
+When `MF_VERIFY_DIR` is set, `MF_VERIFY_TARGET` recenters the screenshot
+camera before the hero `default.png` frame (`crates/mf-game/src/verify.rs`):
+
+- `MF_VERIFY_TARGET="x,z"` — world coordinates in meters.
+- `MF_VERIFY_TARGET=bridge` — midpoint of the longest elevated/bridge road
+  (`RoadDto::is_bridge` or `grade_level > 0`) in the loaded city.
+
+Optional tuning knobs (also read without `MF_VERIFY_TARGET`): `MF_VERIFY_DIST`,
+`MF_VERIFY_PITCH`, `MF_VERIFY_YAW`.
+
+### Per-tier render smoke (`scripts/tier-smoke.sh`)
+
+CI and release packaged-smoke gates boot the binary once per quality tier
+(Potato/Low/Medium/High) into NYC with `MF_VERIFY_DIR`, then assert the hero
+`default.png` frame clears a per-tier unique-colour floor (catches the #102
+"class: title renders but in-city is a void" regression on weak tiers only).
+
+```sh
+cargo build --release -p mf-game
+bash scripts/tier-smoke.sh ./target/release/metroforge /tmp/tier-smoke 90
+```
+
+The script sets `MF_QUALITY=<tier>` and `MF_AUTOSTART=nyc` internally; inherit
+`MF_SIDECAR_PATH` (or the dev `bun` fallback) from the environment. See
+`.github/workflows/ci.yml` (`tier-smoke` job) and `release.yml`.
 
 ### Sidecar crash-recovery harness
 

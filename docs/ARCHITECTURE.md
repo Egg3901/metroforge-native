@@ -122,10 +122,14 @@ Resources filled by `apply_sim_events_system` (after `NetSet::Drain`):
 | `HeightAt` | Default flat 0; terrain replaces sampler | |
 | `RevealState` | Game input drives; render copies to shader | |
 | `OverlayState` | Game cycles; render dims transit | |
-| `WeatherEffects` | Settings checkbox | Gated by quality atmosphere knob |
+| `WeatherEffects` | Settings checkbox | Gated by `QualityKnobs::atmosphere_enabled` |
+| `WeatherRender` | `LatestUi` weather fields (v0.7) | Smoothed in `mf-render/weather_render.rs`; dev override `MF_FORCE_WEATHER` |
+| `AttractLighting` | `MainMenu` attract plugin | Pins golden-hour day/night for the live diorama |
+| `CurrentCity::elevation` | msgType=7 (optional) | Real DEM heightfield in meters; does not gate `Loading` |
 
-`Traffic` and control-plane JSON (`commandResult`, `toast`, …) are **not**
-mirrored here; consumers read `SimEvent` directly (`plugin.rs`).
+`Traffic` and control-plane JSON (`commandResult`, `toast`, `trackCost`,
+`strataProbe`, …) are **not** mirrored here; consumers read `SimEvent` directly
+(`plugin.rs`).
 
 ---
 
@@ -152,15 +156,34 @@ Each static layer stores a key and early-returns when unchanged:
 
 | Layer | Signature (from code) |
 |---|---|
-| Terrain | `(fields.version, subdiv_divisor, theme, shader_water)` |
-| Roads | `(fields.version, roads.len(), total_points, theme, densify_step_bits)` |
+| Terrain | `(fields.version, subdiv_divisor, theme, shader_water, elevation_res)` |
+| Roads | `(fields.version, roads.len(), total_points, theme, densify_step_bits)` — extrudes `RoadDto::grade_level` decks |
 | Buildings | `rebuild_key(fields.version, buildings_count)` + `theme` |
 | Transit | `u64` hash of structural `UiState` ⊕ densify ⊕ theme ⊕ unlit |
 | Trees | `(fields.version, theme, tree_enabled)` |
 | Street lamps | `(fields.version, roads.len(), total_points, theme, enabled, densify_bits)` |
+| Bridges | `(roads.len(), total_points, model_handles_ready)` — glTF placement from `bridges.rs` |
 
 Buildings geometry paths (`buildings.rs`): real `StaticBuildings` footprints →
 mask → procedural density. Late-arriving footprints force one extra rebuild.
+
+**Real elevation (v0.6):** optional binary `StaticElevation` (msgType=7) lands in
+`CurrentCity::elevation` and replaces the normalized `Fields.terrain` sampler
+in `terrain.rs` when present (true meters, own `res`).
+
+**City build data (v0.6–v0.8):** `sim/scripts/build-cities.ts` bakes OSM roads with
+compact grade-separation keys (`g`/`br`/`tn` → `gradeLevel`/`isBridge`/`isTunnel`
+at runtime) plus optional bridge `name`/`wikidata` and `poiAnchors` (stadium,
+airport, university, …) into `sim/src/data/cities/*.json`. The wire `RoadDto`
+carries `gradeLevel`, `isBridge`, `isTunnel` (serde `default`); bridge identity
+metadata is build-pipeline data today — `mf-render/src/bridges.rs` picks the
+Brooklyn vs generic suspension glTF from span length over water, not wikidata.
+
+**Geology / weather (v0.7–v0.8):** sim rolls weather into `UiState`
+(`weatherState`, `weatherIntensity`, `weatherSeason`, `weatherEvent` — all
+optional/`serde(default)`). Tunnel cost previews gain an optional
+`TrackCostBreakdown` on `trackCost` replies; clients can probe columns with
+`strataProbe` / `strataProbe` result messages (see [`PROTOCOL.md`](PROTOCOL.md)).
 
 Vehicles: grow-only entity pool; materials shared by paint key
 `(color_idx, brightness_bucket, unlit, overlay_dimmed)` (`vehicles.rs`).
@@ -173,7 +196,19 @@ Vehicles: grow-only entity pool; materials shared by paint key
 3. `QualityTier::knobs()` → `QualityKnobs` (`mf-state/src/quality.rs`).
 4. Render-global: MSAA, shadow map size, fog, bloom (`lib.rs`).
 5. Per-layer: materials, draw distances, agent cap, terrain subdiv, day/night,
-   ribbons, trees, water tier, street lamps.
+   ribbons, trees, water tier, street lamps, atmosphere, precip, bridge glTFs.
+
+### Weather / precip / diorama gating (v0.7+)
+
+| Effect | Tier gate | Player / sim gate |
+|---|---|---|
+| Atmosphere cloud cards | `QualityKnobs::atmosphere_enabled` (Medium/High) | `WeatherEffects::enabled` + sim weather active (`mf-render/atmosphere.rs`) |
+| Precip particles | `tier_count` in `precip.rs` (Potato = 0; Low/Medium/High scaled) | `WeatherEffects::enabled` + eased rain/snow weights in `WeatherRender` |
+| Wet roads / snow slush | Medium/High only (`unlit_material == false`) | `weather_render.rs` `wet_roads_system` |
+| Main-menu diorama | all tiers | `AppState::MainMenu` sets `AttractLighting::active`; `daynight.rs` pins golden hour regardless of sim clock (`mf-game/attract.rs` streams a real city behind the menu) |
+
+Dev override: `MF_FORCE_WEATHER=<state>[:intensity]` pins `WeatherRender` without
+changing sim `UiState` (`mf-state/weather.rs`, `weather_render.rs`).
 
 ---
 

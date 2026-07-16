@@ -45,6 +45,7 @@ Serde: `#[serde(default, skip_serializing_if = "Option::is_none")]` on `seq` and
 | `setSpeed` | no | `{ speed: f64 }` | `SetSpeedPayload` | `0` = paused |
 | `command` | yes (= requestId) | `{ cmd: Command }` | `CommandPayload` | See Command table |
 | `queryTrackCost` | yes (= requestId) | `{ mode, grade, points }` | `QueryTrackCostPayload` | Cost preview; no mutation |
+| `strataProbe` | yes (= requestId) | `{ x, y }` | `StrataProbePayload` | Subsurface column probe (v0.8); no mutation |
 | `requestReplay` | no | *(none)* | — | Sidecar replies `replay` |
 | `ping` | no | *(none)* | — | Liveness; sidecar replies `pong` |
 | `shutdown` | no | *(none)* | — | Sidecar replies `bye`, closes |
@@ -102,23 +103,13 @@ native client fills gaps from its local catalog.
 | `demand` | no | `{ lines: {x1,y1,x2,y2,weight,share}[], maxWeight: number }` | droppable under backpressure |
 | `ui` | no | the `UiState` struct directly as `p` | sent at 2 Hz; budget, approval, stations/tracks/routes, active events, etc. |
 | `commandResult` | yes | `{ result: { ok: bool, error?: string, createdId?: i64 } }` | echoes the `command`'s `seq` |
-| `trackCost` | yes | `{ cost: number }` | echoes the `queryTrackCost`'s `seq` |
+| `trackCost` | yes | `{ cost: number, breakdown?: TrackCostBreakdown }` | echoes the `queryTrackCost`'s `seq` |
+| `strataProbe` | yes | `StrataProbeResultPayload` | echoes the `strataProbe`'s `seq` |
 | `saved` | no | `{ json: string }` | reply to `requestSave` |
 | `replay` | no | the `ReplayPayload` struct directly as `p` | reply to `requestReplay`; always includes `stateHash` |
 | `toast` | no | `{ message: string, tone: "info"\|"warn"\|"good" }` | |
 | `pong` | no | *(none)* | reply to `ping` |
 | `bye` | no | *(none)* | final message before the sidecar closes the socket, in response to `shutdown` |
-| `hello` | no | `HelloInfo` | Sent immediately on connect, before any client message |
-| `ready` | no | `{ staticCity: StaticCityJson }` | Static geometry; masks arrive as binary |
-| `demand` | no | `DemandPayload` | Desire lines + `maxWeight` |
-| `ui` | no | `UiState` directly as `p` | 2 Hz (`mf-state/src/ui.rs`) |
-| `commandResult` | echoed | `{ result: CommandResult }` | Echoes `command`'s `seq` |
-| `trackCost` | echoed | `{ cost: f64 }` | Echoes `queryTrackCost`'s `seq` |
-| `saved` | no | `{ json: string }` | Reply to `requestSave` |
-| `replay` | no | `ReplayPayload` directly as `p` | Reply to `requestReplay` |
-| `toast` | no | `{ message, tone }` | `tone`: `"info"\|"warn"\|"good"` |
-| `pong` | no | *(none)* | Reply to `ping` |
-| `bye` | no | *(none)* | Final message before close after `shutdown` |
 
 #### `HelloInfo` (`camelCase`)
 
@@ -145,7 +136,17 @@ native client fills gaps from its local catalog.
 | `hasParkMask` | `bool` | default `false` | Expect msgType=4 `which=1` |
 | `hasBuildingMask` | `bool` | default `false` | Expect msgType=4 `which=2` |
 | `labels` | `MapLabel[]` | optional | |
-| `roads` | `{ cls: string, points: f64[] }[]` | required | Flat x,y pairs |
+| `roads` | `{ cls: string, points: f64[] }[]` | required | Flat x,y pairs per segment |
+
+Each `roads[]` entry is a `RoadDto` (`types.rs`):
+
+| Field | Type | Optional / default | Notes |
+|---|---|---|---|
+| `cls` | `string` | required | `arterial` / `collector` / `local`, … |
+| `points` | `f64[]` | required | Flat x,y pairs |
+| `gradeLevel` | `i32` | default `0` | OSM layer/bridge/tunnel grade separation |
+| `isBridge` | `bool` | default `false` | Bridge deck segment |
+| `isTunnel` | `bool` | default `false` | Tunnel segment |
 
 No raw mask bytes in JSON; those arrive as binary `StaticMask` (0–3 frames)
 immediately after `ready`.
@@ -183,7 +184,11 @@ immediately after `ready`.
 | `fareboxRecovery` | `f64` | default omit (sim-depth) |
 | `lifetime` | `f64` | default omit (sim-depth) |
 | `districts` | `UiDistrict[]` | default `[]` (sim-depth) |
-| `overcrowdedRoutes` | `i64[]` | default `[]` (sim-depth) |
+| `overcrowdedRoutes` | `u32` | default omit (sim-depth) |
+| `weatherState` | `"clear"\|"overcast"\|"rain"\|"fog"\|"snow"\|"storm"` | default omit (v0.7) |
+| `weatherIntensity` | `f64` | default omit (v0.7) — precip strength / heat for clear |
+| `weatherSeason` | `"winter"\|"spring"\|"summer"\|"autumn"` | default omit (v0.7) |
+| `weatherEvent` | `"blizzard"\|"heatwave"` | default omit (v0.7) |
 
 `DayLedger`: `{ fares, subsidy, operations, maintenance, interest }` (all `f64`).
 
@@ -204,6 +209,37 @@ immediately after `ready`.
 |---|---|
 | `lines` | `{ x1,y1,x2,y2,weight,share }[]` |
 | `maxWeight` | `f64` |
+
+#### `TrackCostPayload` / `TrackCostBreakdown` (v0.8, additive)
+
+`trackCost` replies wrap:
+
+| Field | Type | Optional / default |
+|---|---|---|
+| `cost` | `f64` | required |
+| `breakdown` | `TrackCostBreakdown` | default omit — old sidecars send cost only |
+
+`TrackCostBreakdown` (`camelCase`, all fields `#[serde(default)]`):
+
+| Field | Type | Notes |
+|---|---|---|
+| `surface` | `f64` | Reference surface alignment cost |
+| `elevated` | `f64` | Reference elevated alignment cost |
+| `cutCover` | `f64` | Cut-and-cover component along the line |
+| `bored` | `f64` | Bored component along the line |
+| `strata` | `string` | Dominant strata crossed, e.g. `"fill/clay/rock"` |
+| `belowWaterTable` | `bool` | Any segment below the water table |
+
+#### `StrataProbePayload` / `StrataProbeResultPayload` (v0.8)
+
+Client `strataProbe` sends `{ x, y }` (world meters). Reply `p` is:
+
+| Field | Type | Notes |
+|---|---|---|
+| `bands` | `{ kind, top, bottom }[]` | `kind`: `fill` / `clay` / `rock` / `bedrock`; depths in meters below surface |
+| `waterTable` | `f64` | Depth (m) to water table |
+| `rockHardness` | `f64` | Competent-rock hardness `0..1` |
+| `surfaceElevation` | `f64` | Surface elevation (m above sea level) |
 
 #### `CommandResult`
 
@@ -380,6 +416,31 @@ Decode converts to meters: `x = xHalfM / 2.0`, `y = yHalfM / 2.0`.
 `height_dm == 0` means "unknown; renderer may use density formula"
 (`BuildingFootprint` docs).
 
+### msgType=7: `StaticElevation` (sent once; additive)
+
+Wire version: **1 only**. Optional real-DEM heightfield in **true meters**,
+decoupled from the coarse `Fields.terrain` sim grid. Same delivery class as
+msgType=5: does **not** bump `PROTOCOL_VERSION`; absence is valid; not a
+loading gate (`CurrentCity::masks_complete` ignores it).
+
+Header = 12 bytes:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | `u8` | msgType = 7 |
+| 1 | `u8` | version = 1 |
+| 2 | `u16` | reserved |
+| 4 | `u32` | `res` (side length in cells) |
+| 8 | `u32` | reserved |
+
+| Offset | Length | Field |
+|---|---|---|
+| 12 | `2*res*res` | `i16[res*res]` heights in whole meters, row-major (row 0 = north/min-Z edge, matching masks) |
+
+Sent once after `ready` when the city ships baked elevation (`simHost.ts` /
+`encodeStaticElevation`). `mf-render/terrain.rs` prefers this channel over
+normalized `Fields.terrain` when present.
+
 ---
 
 ## 3. Handshake, liveness, shutdown
@@ -400,6 +461,7 @@ client                                   sidecar
   |  <---------------- ready ----------------|
   |  <------------ StaticMask x(0..3) -------|
   |  <---------- StaticBuildings? -----------|  optional, msgType=5
+  |  <---------- StaticElevation? ----------|  optional, msgType=7
   |  <---------------- fields ---------------|
   |  <---------------- ui -------------------|  2 Hz
   |  <---------------- frame ----------------|  every 50 ms
@@ -416,16 +478,17 @@ client                                   sidecar
 - The client validates `protocolVersion === 1` and aborts the connection attempt on
   mismatch rather than trying to negotiate.
 - **Liveness:** no inbound traffic (of any kind, including pongs) for **5 seconds**
-  and the client declares the sim dead. Process exit is detected immediately via
-  `Child::try_wait` and distinguished from websocket silence in
-  `SidecarDeathReason`. `mf-net`'s reconnect policy then respawns the sidecar and
-  reconnects with backoff starting at 500 ms, doubling up to a 4 s cap, for up to
-  **3 attempts**. Mid-game, recovery re-handshakes, restores from the latest
+  and the client declares the sim dead (`ws_transport.rs` `LIVENESS_WINDOW`).
+  Process exit is detected immediately via `Child::try_wait` and distinguished
+  from websocket silence in `SidecarDeathReason`. `mf-net`'s reconnect policy
+  then respawns the sidecar and reconnects with backoff starting at 500 ms,
+  doubling up to a 4 s cap, for up to **3 attempts** (`reconnect.rs`
+  `MAX_ATTEMPTS`). Mid-game, recovery re-handshakes, restores from the latest
   autosave (or re-inits the current city), and resumes `InGame` under a
   "Reconnecting to simulation" overlay — it does not bounce to MainMenu. After 3
   failures the client shows a diagnostics screen (log tail + copy button).
-- The client pings every **2.5 seconds** (half the silence window) so an idle menu
-  screen does not spuriously look dead.
+- The client pings every **2.5 seconds** (`plugin.rs` `PING_INTERVAL`, half the
+  silence window) so an idle menu screen does not spuriously look dead.
 - **Clean shutdown:** the client sends `shutdown`; the sidecar stops its tick loop,
   replies `bye`, closes the socket, and exits with code 0. `SidecarProcess::drop` is
   the backstop: if the child doesn't exit within a reasonable window, it is killed
@@ -437,17 +500,10 @@ Client state machine (`mf-game/src/state.rs`):
 2. **ConnectingSim** — send client `hello`; on matching sidecar `hello` → MainMenu.
 3. **Loading** — send `init` (or load-save path); gate on
    `masks_complete() && LatestFields && LatestUi` → InGame.
-   Does **not** wait for `Frame`, `StaticBuildings`, or `demand`.
+   Does **not** wait for `Frame`, `StaticBuildings`, `StaticElevation`, or `demand`.
 
-Liveness (`ws_transport.rs` + `plugin.rs` + `reconnect.rs`):
-
-- Client pings every **5 s**.
-- No inbound traffic for **10 s** → `is_alive() == false`.
-- Reconnect: backoff **500 ms**, doubling up to **4 s** cap, **5** attempts,
-  then `NetStatus::Fatal`. Game shell maps Fatal → MainMenu.
-
-Clean shutdown: client sends `shutdown`; `SidecarProcess::drop` kills the child
-as backstop.
+Clean shutdown: client sends `shutdown`; sidecar replies `bye` and closes;
+`SidecarProcess::drop` kills the child process group as backstop.
 
 ---
 
@@ -486,7 +542,7 @@ On Windows, spawn uses `CREATE_NO_WINDOW` so a second console does not appear.
 | Knob | Current value | Where |
 |---|---|---|
 | JSON handshake `protocolVersion` | `1` | `PROTOCOL_VERSION` in `lib.rs`; checked in `sidecar.rs` spawn handshake and `ConnectingSim` |
-| Binary frame `version` byte | `1` for msgTypes 1–4; `1\|2` for msgType 5 | `binary.rs` |
+| Binary frame `version` byte | `1` for msgTypes 1–4 and 7; `1\|2` for msgType 5 | `binary.rs` |
 
 **Bump `PROTOCOL_VERSION` when** a change would break an older peer talking to a
 newer one: removing/reordering required JSON fields; changing binary layouts for
@@ -501,6 +557,12 @@ msgTypes 1–4; changing message semantics without a compatible shape.
   `FromSimMsg::Buildings` docs: does **not** bump `PROTOCOL_VERSION`.
 - **msgType=5 wire version 2** — only adds trailing `minHeightDm` per building;
   v1 payloads still decode (`min_height_dm = 0`).
+- **msgType=7 `StaticElevation`** — optional one-shot DEM heightfield; same
+  additive policy as msgType=5.
+- **v0.7 `UiState` weather fields** — `weatherState`, `weatherIntensity`,
+  `weatherSeason`, `weatherEvent` (all `#[serde(default)]`).
+- **v0.8 `trackCost.breakdown`** and the **`strataProbe`** request/response
+  pair — optional; older peers omit them.
 
 A client that receives a `hello` with an unrecognized `protocolVersion` aborts;
 there is no negotiation in v1.
